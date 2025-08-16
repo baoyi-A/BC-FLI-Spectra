@@ -7,7 +7,7 @@
 [![codecov](https://codecov.io/gh/baoyi-A/BC-FLIM-Spectra/branch/main/graph/badge.svg)](https://codecov.io/gh/baoyi-A/BC-FLIM-Spectra)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/BC-FLIM-Spectra)](https://napari-hub.org/plugins/BC-FLIM-Spectra)
 
-for cls and manual correction
+A Napari plugin with 5 gadgets for FLIM-based Barcodes classification and downstream tracking (if needed), alignment and visualization.
 
 ----------------------------------
 
@@ -65,3 +65,4 @@ If you encounter any problems, please [file an issue] along with a detailed desc
 [tox]: https://tox.readthedocs.io/en/latest/
 [pip]: https://pypi.org/project/pip/
 [PyPI]: https://pypi.org/
+
