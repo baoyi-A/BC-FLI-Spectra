@@ -8,7 +8,6 @@ Follow these steps to install the plugin in an isolated environment:
 
 Using **conda** (recommended):
 
-```bash
 conda create -n nacha python=3.10 -y
 conda activate nacha
 Or using venv:
