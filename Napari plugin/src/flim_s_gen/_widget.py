@@ -1133,12 +1133,10 @@ class KMeansCluster(Container):
             self._notify(f"No intensity folder at {int_folder}, skipping masks for {folder}.")
             return
 
-        # 必要列检查
         if not all(k in df_grp.columns for k in ['FOV', 'Mask label', 'cluster']):
             self._notify(f"Missing required columns in data for {folder}. Need 'FOV','Mask label','cluster'.")
             return
 
-        # cluster 数量（fallback 取 n_clusters 控件的值）
         n_clusters = None
         if hasattr(self, 'n_clusters'):
             try:
@@ -1210,7 +1208,6 @@ class KMeansCluster(Container):
                 cluster_id = row['cluster']
                 mask[mask_cp_eroded == ml] = cluster_id
 
-            # 保存纯数字的 cluster mask
             cls_path = os.path.join(int_folder, f'{fov}-cls.tif')
             try:
                 tiff.imwrite(cls_path, mask)
@@ -1218,13 +1215,11 @@ class KMeansCluster(Container):
             except Exception as e:
                 self._notify(f"Failed to save cluster mask for FOV {fov}: {e}")
 
-            # 生成带颜色的 mask
             colors = get_color_map(total_classes)
-            mask_color_map = np.array(colors)  # 预期是 [0,1] 范围的 RGB tuples
+            mask_color_map = np.array(colors)  #
 
             mask_color_map[0] = (0, 0, 0)
 
-            # 用索引映射成 HxWx3
             try:
                 mask_color = mask_color_map[mask]
             except Exception as e:
@@ -1232,7 +1227,6 @@ class KMeansCluster(Container):
                 continue
             mask_color = (mask_color * 255).astype(np.uint8)
 
-            # 写出彩色 mask
             color_path = os.path.join(int_folder, f'{fov}-cls-color.tif')
             try:
                 tiff.imwrite(color_path, mask_color)
