@@ -1,31 +1,77 @@
-# BC-FLIM-Spectra — a napari plugin
+# BC‑FLIM‑Spectra (NaCha) — a napari plugin
 
-## Quick Installation Guide
+BC‑FLIM‑Spectra (aka **NaCha**) is a napari plugin that supports an end‑to‑end workflow for FLIM and barcode analysis, from raw **`.ptu`** ingestion to alignment and visualization.
 
-Follow these steps to install the plugin in an isolated environment:
+It exposes **five widgets** under the napari menu **`Plugins → BC‑FLIM‑Spectra`**:
 
-### 1) Create and activate a clean environment
+1. **PTU Reader** — import and decode FLIM `.ptu` files into usable image stacks/metadata.  
+2. **Calculate FLIM‑S** — lifetime/phasor computation and related FLIM analysis utilities.  
+3. **KMeans Cluster** — interactive clustering and visualization for **single‑anchor barcodes**.  
+4. **B&P Tracker** — tracking widget for barcode/object trajectories (B‑Tracker & P‑Tracker combined).  
+5. **NaCha** — final **data alignment** and **readout/visualization** across modalities or acquisition runs.
 
-Using **conda** (recommended):
+---
 
+## Installation
+
+A clean environment is recommended.
+
+```bash
+# 1) Create & activate environment
 conda create -n nacha python=3.10 -y
 conda activate nacha
-Or using venv:
 
-python -m venv nacha
-source nacha/bin/activate    # macOS/Linux
-nacha\Scripts\activate       # Windows
-2) Install PyTorch (follow official instructions)
-Visit the PyTorch installation guide and use the command that matches your OS and hardware. For example, with CUDA 12.1:
-
+# 2) Install PyTorch (choose the command from the official site for your OS/CUDA)
+# https://pytorch.org/get-started/locally/
+# Example (CUDA 12.1):
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-3) Install Track-Anything (follow official instructions)
-Please refer to the Track‑Anything GitHub repository and follow their installation guide to ensure any required models or dependencies are properly set up.
 
-4) Install this plugin (editable mode recommended)
-Navigate to the plugin root directory (where pyproject.toml is located) and run:
+# 3) Install TrackAnything (required for tracking functionality)
+# Please follow the official instructions at:
+# https://github.com/gaomingqi/Track-Anything
+# Typically:
+git clone https://github.com/gaomingqi/Track-Anything.git
+cd Track-Anything
+pip install -r requirements.txt
+python setup.py develop
 
+# 4) Install this plugin (editable mode recommended)
+cd ../BC-FLIM-Spectra
 pip install -e .
-The editable install allows you to modify the code and see changes immediately without reinstalling. If you prefer a standard install, use:
+```
 
-pip install .
+> Notes  
+> • We intentionally do **not** include Qt backends (PyQt/PySide) in the plugin dependencies to avoid conflicts.  
+> • If you use a headless/CI system, prefer `opencv-python-headless`; for desktop, keep `opencv-python`.  
+> • Make sure your CUDA driver/toolkit matches the PyTorch build you install.
+
+---
+
+## Launch in napari
+
+After installation:
+1. Start **napari**.  
+2. Open the menu: **`Plugins → BC‑FLIM‑Spectra`**.  
+3. Choose one of the widgets: **PTU Reader**, **Calculate FLIM‑S**, **KMeans Cluster**, **B&P Tracker**, or **NaCha**.
+
+---
+
+## Quick workflow
+
+1. **PTU Reader**: load and decode `.ptu` data.  
+2. **Calculate FLIM‑S**: compute lifetime/phasor features for downstream analysis.  
+3. **KMeans Cluster**: explore and visualize **single‑anchor barcodes** interactively.  
+4. **B&P Tracker**: track objects/barcodes through time.  
+5. **NaCha**: align results (across modalities/runs) and generate final visualization/readout.
+
+---
+
+## Troubleshooting
+
+- If napari does not list the plugin, ensure you ran `pip install -e .` in the repository root (where `pyproject.toml` is located), and restart napari.  
+- For GPU/CUDA issues, verify your PyTorch build and drivers.  
+- Heavy third‑party components (e.g., trackers/backbones) may require additional model files—refer to their own documentation.
+
+---
+
+**Enjoy NaCha!**
