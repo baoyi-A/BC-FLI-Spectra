@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+# ---------- Project metadata (PEP 621) ----------
+[project]
+name = "bc-flim-spectral"
+# Using setuptools_scm for versioning:
+# declare it as dynamic so tools don't expect a hard-coded value here.
+dynamic = ["version"]
+description = "BC-FLIM Spectral — a napari plugin"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = 'Baoyi Wang', email = "wang.baoyi@stu.pku.edu.cn" }]
+classifiers = [
+  "Framework :: napari",
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
+
+# Runtime deps read by pip install . / -e .
+dependencies = [
+  "napari>=0.4.19",
+  "numpy>=1.23",
+  "scipy>=1.9",
+  "scikit-image>=0.20",
+  "pandas>=1.5,<2.2",
+  "opencv-python>=4.9",
+  "tifffile>=2021.7",
+  "pillow>=9.3",
+  "psutil>=5.9",
+  "pyyaml>=6.0",
+  "qtpy>=2.4",
+  "tqdm>=4.66",
+  "magicgui>=0.10",
+  "matplotlib>=3.7",
+  "requests>=2.32",
+  "gdown>=5.2",
+  "progressbar33>=2.4",
+  "roifile>=2025.5.10",
+  "shapely>=2.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/BC-FLIM-Spectra"
+Issues = "https://github.com/yourname/BC-FLIM-Spectra/issues"
+
+# Let napari discover your plugin manifest (napari.yaml).
+# Put your napari.yaml under the top-level package `flim_s_gen/`.
+[project.entry-points."napari.manifest"]
+bc-flim-spectral = "flim_s_gen:napari.yaml"
+
+# ---------- setuptools_scm ----------
+[tool.setuptools_scm]
+write_to = "src/flim_s_gen/_version.py"
+
+# ---------- Package discovery for src-layout ----------
+# Tell setuptools to find packages under src/
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Include data files like napari.yaml inside your package
+[tool.setuptools.package-data]
+flim_s_gen = ["napari.yaml", "**/*.yaml", "**/*.json", "**/*.csv"]
+
+# Alternatively (especially with setuptools_scm), include all git-tracked files:
+# [tool.setuptools]
+# include-package-data = true
+
+# ---------- Code style / lint ----------
+[tool.black]
+line-length = 79
+target-version = ['py38', 'py39', 'py310']
+
+[tool.ruff]
+line-length = 79
+select = [
+    "E", "F", "W", # flake8
+    "UP",          # pyupgrade
+    "I",           # isort
+    "BLE",         # flake8-blind-exception
+    "B",           # flake8-bugbear
+    "A",           # flake8-builtins
+    "C4",          # flake8-comprehensions
+    "ISC",         # flake8-implicit-str-concat
+    "G",           # flake8-logging-format
+    "PIE",         # flake8-pie
+    "SIM",         # flake8-simplify
+]
+ignore = [
+    "E501",
+    "UP006", "UP007",
+    "SIM117",
+]
+exclude = [
+    ".bzr", ".direnv", ".eggs", ".git", ".mypy_cache", ".pants.d",
+    ".ruff_cache", ".svn", ".tox", ".venv", "__pypackages__", "_build",
+    "buck-out", "build", "dist", "node_modules", "venv",
+    "*vendored*", "*_vendor*",
+]
+target-version = "py38"
+fix = true
