@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel", "setuptools_scm"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 # ---------- Project metadata (PEP 621) ----------
@@ -7,7 +7,6 @@ build-backend = "setuptools.build_meta"
 name = "bc-flim-spectral"
 # Using setuptools_scm for versioning:
 # declare it as dynamic so tools don't expect a hard-coded value here.
-dynamic = ["version"]
 description = "BC-FLIM Spectral — a napari plugin"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,7 +17,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
 ]
-
+version = "0.1.0"
 # Runtime deps read by pip install . / -e .
 dependencies = [
   "napari>=0.4.19",
@@ -46,9 +45,7 @@ Issues = "https://github.com/yourname/BC-FLIM-Spectra/issues"
 [project.entry-points."napari.manifest"]
 bc-flim-spectral = "flim_s_gen:napari.yaml"
 
-# ---------- setuptools_scm ----------
-[tool.setuptools_scm]
-write_to = "src/flim_s_gen/_version.py"
+
 
 # ---------- Package discovery for src-layout ----------
 # Tell setuptools to find packages under src/
