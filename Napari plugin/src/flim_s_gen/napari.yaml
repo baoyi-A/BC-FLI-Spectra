@@ -1,5 +1,5 @@
-name: BC-FLIM-Spectra
-display_name: FLIM-Spectra
+name: bc-flim-spectra
+display_name: bc-flim-spectra
 # use 'hidden' to remove plugin from napari hub search results
 visibility: public
 # see https://napari.org/stable/plugins/manifest.html for valid categories
@@ -7,31 +7,31 @@ categories: ["Annotation", "Segmentation", "Acquisition"]
 contributions:
   commands:
 
-    - id: BC-FLIM-Spectra.container_widget_2
+    - id: bc-flim-spectra.container_widget_2
       python_name: flim_s_gen:Calculate_FLIM_S
       title: Make my own container widget2
-    - id: BC-FLIM-Spectra.container_widget_5
+    - id: bc-flim-spectra.container_widget_5
       python_name: flim_s_gen:KMeansCluster
       title: Make my own container widget5
-    - id: BC-FLIM-Spectra.container_widget_4
+    - id: bc-flim-spectra.container_widget_4
       python_name: flim_s_gen:Trackrevise
       title: Make my own container widget4
-    - id: BC-FLIM-Spectra.container_widget_3
+    - id: bc-flim-spectra.container_widget_3
       python_name: flim_s_gen:BPTracker
       title: Make my own container widget3
-    - id: BC-FLIM-Spectra.container_widget_6
+    - id: bc-flim-spectra.container_widget_6
       python_name: flim_s_gen:PTUReader
       title: PTU Reader
   widgets:
-    - command: BC-FLIM-Spectra.container_widget_6
+    - command: bc-flim-spectra.container_widget_6
       display_name: PTU Reader
-    - command: BC-FLIM-Spectra.container_widget_2
+    - command: bc-flim-spectra.container_widget_2
       display_name: Calculate FLIM-S
-    - command: BC-FLIM-Spectra.container_widget_5
+    - command: bc-flim-spectra.container_widget_5
       display_name: KMeans Cluster
-    - command: BC-FLIM-Spectra.container_widget_3
+    - command: bc-flim-spectra.container_widget_3
       display_name: B&P Tracker
-    - command: BC-FLIM-Spectra.container_widget_4
+    - command: bc-flim-spectra.container_widget_4
       display_name: NaCha
 
 

@@ -209,7 +209,7 @@ def calcu_phasor_info(roi_decay_data,  peak_idx, tau_resolution=0.1, pulse_freq=
 # Parameter input: mask intensity threshold, pixel intensity threshold, peak offset, end offset, tau resolution, pulse frequency, harmonics, pixel_wise
 
 def Gen_excel(stack1, stack2, stack3, stack4, output_folder, seg_img, mask_int_thres, pixel_int_thres,
-              peak_offset, end_offset, tau_resolution, pulse_freq, harmonics, pixel_wise):
+              peak_offset, end_offset, tau_resolution, pulse_freq, harmonics, pixel_wise, fov):
     # stack1-4 are tiff stacks, no need to read them
     if pixel_wise:
         save_path = os.path.join(output_folder, 'FLIM-S_pixel.xlsx')
@@ -316,6 +316,8 @@ def Gen_excel(stack1, stack2, stack3, stack4, output_folder, seg_img, mask_int_t
         'Int 2/(1-4)': norm_1_4_2_values,
         'Int 3/(1-4)': norm_1_4_3_values,
         'Int 4/(1-4)': norm_1_4_4_values,
+        'FOV': [fov]*len(mask_labels)
+
     })
 
     if os.path.exists(save_path):
@@ -468,6 +470,7 @@ class PlotWidget(QWidget):
 
 class Calculate_FLIM_S(Container):
     def __init__(self, viewer: "napari.viewer.Viewer"):
+        print('version 250828')
         super().__init__()
         self._viewer = viewer
 
@@ -576,10 +579,13 @@ class Calculate_FLIM_S(Container):
         stack_3 = stack_3.data
         stack_4 = stack_4.data
         segmentation = segmentation.data
-
+        fov = os.path.split(self._stack_selectors[0].value.name)[-1].split('_ch')[0]
         data_df = Gen_excel(stack_1, stack_2, stack_3, stack_4, output_folder, segmentation, mask_int_thres, pixel_int_thres,
-                             peak_offset, end_offset, tau_resolution, pulse_frequency, harmonics, pixel_wise)
-
+                             peak_offset, end_offset, tau_resolution, pulse_frequency, harmonics, pixel_wise, fov)
+        # say, the flimstack's name is .../fov_ch1.tif, so get fov from that
+        # 'FOV': os.path.split(stack1.name)[-1].split('_ch')[0]
+        # data_df['FOV'] = os.path.split(self._stack_selectors[0].value.name)[-1].split('_ch')[0]
+        # print(f'fov: {data_df["FOV"].iloc[0]}')
         # show G,S scatter plot on the right bar in napari, using matplotlib
         plt.figure()
         plt.scatter(data_df['G'], data_df['S'])
@@ -1149,7 +1155,6 @@ class KMeansCluster(Container):
 
 
         for fov in df_grp['FOV'].unique():
-            # 找 segmentation npy
             seg_path = os.path.join(int_folder, f'{fov}-sum_seg.npy')
             if not os.path.isfile(seg_path):
                 candidates = glob.glob(os.path.join(int_folder, f"{fov}*seg*.npy"))
@@ -1166,7 +1171,6 @@ class KMeansCluster(Container):
                             self._notify(f"Skipping FOV {fov}: no segmentation file provided.")
                             continue
 
-            # 载入 segmentation
             try:
                 data = np.load(seg_path, allow_pickle=True).item()
             except Exception as e:
@@ -1178,7 +1182,6 @@ class KMeansCluster(Container):
                 self._notify(f"No 'masks' key in '{seg_path}', skipping FOV {fov}.")
                 continue
 
-            # 侵蚀处理（为每个 label 做局部腐蚀）
             mask_cp_eroded = np.zeros_like(mask_cp)
             erosion_disk = disk(1)
             for mask_label in np.unique(mask_cp):
@@ -1199,7 +1202,6 @@ class KMeansCluster(Container):
                 eroded_cropped = erosion(cropped, erosion_disk)
                 mask_cp_eroded[minr:maxr, minc:maxc][eroded_cropped] = mask_label
 
-            # 构造 cluster mask
             df_fov = df_grp[df_grp['FOV'] == fov].copy()
             df_fov['cluster'] = df_fov['cluster'].astype(np.uint8)
             mask = np.zeros_like(mask_cp, dtype=np.uint8)
@@ -1235,12 +1237,10 @@ class KMeansCluster(Container):
                 self._notify(f"Failed to save colored mask for FOV {fov}: {e}")
 
     def save_results(self):
-        # 遍历每个 subfolder
         for folder, grp in self.df_test.groupby('base_folder'):
             filename = 'clustered.xlsx'
             path = os.path.join(folder, filename)
 
-            # 如果已经存在，弹框询问
             if os.path.exists(path):
                 from qtpy.QtWidgets import QMessageBox
                 reply = QMessageBox.question(
@@ -1251,17 +1251,14 @@ class KMeansCluster(Container):
                     QMessageBox.No
                 )
                 if reply != QMessageBox.Yes:
-                    # 跳过当前 subfolder，不覆盖它
                     continue
 
-            # 保存到 clustered.xlsx
             try:
                 grp.to_excel(path, index=False)
             except Exception as e:
                 self._notify(f"Failed to save to {path}: {e}")
                 continue
 
-            # 处理 mask（segmentation npy → cluster mask/color mask）
             self._process_masks_for_folder(folder, grp)
 
         self._notify("Save complete.")
