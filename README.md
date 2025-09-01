@@ -1,6 +1,6 @@
 # BC‑FLIM Tools
 
-This repository contains two complementary tools for barcode analysis in FLIM experiments:
+This repository contains two independent tools for barcode analysis in FLIM experiments:
 
 ## 1. Napari Plugin — Single‑Anchor Barcode Analysis
 
