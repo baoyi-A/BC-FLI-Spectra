@@ -70,7 +70,7 @@ After installation:
 
 - If napari does not list the plugin, it may be due to missing dependencies. Please install the required packages via pip install <package_name> and then restart napari.  
 - For GPU/CUDA issues, verify your PyTorch build and drivers.  
-- Heavy third‑party components (e.g., trackers/backbones) may require additional model files—refer to their own documentation.
+- Some components (e.g., TrackAnything) rely on external model files. If the automatic download fails, please refer to their official documentation for manual installation.
 
 ---
 
