@@ -68,7 +68,7 @@ After installation:
 
 ## Troubleshooting
 
-- If napari does not list the plugin, ensure you ran `pip install -e .` in the repository root (where `pyproject.toml` is located), and restart napari.  
+- If napari does not list the plugin, it may be due to missing dependencies. Please install the required packages via pip install <package_name> and then restart napari.  
 - For GPU/CUDA issues, verify your PyTorch build and drivers.  
 - Heavy third‑party components (e.g., trackers/backbones) may require additional model files—refer to their own documentation.
 
