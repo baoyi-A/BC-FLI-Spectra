@@ -1,4 +1,4 @@
-# BC‑FLIM Tools
+# SLIC (Spectral-Lifetime Indexing of Cells) Tools
 
 This repository contains two independent tools for barcode analysis in FLIM experiments:
 
@@ -35,8 +35,11 @@ For details, see [LUMINA classification/README](LUMINA%20classification/README.m
 ## Notes
 
 - These tools are under active development.  
-- The manuscript describing the methods has not yet been published. Once released, DOI and Zenodo links will be provided here.  
-- Example/test datasets will also be deposited alongside the Zenodo record.
+- The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available.  
+- An [instruction video](https://zenodo.org/records/17045806) is available, providing a step-by-step guide on how to use the Napari plugin.  
+- The [Dual-Anchor dataset](https://zenodo.org/records/17036213), used for training the LUMINA network, is also provided.  
+- A [demo dataset](https://zenodo.org/records/16940026) is included for testing the Napari plugin functionalities.  
+- The [original version of all software code](https://zenodo.org/records/17018436) has been archived as well.  
 
 ---
 
