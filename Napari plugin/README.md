@@ -50,10 +50,12 @@ pip install -e .
 
 After installation:
 1. Start **napari**.
+```bash
 conda activate nacha
-napari  
-3. Open the menu: **`Plugins → BC‑FLIM‑Spectra`**.  
-4. Choose one of the widgets: **PTU Reader**, **Calculate FLIM‑S**, **KMeans Cluster**, **B&P Tracker**, or **NaCha**.
+napari
+```
+2. Open the menu: **`Plugins → BC‑FLIM‑Spectra`**.  
+3. Choose one of the widgets: **PTU Reader**, **Calculate FLIM‑S**, **KMeans Cluster**, **B&P Tracker**, or **NaCha**.
 
 ---
 
