@@ -35,8 +35,8 @@ cd Track-Anything
 pip install -r requirements.txt
 
 # 4) Install this plugin (editable mode recommended)
-cd ../BC-FLIM-Spectra
-pip install -e .
+cd Path_To_BC-FLI-Spectra/Napari_plugin
+pip install -e . # or just pip install .
 ```
 
 > Notes  
