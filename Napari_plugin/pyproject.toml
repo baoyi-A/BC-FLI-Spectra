@@ -32,6 +32,7 @@ dependencies = [
   "pyyaml>=6.0",
   "qtpy>=2.4",
   "pyqt5>=5.15", 
+  "ptufile>=2024.2",
   "tqdm>=4.66",
   "magicgui>=0.8",
   "matplotlib>=3.7",
