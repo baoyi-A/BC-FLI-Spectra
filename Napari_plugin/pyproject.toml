@@ -20,7 +20,7 @@ classifiers = [
 version = "0.1.0"
 # Runtime deps read by pip install . / -e .
 dependencies = [
-  "napari>=0.4.19",
+  "napari[all]>=0.4.19",
   "numpy>=1.23",
   "scipy>=1.12",
   "scikit-image>=0.20",
@@ -31,6 +31,7 @@ dependencies = [
   "psutil>=5.9",
   "pyyaml>=6.0",
   "qtpy>=2.4",
+  "pyqt5>=5.15", 
   "tqdm>=4.66",
   "magicgui>=0.8",
   "matplotlib>=3.7",
