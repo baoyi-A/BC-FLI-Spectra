@@ -33,7 +33,6 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 git clone https://github.com/gaomingqi/Track-Anything.git
 cd Track-Anything
 pip install -r requirements.txt
-python setup.py develop
 
 # 4) Install this plugin (editable mode recommended)
 cd ../BC-FLIM-Spectra
@@ -50,9 +49,11 @@ pip install -e .
 ## Launch in napari
 
 After installation:
-1. Start **napari**.  
-2. Open the menu: **`Plugins → BC‑FLIM‑Spectra`**.  
-3. Choose one of the widgets: **PTU Reader**, **Calculate FLIM‑S**, **KMeans Cluster**, **B&P Tracker**, or **NaCha**.
+1. Start **napari**.
+conda activate nacha
+napari  
+3. Open the menu: **`Plugins → BC‑FLIM‑Spectra`**.  
+4. Choose one of the widgets: **PTU Reader**, **Calculate FLIM‑S**, **KMeans Cluster**, **B&P Tracker**, or **NaCha**.
 
 ---
 
