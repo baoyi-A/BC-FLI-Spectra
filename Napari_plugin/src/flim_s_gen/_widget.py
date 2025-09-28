@@ -44,6 +44,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
+from qtpy.QtWidgets import QMessageBox
+
 def _load_ptu(ptu_path: Union[str, Path], frame: Union[int, str] = -1) -> np.ndarray:
     """
     Load and decode a PTU file. Returns numpy array; may be high-dimensional.
@@ -1608,7 +1610,15 @@ class Trackrevise(Container):
         main_vlayout.addWidget(group4)
         main_vlayout.addLayout(freq_layout)
         # main_vlayout.addLayout(clim_layout)
-
+        self.preview_gb_button = PushButton(text="Preview G/B map (masked)")
+        self.preview_gb_button.native.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #414851;"
+            "  color: white;"
+            "  font-family: Calibri;"
+            "}"
+        )
+        main_vlayout.addWidget(self.preview_gb_button.native)
 
         existing = self.native.layout()
         if existing is None:
@@ -1637,8 +1647,131 @@ class Trackrevise(Container):
         self.classification_resize.changed.connect(self.load_classification)
         self.classification_align_button.clicked.connect(self.align_classification)
         self.ratio_calcu_button.clicked.connect(self.calculate_signal_ratio)
+        self.preview_gb_button.clicked.connect(self.preview_g_over_b_masked)
 
         self.num_masks = 1000
+
+    def _get_active_or_first_labels_layer(self):
+        """Return the active Labels layer, or the first one if none selected."""
+        try:
+            from napari.layers import Labels
+        except Exception:
+            return None
+
+        selected = list(self.viewer.layers.selection)
+        if selected:
+            lyr = selected[0]
+            if getattr(lyr, 'data', None) is not None and lyr.__class__.__name__ == 'Labels':
+                return lyr
+
+        for lyr in self.viewer.layers:
+            if getattr(lyr, 'data', None) is not None and lyr.__class__.__name__ == 'Labels':
+                return lyr
+        return None
+
+    def _get_image_layer_by_name(self, name):
+        """Find an Image layer by exact name."""
+        for lyr in self.viewer.layers:
+            if lyr.name == name and getattr(lyr, 'data', None) is not None and lyr.__class__.__name__ == 'Image':
+                return lyr
+        return None
+
+    def preview_g_over_b_masked(self):
+        """
+        Preview pixel-wise G/B ratio inside tracked masks only.
+        Requires: 'Stack G', 'Stack B', and at least one Labels layer.
+        Adds a new Image layer named 'G/B (masked)' with turbo colormap.
+        """
+        import numpy as np
+        from napari.utils.notifications import show_error, show_info
+
+        # --- 1. Fetch required layers ---
+        g_layer = self._get_image_layer_by_name('Stack G')
+        b_layer = self._get_image_layer_by_name('Stack B')
+        labels_layer = self._get_active_or_first_labels_layer()
+
+        missing = []
+        if g_layer is None:
+            missing.append("Stack G")
+        if b_layer is None:
+            missing.append("Stack B")
+        if labels_layer is None:
+            missing.append("Tracking masks (Labels)")
+        if missing:
+            show_error(
+                f"Missing required layer(s): {', '.join(missing)}.\n"
+                f"Please ensure Stack G, Stack B, and one Labels (tracking) layer are loaded."
+            )
+            return
+
+        G = np.asarray(g_layer.data)
+        B = np.asarray(b_layer.data)
+        M = np.asarray(labels_layer.data)
+
+        # --- 2. Shape validation ---
+        if G.shape != B.shape or G.shape != M.shape:
+            show_error(
+                f"Shape mismatch:\nG:{G.shape}  B:{B.shape}  Masks:{M.shape}\n"
+                f"All layers must have the same dimensions (e.g. T×Y×X or Y×X)."
+            )
+            return
+
+        # --- 3. Compute G/B inside mask only ---
+        Gf = G.astype(np.float32)
+        Bf = B.astype(np.float32)
+        eps = 1e-6
+        ratio = np.full_like(Gf, np.nan, dtype=np.float32)
+
+        inside = M > 0
+        valid = inside & (Bf > 0)
+        ratio[valid] = Gf[valid] / (Bf[valid] + eps)
+
+        # --- 4. Robust contrast limits ---
+        try:
+            vals = ratio[~np.isnan(ratio)]
+            if vals.size >= 16:
+                lo, hi = np.nanpercentile(vals, (2, 98))
+                if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+                    lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+            else:
+                lo, hi = 0.0, 1.0
+        except Exception:
+            lo, hi = 0.0, 1.0
+
+        # --- 5. Remove existing layer with same name ---
+        name = "G/B (masked)"
+        for lyr in list(self.viewer.layers):
+            if lyr.name == name and getattr(lyr, 'data', None) is not None and lyr.__class__.__name__ == 'Image':
+                try:
+                    self.viewer.layers.remove(lyr)
+                except Exception:
+                    pass
+
+        # --- 6. Add new visualization layer ---
+        cmap_candidates = ["turbo", "rainbow", "viridis"]
+        added = False
+        for cm in cmap_candidates:
+            try:
+                self.viewer.add_image(
+                    ratio,
+                    name=name,
+                    blending="additive",
+                    colormap=cm,
+                    contrast_limits=(float(lo), float(hi)),
+                    metadata={"source": "G/B masked", "note": "ratio inside tracked masks only"},
+                )
+                show_info(
+                    f"G/B map created successfully (colormap='{cm}'). "
+                    f"You can adjust contrast and colormap in Napari."
+                )
+                added = True
+                break
+            except Exception:
+                continue
+
+        if not added:
+            show_error("Failed to create G/B map layer. Please check your Napari version or colormap support.")
+
 
     def frequency_domain_analysis(self, signal: np.ndarray, sampling_rate: float = 1.0):
         N = len(signal)
@@ -1722,87 +1855,26 @@ class Trackrevise(Container):
         max_cell_id = np.max(all_masks)
         notifications.show_info(f'Number of Cells: {cell_num} cells')
 
-        # Load alignment info from Excel.
-        # alignment_info = pd.read_excel(self.Bs2Code_save_path)
-        # alignment_info = alignment_info[['Tracking Mask Index', 'Class']]
-        # alignment_info = alignment_info.set_index('Tracking Mask Index')
-
-        # Function to extract intensity per cell for each frame.
-        # def extract_intensity(stack, all_masks, cell_num, mode='sum'):
-        #     intensity_data = []
-        #     for frame_number, frame in tqdm(enumerate(stack), total=len(stack), desc="Extracting intensities"):
-        #         current_masks = all_masks[frame_number]
-        #         for cell_id in range(1, cell_num + 1):
-        #             cell_mask = (current_masks == cell_id)
-        #             if np.sum(cell_mask) == 0:
-        #                 continue
-        #             if mode == 'sum':
-        #                 intensity = np.sum(frame[cell_mask])
-        #             elif mode == 'mean':
-        #                 intensity = np.mean(frame[cell_mask])
-        #             else:
-        #                 continue
-        #             if intensity == 0:
-        #                 notifications.show_warning(f'Frame: {frame_number}, Cell: {cell_id}, intensity = 0!')
-        #             intensity_data.append({
-        #                 "frame": frame_number,
-        #                 "cell_id": cell_id,
-        #                 "intensity": intensity
-        #             })
-        #     return intensity_data
-        # def extract_intensity(stack, all_masks, max_id, mode='sum'):
-        #     records = []
-        #     for t in tqdm(range(stack.shape[0]), desc="GPU Extract"):
-        #         frame_gpu = cp.asarray(stack[t])
-        #         labels_gpu = cp.asarray(all_masks[t])
-        #         # counts and sums 同时算
-        #         counts = cp.bincount(labels_gpu.ravel(), minlength=max_id + 1)
-        #         weighted = cp.bincount(labels_gpu.ravel(), weights=frame_gpu.ravel(), minlength=max_id + 1)
-        #         if mode == 'mean':
-        #             weighted = weighted / counts
-        #         # 拷回 CPU
-        #         weighted = cp.asnumpy(weighted)
-        #         for cid in range(1, max_id + 1):
-        #             val = weighted[cid]
-        #             if val == 0:
-        #                 notifications.show_warning(f'Frame {t}, Cell {cid} intensity = 0')
-        #             records.append({"frame": t, "cell_id": cid, "intensity": float(val)})
-        #     return records
-
         def extract_intensity(stack, all_masks, cell_num, mode='sum'):
-            """
-            stack:      numpy array of shape (T, H, W)
-            all_masks:  numpy array of same shape, integer labels per pixel
-            cell_num:   maximum label ID (cells numbered 1..cell_num)
-            mode:       'sum' or 'mean'
-            """
-            print(f'stack shape: {stack.shape}, all_masks shape: {all_masks.shape}, cell_num: {cell_num}, mode: {mode}')
             intensity_data = []
             cell_ids = list(range(1, cell_num + 1))
+            zero_hits = 0
 
-            for frame_number, frame in tqdm(
-                    enumerate(stack), total=stack.shape[0], desc="Extracting intensities"
-            ):
+            for frame_number, frame in tqdm(enumerate(stack), total=stack.shape[0], desc="Extracting intensities"):
                 labels = all_masks[frame_number]
-
-                # use C-accelerated ndimage routines
                 if mode == 'sum':
                     vals = ndi_sum(frame, labels=labels, index=cell_ids)
-                else:  # 'mean'
+                else:
                     vals = ndi_mean(frame, labels=labels, index=cell_ids)
 
-                # pack results into the same format as before
                 for cid, inten in zip(cell_ids, vals):
                     if inten == 0:
-                        notifications.show_warning(
-                            f'Frame {frame_number}, Cell {cid}, intensity = 0!'
-                        )
-                    intensity_data.append({
-                        "frame": frame_number,
-                        "cell_id": int(cid),
-                        "intensity": float(inten)
-                    })
+                        zero_hits += 1
+                    intensity_data.append({"frame": frame_number, "cell_id": int(cid), "intensity": float(inten)})
 
+            if zero_hits > 0:
+                notifications.show_warning(
+                    f"{zero_hits} zero-intensity events encountered (suppressed per-frame warnings).")
             return intensity_data
 
         # Helper to compute summary statistics per class for a normalized pivot table.
@@ -2041,17 +2113,19 @@ class Trackrevise(Container):
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.show()
 
-    def show_warning_dialog(self, message):
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        # Using askquestion to get a Yes/No/Cancel response.
-        response = messagebox.askquestion("Warning", message + "\n\nDo you want to continue?", icon='warning',
-                                          type='yesnocancel')
-        if response == 'yes':
+    def show_warning_dialog(self, message: str):
+        mbox = QMessageBox(self.viewer.window._qt_window)  # 绑定到 napari 主窗
+        mbox.setIcon(QMessageBox.Warning)
+        mbox.setWindowTitle("Warning")
+        mbox.setText(message + "\n\nDo you want to continue?")
+        yes_btn = mbox.addButton("Continue", QMessageBox.YesRole)
+        add_btn = mbox.addButton("Add", QMessageBox.NoRole)
+        cancel_btn = mbox.addButton("Cancel", QMessageBox.RejectRole)
+        mbox.exec_()
+        clicked = mbox.clickedButton()
+        if clicked is yes_btn:
             return "continue"
-        elif response == 'no':
+        elif clicked is add_btn:
             return "add"
         else:
             return "cancel"
@@ -2364,19 +2438,21 @@ class Trackrevise(Container):
         self.viewer.add_image(tif_stack, name=name)
 
     def save_tracking(self):
-        # Open a dialog for the user to choose the folder to save the masks
         folder = QFileDialog.getExistingDirectory(caption='Select Folder to Save Masks')
+        if folder:
+            tracked = self.viewer.layers['Tracked Masks'].data
+            start, end = self.frame_start.value, self.frame_end.value
+            end = min(end, tracked.shape[0] - 1)
 
-        if folder:  # If a folder was chosen
-            # for i, mask in enumerate(self.masks_layer.data):
-            for i, mask in enumerate(self.viewer.layers['Masks'].data):
-                # Save each mask to a .npy file in the chosen folder with the name 00000.npy, 00001.npy, etc.
-                if self.mask_256_checkbox.value:
-                    np.save(os.path.join(folder, f'{i:05d}.npy'), mask.astype(np.uint16))
-                else:
-                    np.save(os.path.join(folder, f'{i:05d}.npy'), mask.astype(np.uint8))
-            print(f"Tracking saved to {folder}")
-            notifications.show_info(f"Tweaked tracking results saved to {folder}")
+            use_uint16 = bool(self.uint16_mode.value) or (tracked.max() > 255)
+            save_dtype = np.uint16 if use_uint16 else np.uint8
+
+            for i in range(start, end + 1):
+                np.save(os.path.join(folder, f'{i:05d}.npy'),
+                        tracked[i].astype(save_dtype))
+            msg = f"Tracking results saved to {folder} (dtype={save_dtype})."
+            show_info(msg);
+            notifications.show_info(msg)
 
     def shift_stack(self):
         shift_r = self.shift_r_param.value
@@ -2775,25 +2851,184 @@ def preprocess_rgb(img_stack, log_alpha, colormap, start_frame, end_frame, desc=
     return start_frame, rgb
 
 
-# reuse _process_ta_batch but now expects rgb_stack offset index
+def _chunk_batches(batches, max_size=240):
+    """将大于 max_size 的 batch 切成更小块，避免一次对象数 >255。"""
+    out = []
+    for b in batches:
+        if len(b) <= max_size:
+            out.append(b)
+        else:
+            for i in range(0, len(b), max_size):
+                out.append(b[i:i+max_size])
+    return out
+
+def _remap_template_to_local_ids(tmpl: np.ndarray, batch_labels: list[int]):
+    """
+    把裁剪区域内的模板标签，从全局ID映射到局部 1..K（uint8），
+    返回 (local_tmpl_uint8, lut) 其中 lut[v_local] = v_global。
+    """
+    lut = np.zeros(256, dtype=np.int64)  # 仅局部使用；若K<=255足够
+    local_tmpl = np.zeros_like(tmpl, dtype=np.uint8)
+    for i, gid in enumerate(batch_labels, start=1):
+        if i >= 256:
+            raise ValueError("Single batch has >=256 objects after chunking, lower max_size.")
+        local_tmpl[tmpl == gid] = i
+        lut[i] = gid
+    return local_tmpl, lut
+
 
 # track_with_cutie removed; only TrackAnything backend remains
 
 def _process_ta_batch(rgb_subset, initial_masks, batch, padding):
-    bm = np.zeros_like(initial_masks, np.uint8)
+    # === 1) 外接框（按二值 OR，避免ID溢出） ===
+    bin_map = np.zeros(initial_masks.shape, dtype=np.uint8)
     for oid in batch:
-        bm += (initial_masks == oid).astype(np.uint8) * oid
-    x, y, w, h = cv2.boundingRect(bm)
+        bin_map |= (initial_masks == oid).astype(np.uint8)
+
+    x, y, w, h = cv2.boundingRect(bin_map)
+    if w == 0 or h == 0:
+        print(f"[WARN] Empty bbox for batch {batch}. Skip.")
+        return np.zeros((len(rgb_subset), 0, 0), dtype=np.uint16), 0, 0, 0, 0
+
     y1 = max(y - padding, 0)
     x1 = max(x - padding, 0)
     y2 = min(y + h + padding, initial_masks.shape[0])
     x2 = min(x + w + padding, initial_masks.shape[1])
+
     cropped = [f[y1:y2, x1:x2] for f in rgb_subset]
-    tmpl    = bm[y1:y2, x1:x2]
-    masks = model.generator(cropped, tmpl)
+
+    # === 2) 裁剪模板（全局ID），并重映射到 1..K（uint8）喂模型 ===
+    tmpl_global = np.zeros((y2 - y1, x2 - x1), dtype=np.uint16)
+    for oid in batch:
+        sel = (initial_masks[y1:y2, x1:x2] == oid)
+        if sel.any():
+            tmpl_global[sel] = oid
+
+    if tmpl_global.max() == 0:
+        print(f"[WARN] No positive pixels in template for batch {batch}.")
+        return np.zeros((len(rgb_subset), y2 - y1, x2 - x1), dtype=np.uint16), y1, y2, x1, x2
+
+    local_ids = {gid: i for i, gid in enumerate(batch, start=1)}
+    local_tmpl = np.zeros_like(tmpl_global, dtype=np.uint8)
+    for gid, lid in local_ids.items():
+        local_tmpl[tmpl_global == gid] = lid
+
+    # === 3) 送入模型 ===
+    pred = model.generator(cropped, local_tmpl.astype(np.uint8))
     model.xmem.clear_memory()
-    print(f"Processed batch {batch}")
-    return masks, y1, y2, x1, x2
+
+    # === 4) 规范化返回形态，得到 masks_local in {0..K} ===
+    masks_local = None  # 最终应为 [T, Hc, Wc] 的整数标签
+
+    def _to_uint8(arr):
+        x = np.asarray(arr)
+        if x.dtype == bool:
+            x = x.astype(np.uint8)
+        elif x.dtype == np.uint16 or x.dtype == np.int32:
+            # 保留标签；若是 0/255 二值，也先不缩放
+            pass
+        return x
+
+    pred_np = _to_uint8(pred)
+
+    if isinstance(pred, list):
+        # 可能是：list 长度 T，每个 [Hc,Wc]；或 list 长度 K，每个 [T,Hc,Wc]
+        # 情况 A：list 长度 == T 且每项是 2D
+        if len(pred) == len(cropped) and np.ndim(pred[0]) == 2:
+            # 假设每帧是一张“多对象标签图”或二值图
+            arr = np.stack([_to_uint8(p) for p in pred], axis=0)
+            if arr.max() <= 1:  # 二值 => 无法区分对象，按“模板腐蚀分解”做个软合并
+                # 用每个 lid 的模板做掩膜与预测相交，优先级按 lid 顺序
+                masks_local = np.zeros_like(arr, dtype=np.uint8)
+                for lid in range(1, len(batch)+1):
+                    # 这里简单地把所有前景像素分配给当前 lid（可换成连通域/最近模板像素）
+                    to_assign = (arr > 0) & (masks_local == 0)
+                    masks_local[to_assign] = lid
+            else:
+                # 已经是 0..K 的标签
+                masks_local = arr.astype(np.uint8)
+
+        # 情况 B：list 长度 == K，每项是 [T,Hc,Wc] 的二值
+        elif len(pred) == len(batch) and np.ndim(pred[0]) == 3:
+            K = len(batch)
+            T = pred[0].shape[0]
+            Hc, Wc = pred[0].shape[1:]
+            arr = np.stack([_to_uint8(p) for p in pred], axis=1)  # [T,K,Hc,Wc]
+            # 取 argmax 通道作为 lid（背景为0）
+            masks_local = np.zeros((T, Hc, Wc), dtype=np.uint8)
+            # 先把二值化为 {0,1}
+            arr01 = (arr > 0).astype(np.uint8)
+            has_fg = arr01.any(axis=1)
+            if has_fg.any():
+                # 给前景像素按 lid 的先后顺序分配（或用 argmax）
+                # 这里用 argmax，若多通道同为1，取通道索引最大的 lid
+                lids = np.argmax(arr01, axis=1) + 1  # [T,Hc,Wc] in 1..K
+                masks_local[has_fg] = lids[has_fg]
+            # 背景保持 0
+
+        else:
+            raise ValueError(f"Unsupported list return shape for batch {batch}.")
+    else:
+        # 非 list：array-like
+        if pred_np.ndim == 3:
+            T, Hc, Wc = pred_np.shape
+            if pred_np.max() <= 1:
+                # 二值 [T,Hc,Wc]：无法区分对象 => 用模板引导分配
+                masks_local = np.zeros_like(pred_np, dtype=np.uint8)
+                fg = pred_np > 0
+                # 简单策略：把所有前景分配给 lid=1（或根据模板最近标签分配——可替换为距离变换）
+                # 为了更合理，这里按“最近模板标签”分配
+                from scipy.ndimage import distance_transform_edt
+                # 预先为每个 lid 生成模板二值
+                tmpl_lid_bin = [(local_tmpl == lid).astype(np.uint8) for lid in range(1, len(batch)+1)]
+                # 为每个 lid 计算距离图
+                dists = np.stack([distance_transform_edt(1 - b) for b in tmpl_lid_bin], axis=0)  # [K,Hc,Wc]
+                # 对每个前景像素选距离最近的 lid
+                lids = np.argmin(dists, axis=0) + 1
+                for t in range(T):
+                    masks_local[t][fg[t]] = lids[fg[t]]
+            else:
+                # 已经是标签图
+                masks_local = pred_np.astype(np.uint8)
+
+        elif pred_np.ndim == 4:
+            # 可能是 [T,K,Hc,Wc] 或 [K,T,Hc,Wc]
+            if pred_np.shape[1] == len(batch):
+                arr = (pred_np > 0).astype(np.uint8)  # [T,K,Hc,Wc]
+                lids = np.argmax(arr, axis=1) + 1
+                masks_local = lids.astype(np.uint8)
+            elif pred_np.shape[0] == len(batch):
+                arr = (pred_np > 0).astype(np.uint8).transpose(1,0,2,3)  # [T,K,Hc,Wc]
+                lids = np.argmax(arr, axis=1) + 1
+                masks_local = lids.astype(np.uint8)
+            else:
+                raise ValueError(f"Unsupported array shape {pred_np.shape} for batch {batch}.")
+        else:
+            raise ValueError(f"Unsupported pred ndim={pred_np.ndim} for batch {batch}.")
+
+    # 防御：如仍全 0，立即提示
+    if masks_local is None or masks_local.max() == 0:
+        print(f"[WARN] masks_local empty for batch {batch}. "
+              f"pred shape={np.shape(pred)} dtype={getattr(pred, 'dtype', type(pred))}")
+        return np.zeros((len(rgb_subset), y2 - y1, x2 - x1), dtype=np.uint16), y1, y2, x1, x2
+
+    # === 5) 局部ID → 全局ID ===
+    masks_global = np.zeros_like(masks_local, dtype=np.uint16)
+    # 建立 LUT：lid -> gid
+    lut = np.zeros(len(batch) + 1, dtype=np.uint32)
+    for gid, lid in local_ids.items():
+        lut[lid] = gid
+    # 映射
+    for lid in range(1, len(batch) + 1):
+        gid = int(lut[lid])
+        if gid == 0:
+            continue
+        masks_global[masks_local == lid] = gid
+
+    print(f"Processed batch {batch} | local unique={np.unique(masks_local)[:10]} ...")
+    return masks_global, y1, y2, x1, x2
+
+
 
 
 def _init_worker(sam_ckpt, xmem_ckpt, e2fgvi_ckpt, args_dict):
@@ -2825,6 +3060,7 @@ def track_with_tasimple(img_stack: np.ndarray,
     offset, rgb_subset = preprocess_rgb(img_stack, log_alpha, colormap, start_frame, end_frame)
     mask_contours = {i: find_contours(initial_masks == i) for i in np.unique(initial_masks) if i != 0}
     batches = find_nearest_masks(initial_masks, mask_contours, cell_dist)
+    batches = _chunk_batches(batches, max_size=240)
 
     args = parse_augment()
     args.mask_save = True
@@ -2858,7 +3094,7 @@ def track_with_tasimple(img_stack: np.ndarray,
 
     out = np.zeros((end_frame - start_frame + 1, ) + initial_masks.shape, dtype=np.uint16)
     for masks, y1, y2, x1, x2 in results:
-        out[:, y1:y2, x1:x2] = np.maximum(out[:, y1:y2, x1:x2], masks)
+        out[:, y1:y2, x1:x2] = np.maximum(out[:, y1:y2, x1:x2], masks.astype(np.uint16))
 
     full_out[start_frame:end_frame+1, :, :] = out
     return full_out
@@ -2979,6 +3215,7 @@ class BPTracker(Container):
         self.track_btn.changed.connect(self._on_track)
         self.save_btn = PushButton(text='Save Tracking')
         self.save_btn.changed.connect(self.save_tracking)
+        self.uint16_mode = CheckBox(label='>255 masks', value=False)
         for w in [self.tiff_path, self.mask_path,
                 self.stack_layer, self.mask_layer,
                   self.frame_start, self.frame_end,
@@ -2987,6 +3224,7 @@ class BPTracker(Container):
                   self.preview_btn, self.visualize_btn,
                   self.backend,
                   self.cell_dist, self.padding, self.num_proc,
+                self.uint16_mode,
                   self.track_btn, self.save_btn]:
             self.append(w)
         # viewer.window.add_dock_widget(self, area='right', name='Multi-Model Tracker')
@@ -3083,8 +3321,10 @@ class BPTracker(Container):
         self.notify(f"Found {len(batches)} batches with cell distance {dist}.")
         shapes = []
         for batch in batches:
-            bm = sum((masks==m).astype(np.uint8) for m in batch)
-            x,y,w,h = cv2.boundingRect(bm)
+            bm = np.zeros_like(masks, dtype=np.uint8)
+            for m in batch:
+                bm |= (masks == m).astype(np.uint8)
+            x, y, w, h = cv2.boundingRect(bm)
             shapes.append([[y-pad, x-pad], [y+h+pad, x+w+pad]])
         self.viewer.add_shapes(shapes, shape_type='rectangle', name='Batch Boxes')
 
@@ -3150,7 +3390,10 @@ class BPTracker(Container):
         time_start = time.time()
         result = track_with_tasimple(stack, masks, **params)
         time_end = time.time()
-        self.viewer.add_labels(result.astype(np.uint8), name='Tracked Masks')
+        # self.viewer.add_labels(result.astype(np.uint8), name='Tracked Masks')
+        use_uint16 = bool(self.uint16_mode.value) or (self._mask.max() > 255)
+        result_dtype = np.uint16 if use_uint16 else np.uint8
+        self.viewer.add_labels(result.astype(result_dtype), name='Tracked Masks')
         # show_info('Tracking completed.')
         # notifications.show_info('Tracking completed. You can now save the tracking results or visualize them further.')
         notifications.show_info(f'Tracking completed in {time_end - time_start:.2f} seconds. '
