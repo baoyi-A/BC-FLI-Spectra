@@ -166,47 +166,49 @@ class PTUReader(Container):
 def exp_func(x, a, tau, c):
     return a * np.exp(-x / tau ) + c
 
-def calcu_phasor_info(roi_decay_data,  peak_idx, tau_resolution=0.1, pulse_freq=80, harmonics=1, PEAK_OFFSET=0, END_OFFSET=0):
-    # That's the wierd peak for Leica FALCON, not tunable parameter!
-    peak2_begin = 77
-    peak2_end = 84
-
-    # Create a mask to select desired part of decay curve
+def calcu_phasor_info(
+    roi_decay_data,
+    peak_idx,
+    tau_resolution=0.1,
+    pulse_freq=80,
+    harmonics=1,
+    PEAK_OFFSET=0,
+    END_OFFSET=0
+):
     mask_start = peak_idx + PEAK_OFFSET
     mask_end = len(roi_decay_data) - END_OFFSET
+    mask_start = max(0, mask_start)
+    mask_end = max(mask_start + 1, mask_end)
 
     decay_segment_mask = np.zeros_like(roi_decay_data, dtype=bool)
     decay_segment_mask[mask_start:mask_end] = True
 
-    # Use the mask to get the segment of the decay curve
     roi_decay_data_segment = roi_decay_data[decay_segment_mask]
-    # Normalize the decay segment with the peak value
-    roi_decay_data_normalized = roi_decay_data_segment / np.max(roi_decay_data_segment)
+    peak_val = np.max(roi_decay_data_segment) if roi_decay_data_segment.size else 0.0
+    if peak_val <= 0:
+        return np.nan, np.nan, np.nan, np.nan, np.nan
 
-    # Fit the decay curve to an exponential function
+    roi_decay_data_normalized = roi_decay_data_segment / peak_val
+
     t_arr = np.arange(len(roi_decay_data_normalized)) * tau_resolution
 
-    roi_decay_data_normalized = np.delete(roi_decay_data_normalized,
-                                          np.arange(peak2_begin - mask_start, peak2_end - mask_start))
-    t_arr = np.delete(t_arr, np.arange(peak2_begin - mask_start, peak2_end - mask_start))
-
-    # fastflim calculation
-    fastflim = np.sum(roi_decay_data_normalized * t_arr) / np.sum(roi_decay_data_normalized)
+    denom = np.sum(roi_decay_data_normalized)
+    if denom <= 0:
+        return np.nan, np.nan, np.nan, np.nan, np.nan
+    fastflim = np.sum(roi_decay_data_normalized * t_arr) / denom
 
     params_init = [1, 2, 0]
     popt, pcov = curve_fit(exp_func, t_arr, roi_decay_data_normalized, p0=params_init)
-    # get the lifetime and
     lifetime = popt[1]
     chi_square = np.sum((roi_decay_data_normalized - exp_func(t_arr, *popt)) ** 2)
-    pulse_freq = pulse_freq / 1000 # MHz to GHz
-    # Computing g and s coordinates freq: 80MHz, tau_res: 10^9 times, so 1/1000
-    phasor_g = np.sum(roi_decay_data_normalized * np.cos(2 * np.pi * pulse_freq * harmonics * t_arr)) / np.sum(
-        roi_decay_data_normalized)
-    phasor_s = np.sum(roi_decay_data_normalized * np.sin(2 * np.pi * pulse_freq * harmonics * t_arr)) / np.sum(
-        roi_decay_data_normalized)
+
+    pf = pulse_freq / 1000.0
+    phasor_g = np.sum(roi_decay_data_normalized * np.cos(2 * np.pi * pf * harmonics * t_arr)) / denom
+    phasor_s = np.sum(roi_decay_data_normalized * np.sin(2 * np.pi * pf * harmonics * t_arr)) / denom
 
     print(f'g: {phasor_g}, s: {phasor_s}')
     return phasor_g, phasor_s, lifetime, chi_square, fastflim
+
 
 # Parameter input: mask intensity threshold, pixel intensity threshold, peak offset, end offset, tau resolution, pulse frequency, harmonics, pixel_wise
 
