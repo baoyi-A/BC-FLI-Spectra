@@ -32,6 +32,37 @@ For details, see [LUMINA classification/README](LUMINA%20classification/README.m
 
 ---
 
+## Environment
+- Python >= 3.8 (tested on Python 3.10)
+- Operating system:
+  - Tested on: Windows 11
+  - Expected to work on: Windows 10/11, Linux (Ubuntu 20.04)
+- GPU: optional (CUDA-enabled GPU recommended for acceleration)
+
+**Typical installation time:** ~20–60 minutes depending on whether PyTorch/CUDA wheels
+need to be downloaded and the network speed.
+
+---
+
+## Expected runtime (representative)
+
+### Napari Plugin (interactive)
+- Typical processing time per dataset: ~10–15 minutes
+- Tracking step: ~5 minutes (included above)
+- Runtime depends on dataset size, number of cells, and hardware.
+
+### LUMINA
+- Inference on a single sample/image: ~1 second
+- Including preprocessing (e.g., segmentation / data extraction): typically 3 minutes
+- Model training (if performed) can take longer and depends on dataset size and GPU.
+
+---
+
+## License
+MIT License (recommended for review and reuse).
+
+---
+
 ## Notes
 
 - These tools are under active development.  
