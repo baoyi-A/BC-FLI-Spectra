@@ -1,40 +1,40 @@
-# SLIC (Spectral-Lifetime Indexing of Cells) Tools
+# 🔬 SLIC (Spectral-Lifetime Indexing of Cells) Tools
 
 This repository contains two independent tools for barcode analysis in FLIM experiments:
 
-## 1. Napari Plugin — Single‑Anchor Barcode Analysis
+## 1. 🧩 Napari Plugin — Single‑Anchor Barcode Analysis
 
 A napari plugin named **BC‑FLIM‑Spectra (NaCha)** that provides a full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion through segmentation, classification, tracking to alignment and visualization.
 
 It exposes **seven widgets** under `Plugins → BC‑FLIM‑Spectra`:
 
-- **PTU Reader** — import and decode FLIM `.ptu` files.  
-- **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.  
-- **Calculate FLIM‑S** — lifetime / phasor computation.  
-- **KMeans Cluster** — interactive clustering for single‑anchor barcodes (seeded K‑Means + other methods, outlier flagging, load / save class distribution overlays).  
-- **Biosensor Seg (Cellpose)** — dual‑input segmentation on the confocal biosensor stack using the barcode classification mask as an auxiliary channel.  
-- **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).  
-- **NaCha** — final alignment and per‑class signal readout / visualization.
+- 📥 **PTU Reader** — import and decode FLIM `.ptu` files.
+- 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.
+- 🌀 **Calculate FLIM‑S** — lifetime / phasor computation.
+- 🧩 **KMeans Cluster** — interactive clustering for single‑anchor barcodes (seeded K‑Means + other methods, outlier flagging, load / save class distribution overlays).
+- 🟡 **Biosensor Seg (Cellpose)** — dual‑input segmentation on the confocal biosensor stack using the barcode classification mask as an auxiliary channel.
+- 🎬 **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).
+- 📈 **NaCha** — final alignment and per‑class signal readout / visualization.
 
 For details, see [Napari plugin/README](Napari%20plugin/README.md).
 
 ---
 
-## 2. LUMINA — Dual‑Anchor Barcode Classification Network
+## 2. 🧠 LUMINA — Dual‑Anchor Barcode Classification Network
 
-**LUMINA** is a PyTorch‑based deep learning framework for **dual‑anchor barcodes classification**.  
+**LUMINA** is a PyTorch‑based deep learning framework for **dual‑anchor barcodes classification**.
 It provides scripts for preprocessing, training, inference, and visualization:
 
-- `Data_Prep.py` — preprocess raw data.  
-- `Train_LUMINA.py` — train the LUMINA model.  
-- `Test_LUMINA.py` — inference on new data.  
-- `Visualize_heatmap.py` — visualize results.
+- 🧹 `Data_Prep.py` — preprocess raw data.
+- 🏋️ `Train_LUMINA.py` — train the LUMINA model.
+- 🔍 `Test_LUMINA.py` — inference on new data.
+- 🔥 `Visualize_heatmap.py` — visualize results.
 
 For details, see [LUMINA classification/README](LUMINA%20classification/README.md).
 
 ---
 
-## Environment
+## 🖥 Environment
 - Python >= 3.8 (tested on Python 3.10)
 - Operating system:
   - Tested on: Windows 11
@@ -46,26 +46,26 @@ need to be downloaded and the network speed.
 
 ---
 
-## Expected runtime (representative)
+## ⏱ Expected runtime (representative)
 
-### Napari Plugin (interactive)
+### 🧩 Napari Plugin (interactive)
 - Typical processing time per dataset: ~10–15 minutes
 - Tracking step: ~5 minutes (included above)
 - Runtime depends on dataset size, number of cells, and hardware.
 
-### LUMINA
+### 🧠 LUMINA
 - Inference on a single sample/image: ~1 second
 - Including preprocessing (e.g., segmentation / data extraction): typically 3 minutes
 - Model training (if performed) can take longer and depends on dataset size and GPU.
 
 ---
 
-## License
+## 📜 License
 MIT License (recommended for review and reuse).
 
 ---
 
-## Notes
+## 📝 Notes
 
 - These tools are under active development.  
 - The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available.  
