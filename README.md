@@ -4,15 +4,17 @@ This repository contains two independent tools for barcode analysis in FLIM expe
 
 ## 1. Napari Plugin — Single‑Anchor Barcode Analysis
 
-A napari plugin named **BC‑FLIM‑Spectra (NaCha)** that provides a full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion to alignment and visualization.
+A napari plugin named **BC‑FLIM‑Spectra (NaCha)** that provides a full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion through segmentation, classification, tracking to alignment and visualization.
 
-It exposes **five widgets** under `Plugins → BC‑FLIM‑Spectra`:
+It exposes **seven widgets** under `Plugins → BC‑FLIM‑Spectra`:
 
 - **PTU Reader** — import and decode FLIM `.ptu` files.  
-- **Calculate FLIM‑S** — lifetime/phasor computation.  
-- **KMeans Cluster** — interactive clustering for single‑anchor barcodes.  
-- **B&P Tracker** — barcode/object tracking widget.  
-- **NaCha** — final alignment and visualization output.
+- **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.  
+- **Calculate FLIM‑S** — lifetime / phasor computation.  
+- **KMeans Cluster** — interactive clustering for single‑anchor barcodes (seeded K‑Means + other methods, outlier flagging, load / save class distribution overlays).  
+- **Biosensor Seg (Cellpose)** — dual‑input segmentation on the confocal biosensor stack using the barcode classification mask as an auxiliary channel.  
+- **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).  
+- **NaCha** — final alignment and per‑class signal readout / visualization.
 
 For details, see [Napari plugin/README](Napari%20plugin/README.md).
 

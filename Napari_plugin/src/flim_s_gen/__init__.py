@@ -7,9 +7,11 @@ from ._reader import napari_get_reader
 from ._sample_data import make_sample_data
 from ._widget import (
     PTUReader,
+    BarcodeSeg,
     Calculate_FLIM_S,
     # UMAP_Class,
     KMeansCluster,
+    BiosensorSeg,
     Trackrevise,
     # MultiModelTracker,
     BPTracker,

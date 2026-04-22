@@ -22,13 +22,23 @@ contributions:
     - id: bc-flim-spectra.container_widget_6
       python_name: flim_s_gen:PTUReader
       title: PTU Reader
+    - id: bc-flim-spectra.container_widget_7
+      python_name: flim_s_gen:BarcodeSeg
+      title: Barcode Seg (Cellpose)
+    - id: bc-flim-spectra.container_widget_8
+      python_name: flim_s_gen:BiosensorSeg
+      title: Biosensor Seg (Cellpose)
   widgets:
     - command: bc-flim-spectra.container_widget_6
       display_name: PTU Reader
+    - command: bc-flim-spectra.container_widget_7
+      display_name: Barcode Seg (Cellpose)
     - command: bc-flim-spectra.container_widget_2
       display_name: Calculate FLIM-S
     - command: bc-flim-spectra.container_widget_5
       display_name: KMeans Cluster
+    - command: bc-flim-spectra.container_widget_8
+      display_name: Biosensor Seg (Cellpose)
     - command: bc-flim-spectra.container_widget_3
       display_name: B&P Tracker
     - command: bc-flim-spectra.container_widget_4

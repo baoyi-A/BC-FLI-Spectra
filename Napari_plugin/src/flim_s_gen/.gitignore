@@ -5,6 +5,7 @@ docs/
 *.mp4
 debug_images/
 *.png
+!resources/*.png
 *.jpg
 *.npy
 images/
