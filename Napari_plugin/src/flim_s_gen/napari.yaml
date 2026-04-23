@@ -11,8 +11,8 @@ contributions:
       python_name: flim_s_gen:Calculate_FLIM_S
       title: Make my own container widget2
     - id: bc-flim-spectra.container_widget_5
-      python_name: flim_s_gen:KMeansCluster
-      title: Make my own container widget5
+      python_name: flim_s_gen:SeededKMeans
+      title: Seeded K-Means
     - id: bc-flim-spectra.container_widget_4
       python_name: flim_s_gen:Trackrevise
       title: Make my own container widget4
@@ -36,7 +36,7 @@ contributions:
     - command: bc-flim-spectra.container_widget_2
       display_name: Calculate FLIM-S
     - command: bc-flim-spectra.container_widget_5
-      display_name: KMeans Cluster
+      display_name: Seeded K-Means
     - command: bc-flim-spectra.container_widget_8
       display_name: Biosensor Seg (Cellpose)
     - command: bc-flim-spectra.container_widget_3

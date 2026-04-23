@@ -10,7 +10,8 @@ from ._widget import (
     BarcodeSeg,
     Calculate_FLIM_S,
     # UMAP_Class,
-    KMeansCluster,
+    SeededKMeans,
+    KMeansCluster,  # backward-compat alias for SeededKMeans
     BiosensorSeg,
     Trackrevise,
     # MultiModelTracker,

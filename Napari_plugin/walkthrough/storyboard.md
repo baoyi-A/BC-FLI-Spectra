@@ -93,7 +93,7 @@ with the `raw/` subfolder expanded.
 1. PTU Reader
 2. Barcode Seg (Cellpose)
 3. Calculate FLIM-S
-4. KMeans Cluster
+4. Seeded K-Means
 5. Biosensor Seg (Cellpose)
 6. B&P Tracker
 7. NaCha
@@ -191,7 +191,7 @@ Barcode Seg opens.
 
 ---
 
-## Slide 8 — [TRANSITION] Step 4/7 · KMeans Cluster
+## Slide 8 — [TRANSITION] Step 4/7 · Seeded K-Means
 
 **Card text:**
 
@@ -336,7 +336,7 @@ that reports the total elapsed time from the moment PTU Reader was opened.
 **Video card suggestion (right after the dialog):**
 
 - Headline: **🎉 Walkthrough complete**
-- Sub: *PTU Reader → Barcode Seg → Calculate FLIM-S → KMeans Cluster →
+- Sub: *PTU Reader → Barcode Seg → Calculate FLIM-S → Seeded K-Means →
   Biosensor Seg → B&P Tracker → NaCha*
 - Small line: *Outputs are in your sample folder; `clustered.xlsx` +
   `signal_analysis.xlsx` are the key deliverables.*

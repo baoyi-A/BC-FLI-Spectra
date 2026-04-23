@@ -11,7 +11,7 @@ It exposes **seven widgets** under `Plugins → BC‑FLIM‑Spectra`:
 - 📥 **PTU Reader** — import and decode FLIM `.ptu` files.
 - 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.
 - 🌀 **Calculate FLIM‑S** — lifetime / phasor computation.
-- 🧩 **KMeans Cluster** — interactive clustering for single‑anchor barcodes (seeded K‑Means + other methods, outlier flagging, load / save class distribution overlays).
+- 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture, Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
 - 🟡 **Biosensor Seg (Cellpose)** — dual‑input segmentation on the confocal biosensor stack using the barcode classification mask as an auxiliary channel.
 - 🎬 **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).
 - 📈 **NaCha** — final alignment and per‑class signal readout / visualization.

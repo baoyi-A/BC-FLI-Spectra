@@ -129,7 +129,7 @@ _WIDGET_ORDER = [
     ('PTUReader',        'PTU Reader'),
     ('BarcodeSeg',       'Barcode Seg (Cellpose)'),
     ('Calculate_FLIM_S', 'Calculate FLIM-S'),
-    ('KMeansCluster',    'KMeans Cluster'),
+    ('SeededKMeans',     'Seeded K-Means'),
     ('BiosensorSeg',     'Biosensor Seg (Cellpose)'),
     ('BPTracker',        'B&P Tracker'),
     ('Trackrevise',      'NaCha'),
@@ -1992,7 +1992,16 @@ def _load_cellpose_masks(seg_path: str) -> np.ndarray | None:
     return None
 
 
-class KMeansCluster(Container):
+class SeededKMeans(Container):
+    """Seeded K-Means barcode classifier widget.
+
+    Implements the Seeded-KMeans algorithm of Basu, Banerjee & Mooney (ICML
+    2002): user-provided class prototypes initialise the centroids, then the
+    standard K-Means EM loop refines them to absorb within-class biological
+    variability. This is a **classifier**, not an unsupervised clusterer —
+    the decision rule reduces to Rocchio / Nearest Centroid when iterations
+    converge immediately. See README for citations.
+    """
     def __init__(self, viewer: napari.viewer.Viewer):
         super().__init__(layout='vertical')
         # reduce spacing between rows in the main container
@@ -2606,7 +2615,7 @@ class KMeansCluster(Container):
             print(f'[refresh dist path] {e}')
 
         summary = (
-            f'[KMeansCluster] Seeds files found: {len(seed_choices)} in {search_dirs} -> '
+            f'[SeededKMeans] Seeds files found: {len(seed_choices)} in {search_dirs} -> '
             f'{seed_choices}. Distribution files: {len(dist_choices)} -> {dist_choices}.'
         )
         print(summary, flush=True)
@@ -8360,3 +8369,11 @@ class BiosensorSeg(Container):
         dat = np.asarray(layer.data)
         dat[dat == v] = 0
         layer.data = dat
+
+
+# Backward-compat alias: the widget used to be named ``KMeansCluster``; we
+# renamed it to ``SeededKMeans`` once it became clear the implementation is
+# a Seeded-KMeans classifier (Basu et al. 2002), not unsupervised clustering.
+# Keep the old name exported so external code (saved napari layouts,
+# older napari.yaml caches) still resolves.
+KMeansCluster = SeededKMeans

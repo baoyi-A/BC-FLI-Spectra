@@ -14,9 +14,11 @@ It exposes **seven widgets** under the napari menu
    editing and **online single‑ or multi‑folder fine‑tuning**.
 3. 🌀 **Calculate FLIM‑S** — lifetime / phasor computation and related FLIM
    analysis utilities.
-4. 🧩 **KMeans Cluster** — interactive clustering for **single‑anchor barcodes**
-   with multiple methods (seeded K‑Means, K‑Means++, MiniBatch, Gaussian
-   Mixture, Spectral), **per‑class outlier flagging**, and save / load of
+4. 🧩 **Seeded K-Means** — semi-supervised barcode classifier following
+   **Basu, Banerjee & Mooney (ICML 2002)**: user‑placed seeds initialise
+   the class centroids, then the K‑Means EM loop refines them. Also
+   supports K‑Means++, MiniBatchKMeans, Gaussian Mixture, Spectral as
+   alternative methods; per‑class outlier flagging; and save / load of
    class distribution overlays as prior knowledge for manual seeding.
 5. 🟡 **Biosensor Seg (Cellpose)** — dual‑input Cellpose segmentation on the
    confocal biosensor stack that takes the barcode classification mask as
@@ -54,10 +56,14 @@ viewer layers on transition, keeping the session clean.
   plugin model root, and the `~/.cellpose` cache, **and re‑scanned when
   the sample folder changes**. Ordering places target‑matching names
   first, then sorts by modification time.
-- 🎯 **KMeans Cluster upgrades**: multiple clustering methods, per‑class
-  outlier flagging (Isolation Forest), save / load of **class
-  distribution overlays** (convex hulls) with user‑adjustable expansion
-  factor — serving as prior knowledge for manual seeding.
+- 🎯 **Seeded K-Means classifier** (renamed from "KMeans Cluster" for
+  clarity): explicitly the semi-supervised **Seeded-KMeans** algorithm of
+  Basu et al. 2002 — seeds initialise the class centroids, then the
+  K-Means EM loop refines them. Added alternative methods (K-Means++,
+  MiniBatchKMeans, Gaussian Mixture, Spectral), per-class outlier
+  flagging (Isolation Forest), and save / load of **class distribution
+  overlays** (convex hulls) with a user-adjustable expansion factor that
+  serve as prior knowledge for manual seeding.
 - 🎉 **NaCha finalise**: auto‑broadcasts single‑frame masks to the full
   biosensor stack length, Shift‑click per‑cell signal inspection in
   Revise Mode, and a celebration dialog on final Calculate that reports
@@ -131,9 +137,9 @@ next stage in the canonical workflow order.
    N / P model from the edits (single‑image or multi‑folder).
 3. 🌀 **Calculate FLIM‑S** — compute lifetime / phasor features; write
    `FLIM‑S.xlsx` with per‑cell features.
-4. 🧩 **KMeans Cluster** — place seeds on each barcode class (optionally
-   load a prior distribution overlay), pick a clustering method, flag
-   outliers, and export the per‑cell class labels.
+4. 🧩 **Seeded K-Means** — place seeds on each barcode class (optionally
+   load a prior distribution overlay), pick a method, flag outliers, and
+   export per‑cell class labels.
 5. 🟡 **Biosensor Seg (Cellpose)** — generate / pick the seg image, load
    and align the barcode classification layer as auxiliary channel,
    run the dual‑input Cellpose model, edit masks against the barcode
