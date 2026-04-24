@@ -895,11 +895,57 @@ def _add_cellpose_header(container, title='Cellpose Segmentation', logo_size=40)
             pass
 
 
+# Per-widget "before you click Next" checklist. Surfaced on the Next
+# button's tooltip so users know (a) where they're going and (b) whether
+# they're ready to advance.
+_NEXT_STEP_CHECKLIST = {
+    'PTUReader': (
+        "Before clicking Next, make sure every .ptu was decoded into "
+        "intensity/*_sum.tif + flim_stack/*_ch*.tif, and the FastFLIM "
+        "RGB overlay looks reasonable."
+    ),
+    'BarcodeSeg': (
+        "Before clicking Next, make sure the N and P masks cover the "
+        "cells you want and *_seg_n.npy / *_seg_p.npy are saved "
+        "(Auto-Segment saves them; click Save masks after manual edits)."
+    ),
+    'Calculate_FLIM_S': (
+        "Before clicking Next, make sure Process finished and FLIM-S.xlsx "
+        "was written to the Base folder."
+    ),
+    'SeededKMeans': (
+        "Before clicking Next, make sure seeds are placed on every class, "
+        "Run K-Means produced a sensible clustering, and you clicked "
+        "Save Results (writes clustered.xlsx)."
+    ),
+    'BiosensorSeg': (
+        "Before clicking Next, make sure seg_image.tif + seg_image_seg.npy "
+        "are saved, and the mask looks right when overlaid on the "
+        "barcode classification layer."
+    ),
+    'BPTracker': (
+        "Before clicking Next, save per-frame tracking masks if you ran "
+        "tracking. SKIP this step (just click Next) if your sample has a "
+        "static mask — NaCha will reuse the single seg."
+    ),
+}
+_NEXT_STEP_NAME_SUFFIX = {
+    'PTUReader':        'Barcode Seg',
+    'BarcodeSeg':       'Calculate FLIM-S',
+    'Calculate_FLIM_S': 'Seeded K-Means',
+    'SeededKMeans':     'Biosensor Seg',
+    'BiosensorSeg':     'B&P Tracker',
+    'BPTracker':        'NaCha (final step)',
+}
+
+
 def _add_next_button(container, viewer, pre_next=None):
     """Append a 'Next ▶' button to a magicgui Container widget.
 
     `pre_next` (optional callable) runs before advancing — use it to clean up
-    layers or persist state.
+    layers or persist state. The button's hover tooltip names the next
+    widget and lists the "did you finish X?" checklist for the current
+    step, driven by ``_NEXT_STEP_CHECKLIST`` + ``_NEXT_STEP_NAME_SUFFIX``.
     """
     from magicgui.widgets import PushButton as _PushButton
     btn = _PushButton(text='Next \u25B6')
@@ -907,6 +953,16 @@ def _add_next_button(container, viewer, pre_next=None):
         btn.native.setStyleSheet(_NEXT_BTN_STYLE)
     except Exception:
         pass
+
+    cls_name = type(container).__name__
+    next_name = _NEXT_STEP_NAME_SUFFIX.get(cls_name, '(no further step)')
+    checklist = _NEXT_STEP_CHECKLIST.get(cls_name, '')
+    _tt(btn,
+        f'Advance to: {next_name}. '
+        + (checklist + ' ' if checklist else '')
+        + "Clicking Next also tears down this widget's layers to keep "
+          "the session clean.")
+
     def _on_click():
         if pre_next is not None:
             try:
@@ -1035,21 +1091,6 @@ class PTUReader(Container):
         self.append(self.intensity_clip)
 
         _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
-        # Tiny "hover me" hint — full explanation lives in tooltips on
-        # each control below, so we stay sidebar-friendly.
-        self._display_tip = Label(value='<i>ℹ hover</i>')
-        try:
-            self._display_tip.native.setWordWrap(True)
-            self._display_tip.native.setMaximumWidth(380)
-            self._display_tip.native.setToolTip(
-                'Hover any control below to see what it does. Dragging '
-                're-renders the FastFLIM overlay from cached tau + '
-                'intensity — no PTU re-decoding. Raw tau .tif on disk '
-                'is unchanged.'
-            )
-        except Exception:
-            pass
-        self.append(self._display_tip)
         self.append(self.brightness_gamma)
         self.append(self.brightness_floor)
         self.append(self.use_clahe)
@@ -2487,6 +2528,19 @@ class SeededKMeans(Container):
         self.save_button = PushButton(text='Save Results')
         self.save_button.clicked.connect(self.save_results)
         btn_row.append(self.save_button)
+        _tt(self.load_button,
+            'Reads FLIM-S.xlsx from the sample folder and plots the 5-D '
+            'feature scatter. Required before seeds / Run K-Means.')
+        _tt(self.run_button,
+            'Run the selected clustering method on the currently-loaded '
+            'points. Uses placed seeds as initial centroids when method is '
+            '"Seeded K-Means".')
+        _tt(self.save_button,
+            'Write per-cell class labels to clustered.xlsx in the sample '
+            'folder. Do this before clicking Next.')
+        _tt(self.rerun_outlier_btn,
+            'Re-flag outliers using the current Contamination value, '
+            'without re-fitting the clustering.')
         self.append(btn_row)
 
         # Progress + tip for Save Results (the Excel write + mask drawing can take
