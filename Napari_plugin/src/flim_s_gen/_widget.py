@@ -111,6 +111,23 @@ def _install_vispy_0x1c_patch():
 _install_vispy_0x1c_patch()
 
 
+def _tt(widget, text: str) -> None:
+    """Attach a Qt tooltip to a magicgui control or a raw Qt widget.
+
+    Lets us write ``_tt(self.tau_min, "...")`` in one line instead of the
+    verbose ``try: self.tau_min.native.setToolTip(...) except: pass``. The
+    same call works on ``Container``-derived magicgui widgets (which expose
+    ``.native``) and on bare Qt widgets that have ``setToolTip`` directly.
+    """
+    if widget is None:
+        return
+    target = getattr(widget, 'native', widget)
+    try:
+        target.setToolTip(text)
+    except Exception:
+        pass
+
+
 def _load_ptu(ptu_path: Union[str, Path], frame: Union[int, str] = -1) -> np.ndarray:
     """
     Load and decode a PTU file. Returns numpy array; may be high-dimensional.
@@ -939,29 +956,36 @@ class PTUReader(Container):
             label='Brightness floor',
             min=0.0, max=0.4, step=0.02, value=0.10,
         )
-        self.use_clahe = widgets.CheckBox(
-            text='CLAHE (per-cell contrast, display only)', value=True,
-        )
+        self.use_clahe = widgets.CheckBox(text='CLAHE', value=True)
         self.clahe_tile = SpinBox(
             label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
         )
-        # Tooltip hint — magicgui exposes the Qt native widget, so we can set
-        # a Qt tooltip directly.
-        try:
-            self.brightness_gamma.native.setToolTip(
-                'Lower = brighter shadows. 1.0 = linear. Re-renders live.')
-            self.brightness_floor.native.setToolTip(
-                'Minimum brightness for signal pixels so colours do not '
-                'crush to black. Re-renders live.')
-            self.use_clahe.native.setToolTip(
-                'Equalises local brightness so dim cells show colour as '
-                'clearly as bright ones. Display-only; does not affect '
-                'segmentation or per-cell quantification.')
-            self.clahe_tile.native.setToolTip(
-                'Approximately half of your typical cell diameter. '
-                'Larger tile = broader equalisation.')
-        except Exception:
-            pass
+        # Tooltips for every control — the user hovers to see what each does.
+        _tt(self.tau_min,
+            'Colormap blue end (short tau, ns). Auto-set from data 12th '
+            'percentile on first run.')
+        _tt(self.tau_max,
+            'Colormap red end (long tau, ns). Auto-set from data 88th '
+            'percentile on first run.')
+        _tt(self.tau_res,
+            'Nanoseconds per time bin in the PTU decay. Leica SP8 / '
+            'STELLARIS default: 0.098 ns.')
+        _tt(self.intensity_clip,
+            'Upper percentile for brightness normalisation. Lower value '
+            '= darker overall.')
+        _tt(self.brightness_gamma,
+            'Lower = brighter shadows. 1.0 = linear. Re-renders live.')
+        _tt(self.brightness_floor,
+            'Minimum brightness for signal pixels so colours do not '
+            'crush to black. Re-renders live.')
+        _tt(self.use_clahe,
+            'Contrast-Limited Adaptive Histogram Equalisation on the '
+            'brightness channel. Dim cells show colour as clearly as '
+            'bright ones. Display-only — does not affect segmentation '
+            'or per-cell quantification.')
+        _tt(self.clahe_tile,
+            'Approximately half of your typical cell diameter in pixels. '
+            'Larger tile = broader equalisation, less noise amplification.')
 
         # Cached per-FOV FastFLIM data for live re-render. Keyed by layer
         # name (stem + "_FastFLIM"). Each value is a dict with keys
@@ -980,6 +1004,20 @@ class PTUReader(Container):
         _style_process_button(self.process_btn)
         self.input_dir.changed.connect(self._on_input_dir_changed)
 
+        _tt(self.input_dir,
+            'Folder containing .ptu files to decode. Output Folder auto-'
+            'updates to the parent when this changes.')
+        _tt(self.output_dir,
+            'Where decoded intensity / flim_stack TIFs and the FastFLIM '
+            'RGB snapshot are written.')
+        _tt(self.frame,
+            '−1 sums every frame in the PTU (typical). Positive N picks '
+            'a single 0-based frame index.')
+        _tt(self.process_btn,
+            'Decodes every .ptu in the folder, writes intensity and '
+            'flim_stack TIFs, computes FastFLIM. Slow for large PTUs '
+            '(tens of seconds each).')
+
         # Progress feedback (PTU decoding can take ~30-60s for 1GB+ files)
         self.progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self.status_label = Label(value='Ready')
@@ -997,20 +1035,17 @@ class PTUReader(Container):
         self.append(self.intensity_clip)
 
         _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
-        # Short inline hint — full explanation is on the tooltip so we don't
-        # force the sidebar wide. Also enable word-wrap on the underlying
-        # QLabel as a safety net for long translations / narrow docks.
-        self._display_tip = Label(
-            value='<i>ℹ Sliders below re-render live. Hover for details.</i>'
-        )
+        # Tiny "hover me" hint — full explanation lives in tooltips on
+        # each control below, so we stay sidebar-friendly.
+        self._display_tip = Label(value='<i>ℹ hover</i>')
         try:
             self._display_tip.native.setWordWrap(True)
             self._display_tip.native.setMaximumWidth(380)
             self._display_tip.native.setToolTip(
-                'Dragging any control below re-renders the FastFLIM RGB '
-                'overlay from the cached tau + intensity — no PTU '
-                're-decoding. Changes affect only the visualisation; the '
-                'raw tau .tif on disk is unchanged.'
+                'Hover any control below to see what it does. Dragging '
+                're-renders the FastFLIM overlay from cached tau + '
+                'intensity — no PTU re-decoding. Raw tau .tif on disk '
+                'is unchanged.'
             )
         except Exception:
             pass
@@ -1825,6 +1860,47 @@ class Calculate_FLIM_S(Container):
         self._progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self._status_label = Label(value='Ready')
 
+        _tt(self._base_dir,
+            'Sample folder. Calculate FLIM-S reads flim_stack/*_ch*.tif and '
+            'writes FLIM-S.xlsx / FLIM-S_pixel.xlsx here.')
+        for i, sel in enumerate(self._stack_selectors):
+            _tt(sel, f'Channel {i+1} FLIM decay stack (H×W×T). Auto-picked '
+                     f'from flim_stack/*_ch{i+1}.tif if available.')
+        _tt(self._seg_n,
+            'Optional nucleus mask (e.g. mask_n_fill from Barcode Seg). '
+            'Leave empty if you only have a combined mask.')
+        _tt(self._seg_m,
+            'Optional middle / membrane mask. Usually left empty.')
+        _tt(self._seg_p,
+            'Optional cytoplasm mask (e.g. mask_p_fill from Barcode Seg).')
+        _tt(self._seg_any,
+            'Fallback single mask used only if N / M / P are all empty.')
+        _tt(self._mask_int_thres,
+            'Pixels whose sum intensity is below this threshold are excluded '
+            'from the per-cell phasor fit.')
+        _tt(self._pulse_frequency,
+            'Laser repetition frequency (MHz). Leica SP8 default: 78.1 MHz.')
+        _tt(self._pixel_int_thres,
+            'Per-pixel intensity threshold for pixel-wise FLIM (only used '
+            'when Pixel-wise is checked).')
+        _tt(self._peak_offset,
+            'Number of bins to skip AFTER the decay peak before fitting. '
+            'Used to avoid IRF bleed-through.')
+        _tt(self._end_offset,
+            'Number of bins to skip at the tail of the decay before fitting. '
+            'Used to drop noisy tail.')
+        _tt(self._tau_resolution,
+            'ns per time bin. Leica SP8 / STELLARIS default: 0.097 ns.')
+        _tt(self._harmonics,
+            'Phasor harmonic. 1 = fundamental (standard). Higher harmonics '
+            'improve separation of distinct lifetimes at the cost of noise.')
+        _tt(self._pixel_wise,
+            'If checked, compute and export a per-pixel phasor file '
+            '(FLIM-S_pixel.xlsx) in addition to the per-cell one.')
+        _tt(self._process_button,
+            'Fit phasor + lifetime per cell (and per pixel if checked), '
+            'write FLIM-S.xlsx.')
+
         _append_section_divider(self, '— 📚 FLIM stacks —')
         self.extend(self._stack_selectors + [self._base_dir])
 
@@ -2351,6 +2427,46 @@ class SeededKMeans(Container):
         # Auto-fill both file paths on startup + when the sample folder changes.
         self.sample_folder.changed.connect(self._refresh_file_combos)
         self._refresh_file_combos()
+
+        # Tooltips — hover any control to see what it does.
+        _tt(self.n_clusters,
+            'Number of barcode classes. Auto-syncs to the row count of '
+            'the Seeds file when one is loaded.')
+        _tt(self.method,
+            '"Seeded K-Means" (Basu 2002) uses your manually-placed seeds '
+            'as centroid init and refines with EM. The other methods '
+            '(K-Means++, MiniBatchKMeans, Gaussian Mixture, Spectral) '
+            'ignore the seeds and cluster blind.')
+        _tt(self.outlier_enable,
+            'Flag per-class outliers (Isolation Forest) and reassign '
+            'them to class 0 (unassigned). Helps weed out dim or '
+            'defocused cells without re-editing masks.')
+        _tt(self.outlier_contam,
+            'Fraction of points per class flagged as outliers. 0.05–0.15 '
+            'is typical. Higher = more aggressive weeding.')
+        _tt(self.save_seeds_btn,
+            'Save the currently-placed seeds to an .xlsx file so you can '
+            'reload them in a future session.')
+        _tt(self.load_seeds_btn,
+            'Load a previously-saved seeds .xlsx. Number of seeds in the '
+            'file auto-fills Clusters above.')
+        _tt(self.save_dist_btn,
+            'Save the current per-class distributions (convex hulls in '
+            'feature space) as .npz — so you can reload them as prior '
+            'knowledge for manual seeding in future sessions.')
+        _tt(self.load_dist_btn,
+            'Load previously-saved class distribution overlays as '
+            'semi-transparent polygons behind the scatter plot, to '
+            'guide seed placement.')
+        _tt(self.dist_inflate,
+            'Expand loaded convex hulls by this factor so nearby points '
+            'still fall inside. 1.0 = raw hull, 2.0 = 2× larger.')
+        _tt(self.dist_apply_btn,
+            'Redraw the distribution overlay with the current expand '
+            'factor.')
+        _tt(self.dist_file_path,
+            'Path to the saved distribution .npz. Auto-filled from the '
+            'sample folder.')
 
         # Stores {cluster_id (int): {'hull_xy': (M,2) array, 'color_rgb': (r,g,b)}}.
         # Populated by save_distribution / load_distribution; drawn as a background
@@ -4580,6 +4696,76 @@ class Trackrevise(Container):
         self.ratio_calcu_button.clicked.connect(self.calculate_signal_ratio)
         self.preview_gb_button.clicked.connect(self.preview_g_over_b_masked)
 
+        # Tooltips — hover any control for details.
+        _tt(self.read_in_all_button,
+            'One-click: load tracking masks + B/G/Y channel stacks + '
+            'barcode classification from the selected sample folder.')
+        _tt(self.mask_256_checkbox,
+            'Masks contain more than 255 cell labels. Keep on unless you '
+            'know your labels fit in uint8.')
+        _tt(self.revise_mode_checkbox,
+            'Revise + Visualize mode: Shift-click any cell in the viewer '
+            'to pop up its individual signal curve. Useful QC before '
+            'trusting the class averages.')
+        _tt(self.ratio_checkbox,
+            'Compute FRET ratio as G/B (otherwise: single-channel signal).')
+        _tt(self.read_masks_button, 'Load per-frame tracking masks (.npy) from a folder.')
+        _tt(self.read_tif_button, 'Load the tracking image stack (.tif).')
+        _tt(self.apply_next_button,
+            'Copy the currently-selected cell mask label forward by ONE frame.')
+        _tt(self.apply_button,
+            'Copy the currently-selected cell mask label forward to EVERY '
+            'subsequent frame.')
+        _tt(self.save_tracking_button,
+            'Save the possibly-edited per-frame tracking masks back to '
+            'disk (one .npy per frame).')
+        _tt(self.read_stack_b_button, 'Load the B channel stack.')
+        _tt(self.read_stack_g_button, 'Load the G channel stack.')
+        _tt(self.read_stack_nir_button, 'Load the NIR / Y channel stack.')
+        _tt(self.channel_to_shift,
+            'Which stack to shift when aligning channels (drift / chromatic '
+            'offset).')
+        _tt(self.shift_r_param, 'Rightward pixel shift applied to the selected channel.')
+        _tt(self.shift_u_param, 'Upward pixel shift applied to the selected channel.')
+        _tt(self.shift_button, 'Apply the shift to the selected channel in memory.')
+        _tt(self.shift_save_button, 'Save the shifted stack back to disk.')
+        _tt(self.overexpo_thres_param,
+            'Pixels at or above this value are treated as overexposed / '
+            'saturated and can be excluded from the signal calc.')
+        _tt(self.overexpo_vis_button,
+            'Visualise over-exposed pixels as a mask layer so you can judge '
+            'the threshold.')
+        _tt(self.overexpo_discard_button,
+            'Zero out over-exposed pixels in the stacks before computing '
+            'per-cell signals.')
+        _tt(self.classification_resize,
+            'Resize the barcode classification image to this edge length '
+            'before overlaying on the tracking stack.')
+        _tt(self.align_thres_percent,
+            'Percentile threshold for matching barcode-classification '
+            'cells to tracking masks.')
+        _tt(self.align_mask_frame,
+            '0-based tracking-stack frame used as the alignment reference '
+            '(the barcode image will be aligned to THIS frame).')
+        _tt(self.classification_align_button,
+            'Align barcode classification -> tracking mask labels and write '
+            'Bs2Code.xlsx with the mapping table.')
+        _tt(self.ratio_calcu_range,
+            'Frame range (start, end inclusive) used to compute the per-cell '
+            'signal ratio.')
+        _tt(self.basal_frame_range,
+            'Frame range treated as baseline; signals are normalised to '
+            'this mean.')
+        _tt(self.ratio_calcu_button,
+            'Compute per-class mean ± SE signal curves and write '
+            'signal_analysis.xlsx. FINAL step of the workflow.')
+        _tt(self.freq_analysis_checkbox,
+            'Additionally run frequency-domain analysis (FFT) on the '
+            'per-cell signals.')
+        _tt(self.preview_gb_button,
+            'Preview the G/B ratio map masked by the current cell labels, '
+            'so you can eyeball the FRET response before Calculate.')
+
         self.num_masks = 1000
 
         # NaCha is the last step of the workflow — no Next button; the
@@ -6494,6 +6680,66 @@ class BPTracker(Container):
         self.save_btn = PushButton(text='Save Tracking')
         self.save_btn.changed.connect(self.save_tracking)
         self.uint16_mode = CheckBox(label='>255 masks', value=True)
+
+        _tt(self.tracker_stack_b, 'Blue-channel time-lapse TIF used to build the tracking stack.')
+        _tt(self.tracker_stack_g, 'Green-channel time-lapse TIF.')
+        _tt(self.tracker_stack_y, 'Yellow / NIR-channel time-lapse TIF. Optional.')
+        _tt(self.tracker_use_b, 'Include B channel in the averaged tracking stack.')
+        _tt(self.tracker_use_g, 'Include G channel in the averaged tracking stack.')
+        _tt(self.tracker_use_y, 'Include Y channel in the averaged tracking stack.')
+        _tt(self.window_size,
+            'Temporal smoothing window (frames). Larger = steadier '
+            'tracking but loses fine motion.')
+        _tt(self.build_stack_btn,
+            'Averages the selected channels across frames and smooths with '
+            'the window above. Writes stack-bgysum-smooth<N>.tif.')
+        _tt(self.smooth_btn,
+            'Temporal smooth on an existing loaded Image layer (no rebuild).')
+        _tt(self.tiff_path, 'Tracking Image stack (overrides the auto-picked one).')
+        _tt(self.mask_path,
+            'Initial-frame mask to propagate through time. Usually seg_image_seg.npy '
+            'from Biosensor Seg.')
+        _tt(self.stack_layer, 'Pick an existing napari Image layer instead of loading from disk.')
+        _tt(self.mask_layer, 'Pick an existing napari Labels layer as the initial mask.')
+        _tt(self.frame_start, 'First frame to propagate from (0-based).')
+        _tt(self.frame_end, 'Last frame (inclusive). Clipped to stack length.')
+        _tt(self.log_alpha,
+            'Log-scale α used when colourising the tracking stack for preview. '
+            'Smaller = more aggressive log compression (brightens dim regions).')
+        _tt(self.colormap, 'Colormap for the preview visualisation only.')
+        _tt(self.preview_btn,
+            'Colourises the tracking stack with current α + colormap for '
+            'visual inspection before tracking.')
+        _tt(self.visualize_btn,
+            'Shows the per-batch bounding boxes that the tracker will use. '
+            'Use to catch cells grouped into too-big or too-tight batches.')
+        _tt(self.cell_dist,
+            'Cells closer than this pixel distance are grouped into the '
+            'same tracking batch. Smaller = more parallel batches.')
+        _tt(self.padding,
+            'Extra pixels added around each batch bounding box before '
+            'cropping, so propagating masks have context.')
+        _tt(self.num_proc,
+            'Parallel tracker processes. Usually 1 (multi-proc rarely '
+            'beats single on CUDA workloads).')
+        _tt(self.chunk_size,
+            'Split long stacks into chunks of this length for GPU memory '
+            'safety. 0 = no chunking.')
+        _tt(self.max_patch_size,
+            'Upper bound on per-batch bounding-box edge length. Safety cap '
+            'against out-of-memory on dense fields.')
+        _tt(self.max_batch_size,
+            'Upper bound on cells per tracking batch.')
+        _tt(self.track_btn,
+            'Run Track-Anything / XMem propagation from the initial mask '
+            'through the stack. Slow; watch the progress bar.')
+        _tt(self.stop_btn, 'Request the tracker to stop at the next batch boundary.')
+        _tt(self.save_btn,
+            'Save per-frame tracking masks to a folder you pick (one .npy '
+            'per frame).')
+        _tt(self.uint16_mode,
+            'Save masks as uint16 instead of uint8 — needed if you have '
+            'more than 255 tracked cells.')
         self.append(self.skip_hint)
 
         _append_section_divider(self, '— 🛠 Build tracking stack (optional) —')
@@ -7160,6 +7406,55 @@ class BarcodeSeg(Container):
         self.ft_multi_n_btn.changed.connect(lambda: self._on_finetune_multi('n'))
         self.ft_multi_p_btn = PushButton(text='Fine-tune P — multi-folder...')
         self.ft_multi_p_btn.changed.connect(lambda: self._on_finetune_multi('p'))
+
+        _tt(self.sample_dir,
+            'Sample folder — must contain intensity/*_sum.tif from PTU Reader.')
+        _tt(self.tif_override,
+            'Optional: override the auto-detected sum.tif with a specific '
+            'file. Leave empty for the default.')
+        _tt(self.n_model,
+            'Cellpose model for nucleus (N) segmentation. Custom fine-'
+            'tuned models under <sample>/_finetune/ or the shared plugin '
+            'root are auto-discovered and ranked by recency.')
+        _tt(self.p_model,
+            'Cellpose model for cytoplasm (P) segmentation. Custom fine-'
+            'tuned models auto-discovered like N model.')
+        _tt(self.n_diameter,
+            'Approximate nucleus diameter in pixels. Cellpose auto-'
+            'detects if you set 0 (slower).')
+        _tt(self.p_diameter,
+            'Approximate cytoplasm diameter in pixels. Typically ~2× the '
+            'nucleus diameter.')
+        _tt(self.use_gpu,
+            'Uses CUDA if available; falls back to CPU automatically. '
+            'GPU is ~10× faster on 2k×2k images.')
+        _tt(self.run_btn,
+            'Runs N and P Cellpose models in sequence. Results auto-save '
+            'to <image>_seg_n.npy / <image>_seg_p.npy next to the source.')
+        _tt(self.reseg_n_btn,
+            'Re-runs the current N model on the image (e.g. after you '
+            'changed the model or diameter).')
+        _tt(self.reseg_p_btn,
+            'Re-runs the current P model on the image.')
+        _tt(self.save_btn,
+            'Re-saves the mask layers to disk AFTER your manual edits. '
+            'Auto-Segment already saved the raw output, so this is only '
+            'needed if you drew / deleted cells in the viewer.')
+        _tt(self.ft_epochs,
+            'Fine-tune epochs. 50–200 is typical for small mask '
+            'corrections. More = more adaptation, but also overfitting '
+            'risk on a single image.')
+        _tt(self.ft_n_btn,
+            'Fine-tune the selected N model on THIS image + edited mask. '
+            'New model is saved under <sample>/_finetune/ and added to '
+            'the dropdown.')
+        _tt(self.ft_p_btn,
+            'Fine-tune the selected P model on THIS image + edited mask.')
+        _tt(self.ft_multi_n_btn,
+            'Open a dialog to pick MULTIPLE sample folders and fine-tune '
+            'N jointly on every (image, edited mask) pair found.')
+        _tt(self.ft_multi_p_btn,
+            'Multi-folder fine-tune for the P model (same UI as N).')
 
         self.progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self.status_label = Label(value='Ready')
@@ -7940,6 +8235,68 @@ class BiosensorSeg(Container):
             )
         except Exception:
             pass
+
+        # Tooltips for every control. Hover reveals what each one does.
+        _tt(self.sample_folder,
+            'Sample folder. Biosensor Seg reads the confocal stacks, the '
+            'barcode classification image, and writes seg_image.tif + '
+            'seg_image_seg.npy here.')
+        _tt(self.stack_b_path, 'Blue-channel confocal stack (.tif). Time-lapse.')
+        _tt(self.stack_g_path, 'Green-channel confocal stack (.tif). Time-lapse.')
+        _tt(self.stack_y_path,
+            'NIR / yellow-channel confocal stack (.tif). Optional — untick '
+            'Use Y if this channel is missing.')
+        _tt(self.use_b, 'Include B channel when building the seg image.')
+        _tt(self.use_g, 'Include G channel when building the seg image.')
+        _tt(self.use_y, 'Include Y channel when building the seg image.')
+        _tt(self.frame_start,
+            '1-based first frame to sum into the seg image. Early frames '
+            '(1–6) are usually the sharpest.')
+        _tt(self.frame_end,
+            '1-based last frame (inclusive) to sum into the seg image.')
+        _tt(self.gen_btn,
+            'Sums the checked channels across [first, last] frames into '
+            'seg_image.tif and loads it as a napari layer.')
+        _tt(self.barcode_cls_path,
+            'Barcode classification TIF (one class label per cell) from '
+            'the Seeded K-Means step. Auto-filled when the sample folder '
+            'is set; override to use a different one.')
+        _tt(self.barcode_rot_choice,
+            'Leica tilescan barcodes are rotated 90° CW relative to the '
+            'confocal biosensor stack — hence the default. Pick 0° for a '
+            'single-FOV acquisition.')
+        _tt(self.barcode_resize,
+            'Resize the barcode mask to this edge length (pixels) before '
+            'overlaying. 0 = match the seg image size exactly.')
+        _tt(self.confirm_barcode_btn,
+            'Loads the barcode classification, rotates + resizes to match '
+            'the seg image, and previews it as an overlay layer.')
+        _tt(self.seg_model,
+            'Dual-input Cellpose model that takes the biosensor seg '
+            'image + aligned barcode as input. BS-* / *biosensor* names '
+            'sort to the top.')
+        _tt(self.diameter,
+            'Approximate cell diameter in pixels. Set 0 for Cellpose '
+            'auto-detect (slower).')
+        _tt(self.use_gpu,
+            'Uses CUDA if available; falls back to CPU automatically.')
+        _tt(self.seg_btn,
+            'Runs the selected Cellpose model in a subprocess and saves '
+            'the mask to seg_image_seg.npy next to the seg image.')
+        _tt(self.reseg_btn,
+            'Re-runs segmentation on the CURRENT seg image (useful after '
+            'changing model or diameter).')
+        _tt(self.save_btn,
+            'Re-save mask_biosensor to disk AFTER your manual edits. '
+            'Segment already saved the raw output.')
+        _tt(self.ft_epochs,
+            'Fine-tune epochs. 50–200 is typical for small corrections.')
+        _tt(self.ft_btn,
+            'Fine-tune the selected model on THIS seg image + edited '
+            'mask. New model is saved under <sample>/_finetune/.')
+        _tt(self.ft_multi_btn,
+            'Open a dialog to pick MULTIPLE sample folders and fine-tune '
+            'jointly on every (seg_image, seg_image_seg.npy) pair found.')
 
         _append_section_divider(self, '— 📁 Sample folder —')
         self.append(self.sample_folder)
