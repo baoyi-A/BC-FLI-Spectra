@@ -999,7 +999,7 @@ class PTUReader(Container):
         # 强度 autocontrast 百分位，比如 99 表示按 99th percentile 做上界
         self.intensity_clip = FloatSpinBox(
             label='Intensity clip (%)',
-            min=90.0, max=100.0, step=0.5, value=99.0
+            min=60.0, max=100.0, step=0.5, value=99.0
         )
         # FastFLIM display (applies live to the RGB render; does not change
         # saved tau values). All re-render from the cached tau_map+intensity,
@@ -1042,11 +1042,24 @@ class PTUReader(Container):
         _tt(self.clahe_tile,
             'Approximately half of your typical cell diameter in pixels. '
             'Larger tile = broader equalisation, less noise amplification.')
+        _tt(self.auto_contrast_btn,
+            'One-click contrast preset. Cycles through upper-percentile '
+            'presets 100 → 95 → 90 → 80 → 70 → 60 → (back to 100). Each '
+            'preset re-derives tau min/max as the symmetric percentiles '
+            '(100−p, p) over signal pixels, and sets Intensity clip to '
+            'the same upper percentile. Re-click to tighten further.')
 
         # Cached per-FOV FastFLIM data for live re-render. Keyed by layer
         # name (stem + "_FastFLIM"). Each value is a dict with keys
         # {'tau': 2D float32, 'inten': 2D float32}.
         self._fastflim_cache: dict = {}
+
+        # Auto-contrast cycle state. Each click of auto_contrast_btn
+        # advances the index; presets are symmetric percentile pairs
+        # (upper, lower=100-upper) applied to tau AND to intensity_clip.
+        self._auto_cycle_idx = -1  # -1 so the first click lands on idx 0
+        self.auto_contrast_btn = PushButton(text='Auto contrast ↻')
+        self.auto_contrast_btn.clicked.connect(self._on_auto_contrast)
 
         # Widgets
         # self.input_dir = FileEdit(label='PTU Folder', mode='d', value=os.getcwd())
@@ -1091,6 +1104,7 @@ class PTUReader(Container):
         self.append(self.intensity_clip)
 
         _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
+        self.append(self.auto_contrast_btn)
         self.append(self.brightness_gamma)
         self.append(self.brightness_floor)
         self.append(self.use_clahe)
@@ -1230,6 +1244,63 @@ class PTUReader(Container):
             self.viewer.add_image(rgb, name=name, rgb=True, blending='translucent')
         except Exception as e:
             show_warning(f'FastFLIM layer {name} failed: {e}')
+
+    # Upper-percentile presets for the Auto button. Lower = 100 - upper.
+    _AUTO_CONTRAST_PRESETS = (100, 95, 90, 80, 70, 60)
+
+    def _on_auto_contrast(self, *_args):
+        """Cycle the tau + intensity contrast one step tighter.
+
+        Uses the currently cached (tau, intensity) of the FIRST FOV to
+        compute symmetric percentiles of tau over signal pixels and
+        writes the result into the tau_min / tau_max / intensity_clip
+        spinboxes. The live-apply connections on those spinboxes then
+        trigger a re-render of every cached FastFLIM layer.
+
+        Cycles: 100 → 95 → 90 → 80 → 70 → 60 → (back to 100). At 100 the
+        full tau range is shown and no intensity clipping is applied.
+        """
+        if not self._fastflim_cache:
+            show_info('Auto contrast: run Process first — no FastFLIM data '
+                      'cached yet.')
+            return
+        presets = PTUReader._AUTO_CONTRAST_PRESETS
+        self._auto_cycle_idx = (self._auto_cycle_idx + 1) % len(presets)
+        upper = float(presets[self._auto_cycle_idx])
+        lower = 100.0 - upper
+
+        first = next(iter(self._fastflim_cache.values()))
+        tau = np.asarray(first['tau'], dtype=np.float32)
+        inten = np.asarray(first['inten'], dtype=np.float32)
+
+        # Signal mask: ignore pixels with near-zero photon count so
+        # percentiles are not dragged toward 0 by empty background.
+        thr = float(np.percentile(inten, 10)) if inten.size else 0.0
+        mask = (inten > thr) & np.isfinite(tau)
+        if not mask.any():
+            mask = np.isfinite(tau)
+
+        if upper >= 100.0 or lower <= 0.0:
+            tau_lo = float(np.nanmin(tau[mask]))
+            tau_hi = float(np.nanmax(tau[mask]))
+        else:
+            tau_lo = float(np.percentile(tau[mask], lower))
+            tau_hi = float(np.percentile(tau[mask], upper))
+        if tau_hi <= tau_lo:
+            tau_hi = tau_lo + 1e-3
+
+        # Write values; the .changed signals drive _redraw_all_fastflim.
+        self.tau_min.value = round(tau_lo, 3)
+        self.tau_max.value = round(tau_hi, 3)
+        self.intensity_clip.value = round(upper, 1)
+        try:
+            self.status_label.value = (
+                f'Auto contrast @ {int(upper)}% — '
+                f'tau [{tau_lo:.2f}, {tau_hi:.2f}] ns, '
+                f'intensity clip {int(upper)}%.'
+            )
+        except Exception:
+            pass
 
     def _redraw_all_fastflim(self, *_args):
         """Re-render every cached FastFLIM layer using the current control values.
@@ -1430,7 +1501,17 @@ class PTUReader(Container):
             # save PNG next to the raw tau .tif.
             _, name, tau_map, total_int = payload
             try:
+                # First FOV this session — advance auto-contrast to the
+                # default "data-driven" preset (idx=2 → 10/90 percentiles)
+                # so the user does not see hardcoded 3.1 / 5.1 ns on data
+                # whose real range is elsewhere. Subsequent FOVs inherit
+                # the current controls.
+                first_fov = not self._fastflim_cache
                 self._push_fastflim_layer(name, tau_map, total_int)
+                if first_fov and self._auto_cycle_idx < 0:
+                    # Jump straight to 90% preset (idx 2) on first Process.
+                    self._auto_cycle_idx = 1
+                    self._on_auto_contrast()
                 # Persist the RGB with current display settings alongside
                 # the raw tau .tif. Users can later drag a slider and
                 # re-export by calling the render helper manually if
