@@ -928,6 +928,45 @@ class PTUReader(Container):
             label='Intensity clip (%)',
             min=90.0, max=100.0, step=0.5, value=99.0
         )
+        # FastFLIM display (applies live to the RGB render; does not change
+        # saved tau values). All re-render from the cached tau_map+intensity,
+        # no PTU re-decoding.
+        self.brightness_gamma = FloatSpinBox(
+            label='Brightness gamma',
+            min=0.3, max=1.0, step=0.05, value=0.55,
+        )
+        self.brightness_floor = FloatSpinBox(
+            label='Brightness floor',
+            min=0.0, max=0.4, step=0.02, value=0.10,
+        )
+        self.use_clahe = widgets.CheckBox(
+            text='CLAHE (per-cell contrast, display only)', value=True,
+        )
+        self.clahe_tile = SpinBox(
+            label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
+        )
+        # Tooltip hint — magicgui exposes the Qt native widget, so we can set
+        # a Qt tooltip directly.
+        try:
+            self.brightness_gamma.native.setToolTip(
+                'Lower = brighter shadows. 1.0 = linear. Re-renders live.')
+            self.brightness_floor.native.setToolTip(
+                'Minimum brightness for signal pixels so colours do not '
+                'crush to black. Re-renders live.')
+            self.use_clahe.native.setToolTip(
+                'Equalises local brightness so dim cells show colour as '
+                'clearly as bright ones. Display-only; does not affect '
+                'segmentation or per-cell quantification.')
+            self.clahe_tile.native.setToolTip(
+                'Approximately half of your typical cell diameter. '
+                'Larger tile = broader equalisation.')
+        except Exception:
+            pass
+
+        # Cached per-FOV FastFLIM data for live re-render. Keyed by layer
+        # name (stem + "_FastFLIM"). Each value is a dict with keys
+        # {'tau': 2D float32, 'inten': 2D float32}.
+        self._fastflim_cache: dict = {}
 
         # Widgets
         # self.input_dir = FileEdit(label='PTU Folder', mode='d', value=os.getcwd())
@@ -957,10 +996,34 @@ class PTUReader(Container):
         self.append(self.tau_res)
         self.append(self.intensity_clip)
 
+        _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
+        self._display_tip = Label(value=(
+            '<i>Drag any slider below to re-render the FastFLIM view '
+            'live from the cached tau + intensity — no PTU re-decoding. '
+            'Changes only affect the coloured overlay, not the saved '
+            'tau values.</i>'
+        ))
+        self.append(self._display_tip)
+        self.append(self.brightness_gamma)
+        self.append(self.brightness_floor)
+        self.append(self.use_clahe)
+        self.append(self.clahe_tile)
+
         _append_section_divider(self, '— ▶ Process —')
         self.append(self.process_btn)
         self.append(self.progress)
         self.append(self.status_label)
+
+        # Live-apply: whenever any display control changes, re-render every
+        # cached FOV. tau_min / tau_max also trigger a re-render (the worker
+        # captures their value once at launch time, but after processing the
+        # user can still tweak).
+        for ctrl in (self.tau_min, self.tau_max, self.brightness_gamma,
+                     self.brightness_floor, self.use_clahe, self.clahe_tile):
+            try:
+                ctrl.changed.connect(self._redraw_all_fastflim)
+            except Exception:
+                pass
 
         _add_next_button(self, viewer, pre_next=self._cleanup_layers)
         _tighten_container(self)
@@ -976,7 +1039,7 @@ class PTUReader(Container):
             n = layer.name
             if ('_ch' in n and n.rsplit('_ch', 1)[-1][:1].isdigit()):
                 doomed.append(n)
-            elif n.endswith('_Tau') or n.endswith('_Intensity'):
+            elif n.endswith('_Tau') or n.endswith('_Intensity') or n.endswith('_FastFLIM'):
                 doomed.append(n)
             elif n == 'sum' or '_sum' in n:
                 doomed.append(n)
@@ -985,7 +1048,124 @@ class PTUReader(Container):
                 del self.viewer.layers[n]
             except Exception as e:
                 print(f'[PTUReader cleanup] {n}: {e}')
+        # Drop the in-memory FastFLIM cache so stale tau/intensity don't
+        # get re-rendered if the user comes back and drags a slider.
+        self._fastflim_cache = {}
         # viewer.window.add_dock_widget(self, area='right', name='PTU Reader')
+
+    # ---- Intensity-weighted FastFLIM RGB renderer -----------------------
+    # Classic FLIM visualisation: hue = tau (blue → green → red), brightness
+    # = intensity with gamma + floor so short-tau regions do not crush to
+    # black. Optional CLAHE equalises per-cell brightness when barcode
+    # expression varies widely. All live — re-renders from cached
+    # tau_map + total_int in milliseconds.
+
+    _LEICA_FLIM_CMAP = None  # built lazily on first use
+
+    @classmethod
+    def _leica_cmap(cls):
+        if cls._LEICA_FLIM_CMAP is None:
+            import matplotlib.colors as _mc
+            cls._LEICA_FLIM_CMAP = _mc.LinearSegmentedColormap.from_list(
+                'leica_flim',
+                [(0.00, '#5faaff'),   # sky blue, short tau
+                 (0.50, '#00ff00'),   # green,   mid tau
+                 (1.00, '#ff3030')],  # red,     long tau
+                N=256,
+            )
+        return cls._LEICA_FLIM_CMAP
+
+    def _render_fastflim_rgb(self, tau, inten):
+        """Return a uint8 HxWx3 RGB image for a given (tau, intensity) pair.
+
+        Pulls all display parameters from the current widget values so the
+        caller does not have to pass them.
+        """
+        tau = np.asarray(tau, dtype=np.float32)
+        inten = np.asarray(inten, dtype=np.float32)
+        tau_lo = float(self.tau_min.value)
+        tau_hi = float(self.tau_max.value)
+        if tau_hi <= tau_lo:
+            tau_hi = tau_lo + 1e-3
+
+        # tau -> colormap
+        tau_norm = np.clip((tau - tau_lo) / (tau_hi - tau_lo), 0.0, 1.0)
+        tau_norm = np.where(np.isfinite(tau), tau_norm, 0.0)
+        rgb = self._leica_cmap()(tau_norm)[..., :3]  # drop alpha
+
+        # intensity -> brightness
+        clip_pct = float(self.intensity_clip.value)
+        v_max = float(np.percentile(inten, clip_pct)) if inten.size else 1.0
+        if v_max <= 0:
+            v_max = 1.0
+        bright = np.clip(inten / v_max, 0.0, 1.0)
+
+        # optional CLAHE on the brightness channel
+        if bool(self.use_clahe.value):
+            try:
+                from skimage import exposure as _exp
+                tile = int(self.clahe_tile.value)
+                tile = max(2, tile)
+                h, w = bright.shape
+                # skimage expects kernel_size (tile per axis); it adapts if
+                # the image is not divisible.
+                bright = _exp.equalize_adapthist(
+                    bright.astype(np.float32),
+                    kernel_size=(min(tile, max(2, h // 2)),
+                                 min(tile, max(2, w // 2))),
+                    clip_limit=0.01,
+                ).astype(np.float32)
+            except Exception as _e:
+                print(f'[FastFLIM CLAHE] skipped: {_e}')
+
+        # gamma + floor lift
+        gamma = float(self.brightness_gamma.value)
+        floor = float(self.brightness_floor.value)
+        bright = floor + (1.0 - floor) * np.power(bright, gamma)
+        bright = np.clip(bright, 0.0, 1.0)
+
+        out = rgb * bright[..., None]
+        return np.clip(out * 255, 0, 255).astype(np.uint8)
+
+    def _push_fastflim_layer(self, name, tau, inten):
+        """Compute RGB, cache (tau, inten), and add / update the napari layer."""
+        self._fastflim_cache[name] = {
+            'tau': tau.astype(np.float32, copy=False),
+            'inten': inten.astype(np.float32, copy=False),
+        }
+        rgb = self._render_fastflim_rgb(tau, inten)
+        try:
+            if name in self.viewer.layers:
+                del self.viewer.layers[name]
+        except Exception:
+            pass
+        try:
+            self.viewer.add_image(rgb, name=name, rgb=True, blending='translucent')
+        except Exception as e:
+            show_warning(f'FastFLIM layer {name} failed: {e}')
+
+    def _redraw_all_fastflim(self, *_args):
+        """Re-render every cached FastFLIM layer using the current control values.
+
+        Wired to ``changed`` on tau_min / tau_max / gamma / floor / CLAHE /
+        clahe_tile. Runs in the main thread; cost is O(pixels * n_layers),
+        typically sub-second for a 2k x 2k image.
+        """
+        if not self._fastflim_cache:
+            return
+        for name, pair in list(self._fastflim_cache.items()):
+            try:
+                rgb = self._render_fastflim_rgb(pair['tau'], pair['inten'])
+                if name in self.viewer.layers:
+                    try:
+                        del self.viewer.layers[name]
+                    except Exception:
+                        pass
+                self.viewer.add_image(
+                    rgb, name=name, rgb=True, blending='translucent',
+                )
+            except Exception as e:
+                print(f'[FastFLIM redraw] {name}: {e}')
 
     def _compute_tau_only(self, stack_sum, total_int, tau_res):
         eps = 1e-6
@@ -1110,20 +1290,13 @@ class PTUReader(Container):
                         tau_map = self._compute_tau_only(
                             stack_sum=stack_sum, total_int=total_int, tau_res=tau_res,
                         )
-                        v_max = np.percentile(total_int, clip_pct)
-                        v_max = float(v_max) if v_max > 0 else 1.0
-                        yield ('layer', f"{p.stem}_Tau", tau_map.astype(np.float32), {
-                            'colormap': 'turbo',
-                            'contrast_limits': (tau_min, tau_max),
-                            'blending': 'translucent',
-                        })
-                        yield ('layer', f"{p.stem}_Intensity", total_int.astype(np.float32), {
-                            'colormap': 'gray',
-                            'contrast_limits': (0.0, v_max),
-                            'blending': 'multiply',
-                            'opacity': 1.0,
-                        })
+                        # Keep the raw tau .tif for debugging / downstream
+                        # quantification; the user-visible representation is
+                        # the intensity-weighted RGB below.
                         tifffile.imwrite(out_dir / f"{p.stem}_fastflim_tau.tif", tau_map)
+                        yield ('fastflim', f"{p.stem}_FastFLIM",
+                               tau_map.astype(np.float32),
+                               total_int.astype(np.float32))
                     except Exception as e_fast:
                         yield ('warn', f'FastFLIM failed for {p.name}: {e_fast}')
 
@@ -1165,6 +1338,27 @@ class PTUReader(Container):
                 self.viewer.add_image(data, name=name, **(kwargs or {}))
             except Exception as e:
                 show_warning(f'Add layer {name} failed: {e}')
+        elif kind == 'fastflim':
+            # FastFLIM RGB payload: cache on the widget, render, add layer,
+            # save PNG next to the raw tau .tif.
+            _, name, tau_map, total_int = payload
+            try:
+                self._push_fastflim_layer(name, tau_map, total_int)
+                # Persist the RGB with current display settings alongside
+                # the raw tau .tif. Users can later drag a slider and
+                # re-export by calling the render helper manually if
+                # needed — the RGB here is a one-shot snapshot with the
+                # settings that were active when Process finished.
+                try:
+                    from PIL import Image as _PILImage
+                    out_dir = Path(str(self.output_dir.value))
+                    rgb = self._render_fastflim_rgb(tau_map, total_int)
+                    _PILImage.fromarray(rgb).save(
+                        str(out_dir / f"{name.replace('_FastFLIM','')}_fastflim_rgb.png"))
+                except Exception as e_save:
+                    print(f'[FastFLIM RGB save] {name}: {e_save}')
+            except Exception as e:
+                show_warning(f'FastFLIM layer {name} failed: {e}')
         elif kind == 'warn':
             show_warning(payload[1])
 
