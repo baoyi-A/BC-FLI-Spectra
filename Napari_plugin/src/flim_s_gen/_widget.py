@@ -1507,7 +1507,7 @@ def calcu_phasor_info(
     print(f'g: {phasor_g}, s: {phasor_s}')
     return phasor_g, phasor_s, lifetime, chi_square, fastflim
 
-# Parameter input: mask intensity threshold, pixel intensity threshold, peak offset, end offset, tau resolution, pulse frequency, harmonics, pixel_wise
+# Parameter input: mask intensity threshold, pixel intensity threshold, peak offset, end offset, tau resolution, pulse frequency, harmonics
 
 def Gen_excel_multi(
     stack1, stack2, stack3, stack4,
@@ -1516,7 +1516,7 @@ def Gen_excel_multi(
     mask_int_thres, pixel_int_thres,
     peak_offset, end_offset,
     tau_resolution, pulse_freq,
-    harmonics, pixel_wise,
+    harmonics,
     fov: str
 ):
     """
@@ -1524,11 +1524,7 @@ def Gen_excel_multi(
       - keys are 'n','m','p' or '' (empty means unknown/unspecified localization)
       - values are seg_img (H,W) int masks
     """
-    if pixel_wise:
-        save_path = os.path.join(basefolder, 'FLIM-S_pixel.xlsx')
-        print('Pixel-wise mode is not supported currently.')
-    else:
-        save_path = os.path.join(basefolder, 'FLIM-S.xlsx')
+    save_path = os.path.join(basefolder, 'FLIM-S.xlsx')
 
     all_rows = []
 
@@ -1892,8 +1888,6 @@ class Calculate_FLIM_S(Container):
         self._harmonics.min = 1
         self._harmonics.max = 10
 
-        self._pixel_wise = CheckBox(label="Pixel-wise")
-
         self._process_button = PushButton(text="Process and Save to Excel")
         self._process_button.clicked.connect(self.process_and_save_to_excel)
         _style_process_button(self._process_button)
@@ -1903,7 +1897,7 @@ class Calculate_FLIM_S(Container):
 
         _tt(self._base_dir,
             'Sample folder. Calculate FLIM-S reads flim_stack/*_ch*.tif and '
-            'writes FLIM-S.xlsx / FLIM-S_pixel.xlsx here.')
+            'writes FLIM-S.xlsx here.')
         for i, sel in enumerate(self._stack_selectors):
             _tt(sel, f'Channel {i+1} FLIM decay stack (H×W×T). Auto-picked '
                      f'from flim_stack/*_ch{i+1}.tif if available.')
@@ -1922,8 +1916,9 @@ class Calculate_FLIM_S(Container):
         _tt(self._pulse_frequency,
             'Laser repetition frequency (MHz). Leica SP8 default: 78.1 MHz.')
         _tt(self._pixel_int_thres,
-            'Per-pixel intensity threshold for pixel-wise FLIM (only used '
-            'when Pixel-wise is checked).')
+            'Per-pixel intensity floor applied when aggregating photons per '
+            'cell — pixels below this are dropped from the cell decay so '
+            'dim background does not dilute the phasor fit.')
         _tt(self._peak_offset,
             'Number of bins to skip AFTER the decay peak before fitting. '
             'Used to avoid IRF bleed-through.')
@@ -1935,12 +1930,9 @@ class Calculate_FLIM_S(Container):
         _tt(self._harmonics,
             'Phasor harmonic. 1 = fundamental (standard). Higher harmonics '
             'improve separation of distinct lifetimes at the cost of noise.')
-        _tt(self._pixel_wise,
-            'If checked, compute and export a per-pixel phasor file '
-            '(FLIM-S_pixel.xlsx) in addition to the per-cell one.')
         _tt(self._process_button,
-            'Fit phasor + lifetime per cell (and per pixel if checked), '
-            'write FLIM-S.xlsx.')
+            'Fit phasor + lifetime per cell and write FLIM-S.xlsx to the '
+            'Base folder.')
 
         _append_section_divider(self, '— 📚 FLIM stacks —')
         self.extend(self._stack_selectors + [self._base_dir])
@@ -1951,7 +1943,7 @@ class Calculate_FLIM_S(Container):
         _append_section_divider(self, '— ⚙ Phasor parameters —')
         self.extend([self._mask_int_thres, self._pulse_frequency,
                      self._pixel_int_thres, self._peak_offset, self._end_offset,
-                     self._tau_resolution, self._harmonics, self._pixel_wise])
+                     self._tau_resolution, self._harmonics])
 
         _append_section_divider(self, '— ▶ Process —')
         self.extend([self._process_button, self._progress, self._status_label])
@@ -2142,7 +2134,6 @@ class Calculate_FLIM_S(Container):
             tau_resolution=self._tau_resolution.value,
             pulse_frequency=self._pulse_frequency.value,
             harmonics=self._harmonics.value,
-            pixel_wise=self._pixel_wise.value,
             fov=fov,
         )
         stacks = [np.asarray(s.data) for s in stack_layers]
@@ -2171,7 +2162,7 @@ class Calculate_FLIM_S(Container):
             params['mask_int_thres'], params['pixel_int_thres'],
             params['peak_offset'], params['end_offset'],
             params['tau_resolution'], params['pulse_frequency'],
-            params['harmonics'], params['pixel_wise'],
+            params['harmonics'],
             params['fov'],
         )
         yield ('status', 95, f'Gen_excel_multi done in {_time.time()-t0:.1f}s.')
