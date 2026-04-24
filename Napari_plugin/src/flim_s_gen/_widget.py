@@ -1043,11 +1043,13 @@ class PTUReader(Container):
             'Approximately half of your typical cell diameter in pixels. '
             'Larger tile = broader equalisation, less noise amplification.')
         _tt(self.auto_contrast_btn,
-            'One-click contrast preset. Cycles through upper-percentile '
-            'presets 100 → 95 → 90 → 80 → 70 → 60 → (back to 100). Each '
-            'preset re-derives tau min/max as the symmetric percentiles '
-            '(100−p, p) over signal pixels, and sets Intensity clip to '
-            'the same upper percentile. Re-click to tighten further.')
+            'One-click contrast preset. Cycles through 6 presets and '
+            'loops: (100,0) → (95,10) → (90,20) → (85,30) → (80,40) → '
+            '(75,50) → back to (100,0). Each preset re-derives tau '
+            'min/max as the (lower%, upper%) percentiles over signal '
+            'pixels, and sets Intensity clip to the upper percent. The '
+            'low end is clipped harder than the high end because the '
+            'blue (short-tau) region carries noisier background pixels.')
 
         # Cached per-FOV FastFLIM data for live re-render. Keyed by layer
         # name (stem + "_FastFLIM"). Each value is a dict with keys
@@ -1245,19 +1247,31 @@ class PTUReader(Container):
         except Exception as e:
             show_warning(f'FastFLIM layer {name} failed: {e}')
 
-    # Upper-percentile presets for the Auto button. Lower = 100 - upper.
-    _AUTO_CONTRAST_PRESETS = (100, 95, 90, 80, 70, 60)
+    # (upper_pct, lower_pct) presets for the Auto button. ASYMMETRIC —
+    # we clip the low-tau end harder than the high-tau end because the
+    # blue end (short tau) carries more background / noise pixels whose
+    # tau estimate is unreliable. Empirical rule of thumb:
+    # lower_pct ≈ 2 × (100 − upper_pct).
+    _AUTO_CONTRAST_PRESETS = (
+        (100, 0),    # idx 0 — no clip, full tau range
+        (95, 10),    # idx 1 — mild, trim blue tail
+        (90, 20),    # idx 2 — typical default (applied on first Process)
+        (85, 30),    # idx 3 — tighter
+        (80, 40),    # idx 4 — aggressive
+        (75, 50),    # idx 5 — very aggressive
+    )
 
     def _on_auto_contrast(self, *_args):
         """Cycle the tau + intensity contrast one step tighter.
 
         Uses the currently cached (tau, intensity) of the FIRST FOV to
-        compute symmetric percentiles of tau over signal pixels and
+        compute asymmetric percentiles of tau over signal pixels and
         writes the result into the tau_min / tau_max / intensity_clip
         spinboxes. The live-apply connections on those spinboxes then
         trigger a re-render of every cached FastFLIM layer.
 
-        Cycles: 100 → 95 → 90 → 80 → 70 → 60 → (back to 100). At 100 the
+        Asymmetric because the low-tau (blue) end is noisier: we clip
+        the low end about 2× harder than the high end. At idx 0 the
         full tau range is shown and no intensity clipping is applied.
         """
         if not self._fastflim_cache:
@@ -1266,8 +1280,9 @@ class PTUReader(Container):
             return
         presets = PTUReader._AUTO_CONTRAST_PRESETS
         self._auto_cycle_idx = (self._auto_cycle_idx + 1) % len(presets)
-        upper = float(presets[self._auto_cycle_idx])
-        lower = 100.0 - upper
+        upper, lower = presets[self._auto_cycle_idx]
+        upper = float(upper)
+        lower = float(lower)
 
         first = next(iter(self._fastflim_cache.values()))
         tau = np.asarray(first['tau'], dtype=np.float32)
@@ -1295,8 +1310,10 @@ class PTUReader(Container):
         self.intensity_clip.value = round(upper, 1)
         try:
             self.status_label.value = (
-                f'Auto contrast @ {int(upper)}% — '
-                f'tau [{tau_lo:.2f}, {tau_hi:.2f}] ns, '
+                f'Auto contrast preset {self._auto_cycle_idx + 1}/'
+                f'{len(presets)} — '
+                f'tau [{tau_lo:.2f}, {tau_hi:.2f}] ns '
+                f'(pctl {int(lower)}–{int(upper)}), '
                 f'intensity clip {int(upper)}%.'
             )
         except Exception:
