@@ -997,12 +997,23 @@ class PTUReader(Container):
         self.append(self.intensity_clip)
 
         _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
-        self._display_tip = Label(value=(
-            '<i>Drag any slider below to re-render the FastFLIM view '
-            'live from the cached tau + intensity — no PTU re-decoding. '
-            'Changes only affect the coloured overlay, not the saved '
-            'tau values.</i>'
-        ))
+        # Short inline hint — full explanation is on the tooltip so we don't
+        # force the sidebar wide. Also enable word-wrap on the underlying
+        # QLabel as a safety net for long translations / narrow docks.
+        self._display_tip = Label(
+            value='<i>ℹ Sliders below re-render live. Hover for details.</i>'
+        )
+        try:
+            self._display_tip.native.setWordWrap(True)
+            self._display_tip.native.setMaximumWidth(380)
+            self._display_tip.native.setToolTip(
+                'Dragging any control below re-renders the FastFLIM RGB '
+                'overlay from the cached tau + intensity — no PTU '
+                're-decoding. Changes affect only the visualisation; the '
+                'raw tau .tif on disk is unchanged.'
+            )
+        except Exception:
+            pass
         self.append(self._display_tip)
         self.append(self.brightness_gamma)
         self.append(self.brightness_floor)
