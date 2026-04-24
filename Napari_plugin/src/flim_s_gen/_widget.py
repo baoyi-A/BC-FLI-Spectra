@@ -1911,25 +1911,40 @@ class Calculate_FLIM_S(Container):
         _tt(self._seg_any,
             'Fallback single mask used only if N / M / P are all empty.')
         _tt(self._mask_int_thres,
-            'Pixels whose sum intensity is below this threshold are excluded '
-            'from the per-cell phasor fit.')
+            'Minimum TOTAL photon count summed across a cell mask. Cells '
+            'whose total intensity is below this threshold are skipped '
+            '(too few photons for a reliable phasor fit). Raise if you '
+            'still see noisy tau outliers; lower if legitimate dim cells '
+            'are being dropped.')
         _tt(self._pulse_frequency,
-            'Laser repetition frequency (MHz). Leica SP8 default: 78.1 MHz.')
+            'Laser repetition rate in MHz. Leica SP8 / STELLARIS default: '
+            '78.1 MHz. This sets the time window the phasor g, s are '
+            'evaluated in (T = 1 / (n · f_rep)), so getting it right is '
+            'essential — wrong freq = wrong tau.')
         _tt(self._pixel_int_thres,
-            'Per-pixel intensity floor applied when aggregating photons per '
-            'cell — pixels below this are dropped from the cell decay so '
-            'dim background does not dilute the phasor fit.')
+            'Per-PIXEL intensity floor applied when aggregating photons '
+            'into the cell decay — pixels below this are discarded so '
+            'dim background does not dilute the phasor fit. Different '
+            'from Mask Intensity Threshold (which gates the whole cell).')
         _tt(self._peak_offset,
-            'Number of bins to skip AFTER the decay peak before fitting. '
-            'Used to avoid IRF bleed-through.')
+            'Start of the fitting window, measured in bins AFTER the '
+            'decay peak. Used to skip the IRF-convolved rising edge so '
+            'only the exponential tail is fit. Typical: 3–6 bins.')
         _tt(self._end_offset,
-            'Number of bins to skip at the tail of the decay before fitting. '
-            'Used to drop noisy tail.')
+            'End of the fitting window, measured in bins BEFORE the end '
+            'of the decay. Drops the late-time noisy tail where signal '
+            'has decayed into the dark count. Typical: 10–20 bins.')
         _tt(self._tau_resolution,
-            'ns per time bin. Leica SP8 / STELLARIS default: 0.097 ns.')
+            'Time-bin width in ns. Leica SP8 / STELLARIS with 256-bin '
+            'decay default: 0.097 ns (≈ 25 ns / 256 bins at 40 MHz, or '
+            '12.8 / 256 at 78 MHz). Check your PTU metadata if unsure.')
         _tt(self._harmonics,
-            'Phasor harmonic. 1 = fundamental (standard). Higher harmonics '
-            'improve separation of distinct lifetimes at the cost of noise.')
+            'Phasor harmonic order n. Evaluates g, s at n · f_rep (n=1 '
+            'at the fundamental laser rep rate, n=2 at double, etc.). '
+            'Use n=1 for single-anchor barcode FLIM (standard, what we '
+            'use). Higher n (2–3) probes faster decay components and '
+            'can help separate multi-exponential lifetimes but '
+            'amplifies noise — not needed here.')
         _tt(self._process_button,
             'Fit phasor + lifetime per cell and write FLIM-S.xlsx to the '
             'Base folder.')
@@ -4774,9 +4789,6 @@ class Trackrevise(Container):
         _tt(self.shift_u_param, 'Upward pixel shift applied to the selected channel.')
         _tt(self.shift_button, 'Apply the shift to the selected channel in memory.')
         _tt(self.shift_save_button, 'Save the shifted stack back to disk.')
-        _tt(self.overexpo_thres_param,
-            'Pixels at or above this value are treated as overexposed / '
-            'saturated and can be excluded from the signal calc.')
         _tt(self.overexpo_vis_button,
             'Visualise over-exposed pixels as a mask layer so you can judge '
             'the threshold.')
@@ -4787,20 +4799,32 @@ class Trackrevise(Container):
             'Resize the barcode classification image to this edge length '
             'before overlaying on the tracking stack.')
         _tt(self.align_thres_percent,
-            'Percentile threshold for matching barcode-classification '
-            'cells to tracking masks.')
+            'Minimum overlap PERCENTAGE required for a tracked cell to be '
+            'assigned to a barcode class. e.g. 10 = the tracked cell must '
+            'share at least 10%% of its pixels with the barcode class '
+            'region. Higher = stricter, fewer cells get labels but cleaner.')
         _tt(self.align_mask_frame,
-            '0-based tracking-stack frame used as the alignment reference '
-            '(the barcode image will be aligned to THIS frame).')
+            '0-based tracking-stack frame used as the alignment reference: '
+            'the barcode classification mask is overlaid on THIS frame '
+            'when assigning labels to tracked cells. Typically 0 (first '
+            'frame) because cells drift less early on.')
         _tt(self.classification_align_button,
             'Align barcode classification -> tracking mask labels and write '
             'Bs2Code.xlsx with the mapping table.')
         _tt(self.ratio_calcu_range,
             'Frame range (start, end inclusive) used to compute the per-cell '
-            'signal ratio.')
+            'signal ratio. Trim tightly to the window where you expect a '
+            'response — including long stretches of noise just dilutes the '
+            'per-class curve.')
         _tt(self.basal_frame_range,
-            'Frame range treated as baseline; signals are normalised to '
-            'this mean.')
+            'Frames treated as baseline. Each cell\'s signal is normalised '
+            'to the mean over this range, so all curves start near 1.0 — '
+            'factors out cell-to-cell brightness differences and focuses '
+            'on RELATIVE change. Typical: the first ~5 pre-stimulus frames.')
+        _tt(self.overexpo_thres_param,
+            'Pixels at or above this DN value are treated as saturated '
+            '(detector pegged). 65535 = off (no pixels flagged) for '
+            'uint16 data. Lower if you see clipping in bright cells.')
         _tt(self.ratio_calcu_button,
             'Compute per-class mean ± SE signal curves and write '
             'signal_analysis.xlsx. FINAL step of the workflow.')
