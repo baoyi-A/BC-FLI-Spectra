@@ -1016,6 +1016,10 @@ class PTUReader(Container):
         self.clahe_tile = SpinBox(
             label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
         )
+        # Auto-contrast button: declared before tooltip pass below so the
+        # _tt(self.auto_contrast_btn, ...) call has something to attach to.
+        self.auto_contrast_btn = PushButton(text='Auto contrast ↻')
+        self.auto_contrast_btn.clicked.connect(self._on_auto_contrast)
         # Tooltips for every control — the user hovers to see what each does.
         _tt(self.tau_min,
             'Colormap blue end (short tau, ns). Auto-set from data 12th '
@@ -1056,12 +1060,8 @@ class PTUReader(Container):
         # {'tau': 2D float32, 'inten': 2D float32}.
         self._fastflim_cache: dict = {}
 
-        # Auto-contrast cycle state. Each click of auto_contrast_btn
-        # advances the index; presets are symmetric percentile pairs
-        # (upper, lower=100-upper) applied to tau AND to intensity_clip.
-        self._auto_cycle_idx = -1  # -1 so the first click lands on idx 0
-        self.auto_contrast_btn = PushButton(text='Auto contrast ↻')
-        self.auto_contrast_btn.clicked.connect(self._on_auto_contrast)
+        # Auto-contrast cycle state. -1 so the first click lands on idx 0.
+        self._auto_cycle_idx = -1
 
         # Widgets
         # self.input_dir = FileEdit(label='PTU Folder', mode='d', value=os.getcwd())
