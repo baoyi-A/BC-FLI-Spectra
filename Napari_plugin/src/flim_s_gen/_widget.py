@@ -984,13 +984,16 @@ class PTUReader(Container):
         self.viewer = viewer
         _note_workflow_start(viewer)  # starts the walkthrough timer
         # FastFLIM 参数
+        # Range up to 20 ns — typical FLIM data caps around 5-8 ns but
+        # weighted-mean tau on noisy short-tau pixels can go much higher
+        # (we have seen ~13 ns). Auto contrast can write any of those.
         self.tau_min = FloatSpinBox(
             label='Tau min (ns)',
-            min=0.0, max=10.0, step=0.1, value=3.1
+            min=0.0, max=20.0, step=0.1, value=3.1
         )
         self.tau_max = FloatSpinBox(
             label='Tau max (ns)',
-            min=0.0, max=10.0, step=0.1, value=5.1
+            min=0.0, max=20.0, step=0.1, value=5.1
         )
         self.tau_res = FloatSpinBox(
             label='Tau resolution (ns/bin)',
@@ -1070,7 +1073,7 @@ class PTUReader(Container):
         self.input_dir = widgets.FileEdit(label='PTU Folder', mode='d', value=r'J:/Mix16-N-P-260306-DCZ-2-1/raw')
         self.output_dir = widgets.FileEdit(label='Output Folder', mode='d', value=r'J:/Mix16-N-P-260306-DCZ-2-1')
         self.frame = SpinBox(label='Frame (-1 for all)', min=-1, max=80, step=1, value=-1)
-        self.process_btn = PushButton(text='Process and Save')
+        self.process_btn = PushButton(text='▶ Process / Re-render existing')
         self.process_btn.changed.connect(self._on_process)
         _style_process_button(self.process_btn)
         self.input_dir.changed.connect(self._on_input_dir_changed)
@@ -1085,9 +1088,17 @@ class PTUReader(Container):
             '−1 sums every frame in the PTU (typical). Positive N picks '
             'a single 0-based frame index.')
         _tt(self.process_btn,
-            'Decodes every .ptu in the folder, writes intensity and '
-            'flim_stack TIFs, computes FastFLIM. Slow for large PTUs '
-            '(tens of seconds each).')
+            'Click to either decode new PTUs OR re-render previously '
+            'processed ones for visual review.\n\n'
+            'NEW data: decodes every .ptu in the folder, writes '
+            'intensity/*_sum.tif + flim_stack/*_ch*.tif + '
+            '*_fastflim_tau.tif, then renders the FastFLIM colour '
+            'overlay. Slow (tens of seconds per PTU).\n\n'
+            'PREVIOUSLY processed: a dialog pops up offering '
+            '"Re-render from existing" — loads the cached tau + '
+            'intensity TIFs and re-renders the FastFLIM overlay '
+            'instantly, so you can tweak Auto contrast / gamma / '
+            'CLAHE on old data without re-decoding.')
 
         # Progress feedback (PTU decoding can take ~30-60s for 1GB+ files)
         self.progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
@@ -1284,6 +1295,22 @@ class PTUReader(Container):
         upper = float(upper)
         lower = float(lower)
 
+        # Visual feedback: progress bar + status. Cheap (single
+        # percentile call on cached arrays) but on multi-FOV setups the
+        # subsequent redraw can take a beat.
+        try:
+            self.progress.min = 0
+            self.progress.max = 100
+            self.progress.value = 10
+            self.status_label.value = (
+                f'Auto contrast preset {self._auto_cycle_idx + 1}/'
+                f'{len(presets)} — computing percentiles...'
+            )
+            from qtpy.QtWidgets import QApplication as _QA
+            _QA.processEvents()
+        except Exception:
+            pass
+
         first = next(iter(self._fastflim_cache.values()))
         tau = np.asarray(first['tau'], dtype=np.float32)
         inten = np.asarray(first['inten'], dtype=np.float32)
@@ -1304,18 +1331,43 @@ class PTUReader(Container):
         if tau_hi <= tau_lo:
             tau_hi = tau_lo + 1e-3
 
-        # Write values; the .changed signals drive _redraw_all_fastflim.
-        self.tau_min.value = round(tau_lo, 3)
-        self.tau_max.value = round(tau_hi, 3)
-        self.intensity_clip.value = round(upper, 1)
+        # Clamp to spinbox range so we never raise ValueError when the
+        # data tau goes beyond the SpinBox's hardcoded max (e.g. noisy
+        # short-tau pixels giving weighted-mean ~13 ns on a max=10 box).
+        tau_lo_clamped = max(float(self.tau_min.min), min(tau_lo, float(self.tau_min.max)))
+        tau_hi_clamped = max(float(self.tau_max.min), min(tau_hi, float(self.tau_max.max)))
+
+        # Batch the three writes so we only redraw ONCE at the end,
+        # not three times.
+        self._suppress_redraw = True
         try:
-            self.status_label.value = (
-                f'Auto contrast preset {self._auto_cycle_idx + 1}/'
-                f'{len(presets)} — '
-                f'tau [{tau_lo:.2f}, {tau_hi:.2f}] ns '
-                f'(pctl {int(lower)}–{int(upper)}), '
-                f'intensity clip {int(upper)}%.'
-            )
+            self.progress.value = 40
+            self.tau_min.value = round(tau_lo_clamped, 3)
+            self.tau_max.value = round(tau_hi_clamped, 3)
+            self.intensity_clip.value = round(upper, 1)
+        finally:
+            self._suppress_redraw = False
+        self.progress.value = 70
+        try:
+            from qtpy.QtWidgets import QApplication as _QA
+            _QA.processEvents()
+        except Exception:
+            pass
+        self._redraw_all_fastflim()
+        self.progress.value = 100
+
+        msg = (
+            f'Auto contrast {self._auto_cycle_idx + 1}/{len(presets)}: '
+            f'tau {tau_lo_clamped:.2f}–{tau_hi_clamped:.2f} ns '
+            f'(pctl {int(lower)}–{int(upper)}), '
+            f'intensity clip {int(upper)}%.'
+        )
+        try:
+            self.status_label.value = msg
+        except Exception:
+            pass
+        try:
+            show_info(msg)
         except Exception:
             pass
 
@@ -1325,7 +1377,13 @@ class PTUReader(Container):
         Wired to ``changed`` on tau_min / tau_max / gamma / floor / CLAHE /
         clahe_tile. Runs in the main thread; cost is O(pixels * n_layers),
         typically sub-second for a 2k x 2k image.
+
+        Auto contrast sets ``_suppress_redraw=True`` while it batches the
+        three control updates so we redraw ONCE at the end instead of
+        three times.
         """
+        if getattr(self, '_suppress_redraw', False):
+            return
         if not self._fastflim_cache:
             return
         for name, pair in list(self._fastflim_cache.items()):
@@ -1392,9 +1450,10 @@ class PTUReader(Container):
                 first_fov = not self._fastflim_cache
                 self._push_fastflim_layer(f'{p.stem}_FastFLIM', tau, inten)
                 if first_fov and self._auto_cycle_idx < 0:
-                    # Same first-Process auto-init: jump to the typical
-                    # 90/20 preset so the user sees a sensible default.
-                    self._auto_cycle_idx = 1
+                    # First-Process default: land on the (80, 40) preset
+                    # — aggressive enough to suppress the blue background
+                    # tail without crushing genuine signal contrast.
+                    self._auto_cycle_idx = 3
                     self._on_auto_contrast()
                 n_loaded += 1
                 self.progress.value = (i + 1) * 100
@@ -1612,15 +1671,14 @@ class PTUReader(Container):
             _, name, tau_map, total_int = payload
             try:
                 # First FOV this session — advance auto-contrast to the
-                # default "data-driven" preset (idx=2 → 10/90 percentiles)
-                # so the user does not see hardcoded 3.1 / 5.1 ns on data
-                # whose real range is elsewhere. Subsequent FOVs inherit
-                # the current controls.
+                # (80, 40) preset (idx 4) so the user does not see the
+                # hardcoded 3.1 / 5.1 ns on data whose real range is
+                # elsewhere, and the blue background tail is suppressed.
+                # Subsequent FOVs inherit the current controls.
                 first_fov = not self._fastflim_cache
                 self._push_fastflim_layer(name, tau_map, total_int)
                 if first_fov and self._auto_cycle_idx < 0:
-                    # Jump straight to 90% preset (idx 2) on first Process.
-                    self._auto_cycle_idx = 1
+                    self._auto_cycle_idx = 3  # next click → idx 4 = (80, 40)
                     self._on_auto_contrast()
                 # Persist the RGB with current display settings alongside
                 # the raw tau .tif. Users can later drag a slider and
