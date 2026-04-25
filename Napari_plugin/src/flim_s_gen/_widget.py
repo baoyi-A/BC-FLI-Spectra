@@ -1342,6 +1342,80 @@ class PTUReader(Container):
             except Exception as e:
                 print(f'[FastFLIM redraw] {name}: {e}')
 
+    def _rerender_existing_fastflim(self, out_dir, ptu_files):
+        """Re-render FastFLIM overlays from the already-saved tau + intensity
+        TIFs, with NO PTU re-decoding.
+
+        Used when the user clicks "Re-render from existing" in the
+        already-processed dialog. Lets them tweak the tau range / brightness
+        / CLAHE controls without paying the 20-30 s/file PTU decode cost.
+        """
+        out_int = out_dir / 'intensity'
+        n_total = len(ptu_files)
+        # Drop any stale cache and reset the auto-cycle so the first FOV
+        # we load triggers the data-driven default.
+        self._fastflim_cache = {}
+        self._auto_cycle_idx = -1
+
+        self.progress.min = 0
+        self.progress.max = max(1, n_total * 100)
+        self.progress.value = 0
+        self.process_btn.enabled = False
+        n_loaded = 0
+        try:
+            for i, p in enumerate(ptu_files):
+                self.status_label.value = (
+                    f'[{i+1}/{n_total}] Loading cached tau + intensity for '
+                    f'{p.stem}...'
+                )
+                tau_p = out_dir / f'{p.stem}_fastflim_tau.tif'
+                int_p = out_int / f'{p.stem}_sum.tif'
+                if not (tau_p.is_file() and int_p.is_file()):
+                    print(f'[re-render] missing tau or intensity for '
+                          f'{p.stem} (tau={tau_p.is_file()}, '
+                          f'inten={int_p.is_file()}); skipped')
+                    self.progress.value = (i + 1) * 100
+                    continue
+                try:
+                    tau = np.asarray(tifffile.imread(str(tau_p)),
+                                      dtype=np.float32)
+                    inten = np.asarray(tifffile.imread(str(int_p)),
+                                        dtype=np.float32)
+                    if tau.ndim > 2:
+                        tau = np.squeeze(tau)
+                    if inten.ndim > 2:
+                        inten = np.squeeze(inten)
+                except Exception as e:
+                    print(f'[re-render] read failed for {p.stem}: {e}')
+                    self.progress.value = (i + 1) * 100
+                    continue
+                first_fov = not self._fastflim_cache
+                self._push_fastflim_layer(f'{p.stem}_FastFLIM', tau, inten)
+                if first_fov and self._auto_cycle_idx < 0:
+                    # Same first-Process auto-init: jump to the typical
+                    # 90/20 preset so the user sees a sensible default.
+                    self._auto_cycle_idx = 1
+                    self._on_auto_contrast()
+                n_loaded += 1
+                self.progress.value = (i + 1) * 100
+                # Pump Qt so the viewer updates between FOVs.
+                try:
+                    from qtpy.QtWidgets import QApplication
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+            self.progress.value = self.progress.max
+            self.status_label.value = (
+                f'Re-rendered {n_loaded} / {n_total} FastFLIM overlay(s) '
+                f'from disk. Drag any control above to tune the look.'
+            )
+            show_info(
+                f'Re-rendered {n_loaded} FastFLIM overlay(s) without PTU '
+                f'decoding. Click Next when done tweaking.'
+            )
+        finally:
+            self.process_btn.enabled = True
+
     def _compute_tau_only(self, stack_sum, total_int, tau_res):
         eps = 1e-6
         B = stack_sum.shape[2]
@@ -1387,16 +1461,35 @@ class PTUReader(Container):
                 f'{len(already_done)} PTU file(s) already have outputs in:\n'
                 f'  {out_int}\n  {out_stack}\n\n'
                 f'Already processed:\n  {preview}{more}\n\n'
-                f'Re-run and OVERWRITE existing TIFs?'
+                f'Pick an action:'
             )
-            reply = QMessageBox.question(
-                None, 'PTU already processed', msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                show_info('Skipped — outputs kept as-is. You can click Next to continue.')
+            mb = QMessageBox(None)
+            mb.setWindowTitle('PTU already processed')
+            mb.setText(msg)
+            mb.setIcon(QMessageBox.Icon.Question)
+            b_reproc = mb.addButton('Re-process (overwrite)', QMessageBox.ButtonRole.AcceptRole)
+            b_render = mb.addButton('Re-render from existing', QMessageBox.ButtonRole.ActionRole)
+            b_cancel = mb.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+            mb.setDefaultButton(b_render)
+            try:
+                b_render.setToolTip(
+                    'Skip PTU re-decoding. Load the cached *_fastflim_tau.tif '
+                    'and intensity/*_sum.tif from disk and re-render the '
+                    'FastFLIM overlays. Useful for tweaking colour / contrast.')
+                b_reproc.setToolTip(
+                    'Re-decode every .ptu and overwrite all existing TIFs. '
+                    'Slow.')
+            except Exception:
+                pass
+            mb.exec_()
+            clicked = mb.clickedButton()
+            if clicked is b_cancel or clicked is None:
+                show_info('Cancelled — outputs kept as-is. You can click Next to continue.')
                 return
+            if clicked is b_render:
+                self._rerender_existing_fastflim(out_dir, ptu_files)
+                return
+            # else: fall through to re-process (overwrite)
 
         # Capture GUI values on main thread — worker runs in a different thread
         tau_min = float(self.tau_min.value)
