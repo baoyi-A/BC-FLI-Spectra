@@ -8615,16 +8615,150 @@ class BarcodeSeg(Container):
 
 
 # ---- BiosensorSeg configuration ----
-_BIOSENSOR_MODEL_DEFAULT = "BS-BC-assist-cls-260402-forDense"
+# As of 2026-04-26 the biosensor cellpose model is trained on a BGY pseudo-RGB
+# render (CLAHE per-channel + gamma + Y→R, G→G, B→B) of the FIRST FRAME of
+# each B/G/Y stack, then BT.601 luminance. Defaults updated; older
+# intensity-trained models are kept in the dropdown so users can still pick
+# them — the widget falls back to the legacy frame-mean intensity flow when
+# the chosen model name does NOT contain "-bgy-".
+_BIOSENSOR_MODEL_DEFAULT = "BS-BC-assist-cls-bgy-260426"
 _BIOSENSOR_MODEL_FALLBACKS = [
-    "BS-BC-assist-cls-260402-forDense",
-    "BS-BC-assist-cls-260328-1",
-    "BS-BC-assist-cls-260328",
+    "BS-BC-assist-cls-bgy-260426",
+    "BS-BC-assist-cls-260402-forDense",  # legacy (intensity-trained)
+    "BS-BC-assist-cls-260328-1",         # legacy
+    "BS-BC-assist-cls-260328",           # legacy
     "cyto2",
     "cyto",
 ]
 _BIOSENSOR_DEFAULT_DIAM = 45.0
 _BARCODE_ASSIST_ROTATE_K = 3  # 90° * k clockwise; matches BS-BC-assist training
+
+# Biosensor BGY render parameters — MUST match
+# biosensor_track_sum_seg_review_260402._enhance_bgy_channel_for_rgb so
+# inference sees the same input distribution as
+# biosensor_finetune_bs_bgy_cls_260426 used at training time.
+_BS_RENDER_USE_CLAHE = True
+_BS_RENDER_CLAHE_TILE = 64
+_BS_RENDER_CLIP_PCT = 99.8
+_BS_RENDER_POST_CLAHE_CLIP_PCT = 99.8
+_BS_RENDER_GAMMA = 0.85
+
+
+def _bs_render_robust_norm01(a, clip_pct=None):
+    """Robust per-channel norm to [0,1] with gamma — first half of the
+    training render's enhance step.
+    """
+    if clip_pct is None:
+        clip_pct = _BS_RENDER_CLIP_PCT
+    a = np.asarray(a, dtype=np.float32)
+    valid = np.isfinite(a)
+    if not valid.any():
+        return np.zeros_like(a, dtype=np.float32)
+    vmax = float(np.nanpercentile(a[valid], clip_pct))
+    vmin = float(np.nanpercentile(a[valid], 0.5))
+    if not np.isfinite(vmax) or vmax <= vmin:
+        vmax = float(np.nanmax(a[valid]))
+        vmin = float(np.nanmin(a[valid]))
+    if not np.isfinite(vmax) or vmax <= vmin:
+        return np.zeros_like(a, dtype=np.float32)
+    x = np.clip((a - vmin) / (vmax - vmin), 0.0, 1.0)
+    gamma = max(1e-3, float(_BS_RENDER_GAMMA))
+    return np.power(x, gamma).astype(np.float32)
+
+
+def _bs_render_clahe01(x):
+    """CLAHE step matching the training render."""
+    x = np.asarray(x, dtype=np.float32)
+    if not _BS_RENDER_USE_CLAHE:
+        return x
+    try:
+        from skimage import exposure as _exp
+        h, w = x.shape
+        tile = max(2, int(_BS_RENDER_CLAHE_TILE))
+        return _exp.equalize_adapthist(
+            x,
+            kernel_size=(min(tile, max(2, h // 2)),
+                         min(tile, max(2, w // 2))),
+            clip_limit=0.01,
+        ).astype(np.float32)
+    except Exception as e:
+        print(f'[BS-render][CLAHE] skipped: {e}')
+        return x
+
+
+def _bs_render_enhance_channel(a):
+    """Per-channel: norm → CLAHE → re-norm. Matches training exactly."""
+    x = _bs_render_robust_norm01(a, _BS_RENDER_CLIP_PCT)
+    x = _bs_render_clahe01(x)
+    valid = np.isfinite(x)
+    if not valid.any():
+        return np.zeros_like(x, dtype=np.float32)
+    hi = float(np.nanpercentile(x[valid], _BS_RENDER_POST_CLAHE_CLIP_PCT))
+    lo = float(np.nanpercentile(x[valid], 0.2))
+    if not np.isfinite(hi) or hi <= lo:
+        hi = float(np.nanmax(x[valid]))
+        lo = float(np.nanmin(x[valid]))
+    if not np.isfinite(hi) or hi <= lo:
+        return np.zeros_like(x, dtype=np.float32)
+    return np.clip((x - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def _render_bgy_seg_input_rgb(b_frame, g_frame, y_frame):
+    """Build the BGY pseudo-RGB seg input as used at training time.
+
+    Inputs may be ``None`` (channel disabled by user) — that channel is
+    filled with zeros and the rest are still rendered. Output is uint8
+    H×W×3 with mapping Y→R, G→G, B→B (NOT additive yellow, to keep
+    multi-channel cells from saturating to white).
+
+    Provide at least one non-None frame; the output shape is taken from
+    the first available channel.
+    """
+    frames = [(0, b_frame), (1, g_frame), (2, y_frame)]
+    avail = [(slot, f) for slot, f in frames if f is not None]
+    if not avail:
+        raise ValueError('At least one of B / G / Y first-frame must be provided')
+    ref_hw = np.asarray(avail[0][1]).shape[:2]
+    enhanced = {0: None, 1: None, 2: None}
+    for slot, f in frames:
+        if f is None:
+            enhanced[slot] = np.zeros(ref_hw, dtype=np.float32)
+            continue
+        x = _bs_render_enhance_channel(np.asarray(f, dtype=np.float32))
+        if x.shape[:2] != ref_hw:
+            raise RuntimeError(
+                f'BGY render shape mismatch: B/G/Y must share H×W; got {x.shape}')
+        enhanced[slot] = x
+    rgb = np.zeros((*ref_hw, 3), dtype=np.float32)
+    rgb[..., 0] = enhanced[2]  # Y → Red
+    rgb[..., 1] = enhanced[1]  # G → Green
+    rgb[..., 2] = enhanced[0]  # B → Blue
+    rgb = np.clip(rgb, 0.0, 1.0)
+    return np.clip(np.round(rgb * 255.0), 0, 255).astype(np.uint8)
+
+
+def _render_bgy_seg_input_grayscale(b_frame, g_frame, y_frame):
+    """BGY render → BT.601 luminance, the bit-identical Cellpose ch1 input."""
+    rgb = _render_bgy_seg_input_rgb(b_frame, g_frame, y_frame)
+    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    return rgb, np.clip(lum, 0, 255).astype(np.uint8)
+
+
+def _read_first_frame_2d(path):
+    """Read the first frame of a TIF (or the only frame if 2D)."""
+    a = np.asarray(tifffile.imread(str(path)), dtype=np.float32)
+    if a.ndim == 3:
+        return a[0]
+    if a.ndim == 2:
+        return a
+    return np.squeeze(a).astype(np.float32)
+
+
+def _is_bgy_render_model(model_name):
+    """Heuristic: model whose name contains '-bgy-' was trained on the BGY
+    render input. The legacy BS-* models were trained on the intensity
+    sum and need the old _on_generate flow."""
+    return '-bgy-' in str(model_name).lower()
 
 
 def _norm01_percentile(a: np.ndarray) -> np.ndarray:
@@ -8709,8 +8843,11 @@ class BiosensorSeg(Container):
         self.use_b = CheckBox(text='Use B', value=True)
         self.use_g = CheckBox(text='Use G', value=True)
         self.use_y = CheckBox(text='Use Y', value=True)
+        # Defaults aligned with the BGY-render training pipeline (first
+        # frame only). Multi-frame averaging is allowed but emits a
+        # deviation hint.
         self.frame_start = SpinBox(label='First frame (1-based)', min=1, max=10000, value=1)
-        self.frame_end = SpinBox(label='Last frame (inclusive)', min=1, max=10000, value=6)
+        self.frame_end = SpinBox(label='Last frame (inclusive)', min=1, max=10000, value=1)
         self.gen_btn = PushButton(text='Generate Seg Image')
         self.gen_btn.changed.connect(self._on_generate)
         _style_process_button(self.gen_btn)
@@ -8809,13 +8946,28 @@ class BiosensorSeg(Container):
         _tt(self.use_g, 'Include G channel when building the seg image.')
         _tt(self.use_y, 'Include Y channel when building the seg image.')
         _tt(self.frame_start,
-            '1-based first frame to sum into the seg image. Early frames '
-            '(1–6) are usually the sharpest.')
+            '1-based first frame used to build the seg input. Default 1. '
+            'For BGY-render-trained models the training pipeline used '
+            'frame 1 only; multi-frame averages still work but deviate '
+            'from the training distribution.')
         _tt(self.frame_end,
-            '1-based last frame (inclusive) to sum into the seg image.')
+            '1-based last frame (inclusive). Default 1 for BGY-render '
+            'models. Set higher to average multiple frames per channel.')
         _tt(self.gen_btn,
-            'Sums the checked channels across [first, last] frames into '
-            'seg_image.tif and loads it as a napari layer.')
+            'BGY-render model selected: each enabled B/G/Y channel is '
+            'CLAHE-enhanced + gamma-corrected, stacked Y→R G→G B→B, then '
+            'taken to BT.601 luminance (matches training). Disabled '
+            'channels are filled with zeros. Saves <stem>_bgy_render_rgb.'
+            'tif and <stem>_seg_image.tif.\n\n'
+            'Legacy intensity model selected: averages the chosen frames '
+            'per channel and across enabled channels (old behaviour).')
+        _tt(self.seg_model,
+            'Cellpose model. Default BS-BC-assist-cls-bgy-260426 is '
+            'trained on the BGY pseudo-RGB render and expects the '
+            'render-grayscale input that Generate produces. Older '
+            'BS-BC-assist-cls-* (no -bgy- in the name) were trained on '
+            'the intensity sum and switch the widget back to the legacy '
+            'frame-mean flow automatically.')
         _tt(self.barcode_cls_path,
             'Barcode classification TIF (one class label per cell) from '
             'the Seeded K-Means step. Auto-filled when the sample folder '
@@ -8830,10 +8982,6 @@ class BiosensorSeg(Container):
         _tt(self.confirm_barcode_btn,
             'Loads the barcode classification, rotates + resizes to match '
             'the seg image, and previews it as an overlay layer.')
-        _tt(self.seg_model,
-            'Dual-input Cellpose model that takes the biosensor seg '
-            'image + aligned barcode as input. BS-* / *biosensor* names '
-            'sort to the top.')
         _tt(self.diameter,
             'Approximate cell diameter in pixels. Set 0 for Cellpose '
             'auto-detect (slower).')
@@ -9063,29 +9211,132 @@ class BiosensorSeg(Container):
             show_warning(f'Last frame ({end}) < First frame ({start}).')
             return
 
-        stacks = []
+        # We always read paths for all 3 channels even if `use_*` is off,
+        # because the BGY render fills disabled channels with zeros (and
+        # the legacy intensity flow simply skips them). A None path with
+        # use_*=True is a hard error; a None path with use_*=False is OK.
+        chan_state: list[tuple[str, bool, Path | None]] = []
         for use, path, tag in (
             (self.use_b.value, self.stack_b_path.value, 'B'),
             (self.use_g.value, self.stack_g_path.value, 'G'),
             (self.use_y.value, self.stack_y_path.value, 'Y'),
         ):
-            if not use:
-                continue
             p = Path(str(path)) if path else None
-            if p is None or not p.is_file():
-                show_warning(f'Stack {tag} path invalid: {p}')
-                return
-            stacks.append((tag, p))
-        if not stacks:
+            if use:
+                if p is None or not p.is_file():
+                    show_warning(f'Stack {tag} path invalid: {p}')
+                    return
+            chan_state.append((tag, bool(use), p if (p and p.is_file()) else None))
+        used = [(t, p) for t, u, p in chan_state if u and p is not None]
+        if not used:
             show_warning('Pick at least one channel (B/G/Y) for the seg image.')
             return
 
+        # Decide flow based on the currently-selected model.
+        model_name = str(self.seg_model.value or '')
+        bgy_mode = _is_bgy_render_model(model_name)
+        if bgy_mode:
+            # Friendly warnings about deviations from the training distribution.
+            if not (chan_state[0][1] and chan_state[1][1] and chan_state[2][1]):
+                disabled = [t for t, u, _ in chan_state if not u]
+                show_info(
+                    f'BGY render: channel(s) {",".join(disabled)} disabled '
+                    'will be filled with zeros — training used all three.'
+                )
+            if start != 1 or end != 1:
+                show_info(
+                    f'BGY render: training used frame 1 only. Multi-frame '
+                    f'(frames {start}-{end}) means each channel is averaged '
+                    'first then enhanced — slight deviation from training.'
+                )
+
         self.gen_btn.enabled = False
-        self._set_progress(5, f'Reading {len(stacks)} stack(s)...')
         try:
+            sample_dir = Path(str(self.sample_folder.value))
+            sample_dir.mkdir(parents=True, exist_ok=True)
+
+            if bgy_mode:
+                # ===== BGY render flow (training-aligned) =====
+                self._set_progress(5, 'Reading B/G/Y first frame(s)...')
+                # For each enabled channel, read the user-selected frame range
+                # and average. Default 1-1 is just frame index 0.
+                def _read_avg(tag, p):
+                    arr = tifffile.imread(str(p))
+                    if arr.ndim == 2:
+                        arr = arr[np.newaxis, ...]
+                    T = arr.shape[0]
+                    s0 = max(0, start - 1)
+                    e0 = min(T, end)
+                    if e0 <= s0:
+                        raise ValueError(
+                            f'{tag}: frame range {start}..{end} outside stack with {T} frames.')
+                    sub = arr[s0:e0].astype(np.float32)
+                    return sub.mean(axis=0) if sub.shape[0] > 1 else sub[0]
+
+                frames = {'B': None, 'G': None, 'Y': None}
+                n_done = 0
+                n_total = max(1, len(used))
+                for tag, p in used:
+                    n_done += 1
+                    self._set_progress(
+                        5 + int(40 * n_done / n_total),
+                        f'Reading {tag}: {p.name}...')
+                    frames[tag] = _read_avg(tag, p)
+
+                self._set_progress(50, 'Rendering BGY pseudo-RGB (CLAHE + gamma)...')
+                rgb, gray_u8 = _render_bgy_seg_input_grayscale(
+                    frames['B'], frames['G'], frames['Y'])
+                self._set_progress(80, 'Saving render outputs...')
+
+                # Stem aligned with the training-side cache name. We use a
+                # FOV tag derived from one of the source stack file names so
+                # downstream reviews can correlate.
+                ref_p = used[0][1]
+                fov_tag = ref_p.stem
+                # Strip a trailing channel suffix like "-b" / "-g" / "-y" so
+                # the cache name is FOV-level, not channel-level.
+                low = fov_tag.lower()
+                for suf in ('-b', '-g', '-y'):
+                    if low.endswith(suf):
+                        fov_tag = fov_tag[:-len(suf)]
+                        break
+                rgb_path = sample_dir / f'{fov_tag}_bgy_render_rgb.tif'
+                seg_path = sample_dir / f'{fov_tag}_seg_image.tif'
+                tifffile.imwrite(str(rgb_path), rgb)
+                tifffile.imwrite(str(seg_path), gray_u8)
+
+                self._seg_img = gray_u8
+                self._seg_img_save_path = seg_path
+
+                # Refresh napari layers — del + add to dodge GL races.
+                for n in ('bgy_render', 'seg_image'):
+                    if n in self.viewer.layers:
+                        try:
+                            del self.viewer.layers[n]
+                        except Exception:
+                            pass
+                self.viewer.add_image(rgb, name='bgy_render', rgb=True,
+                                       blending='translucent')
+                self.viewer.add_image(gray_u8, name='seg_image',
+                                       colormap='gray', visible=False)
+
+                tags_used = [t for t, _ in used]
+                self._set_progress(
+                    100,
+                    f'BGY render saved: {rgb_path.name} + {seg_path.name} '
+                    f'(channels={"+".join(tags_used)}, frames {start}-{end}).'
+                )
+                show_info(
+                    f'BGY render ready. RGB cache: {rgb_path.name}; '
+                    f'Cellpose grayscale: {seg_path.name}.'
+                )
+                return
+
+            # ===== Legacy intensity-mean flow (when user picked an old model) =====
+            self._set_progress(5, f'Reading {len(used)} stack(s) (legacy mean flow)...')
             accum = None
-            n_channels = len(stacks)
-            for ci, (tag, p) in enumerate(stacks):
+            n_channels = len(used)
+            for ci, (tag, p) in enumerate(used):
                 self._set_progress(
                     5 + int(80 * ci / max(1, n_channels)),
                     f'Loading {tag}: {p.name}...',
@@ -9099,20 +9350,13 @@ class BiosensorSeg(Container):
                 if e0 <= s0:
                     show_warning(f'{tag}: frame range {start}..{end} outside stack with {T} frames.')
                     return
-                sub = arr[s0:e0].astype(np.float32)  # (F, H, W)
-                frame_mean = sub.mean(axis=0)  # (H, W) — safe from overflow
-                if accum is None:
-                    accum = frame_mean
-                else:
-                    accum = accum + frame_mean
-
-            accum = accum / float(n_channels)  # avg across selected channels
+                sub = arr[s0:e0].astype(np.float32)
+                frame_mean = sub.mean(axis=0)
+                accum = frame_mean if accum is None else accum + frame_mean
+            accum = accum / float(n_channels)
             track_u16 = np.clip(np.round(accum), 0, 65535).astype(np.uint16)
 
-            # persist
-            sample_dir = Path(str(self.sample_folder.value))
-            sample_dir.mkdir(parents=True, exist_ok=True)
-            tags = [t for t, _ in stacks]
+            tags = [t for t, _ in used]
             stem = f"FOV_{''.join(tags).lower()}_frames{start}-{end}_seg_img"
             out_path = sample_dir / f'{stem}.tif'
             self._set_progress(90, f'Saving {out_path.name}...')
@@ -9121,10 +9365,6 @@ class BiosensorSeg(Container):
             self._seg_img = track_u16
             self._seg_img_save_path = out_path
 
-            # napari layer (single name so re-runs overwrite). We REMOVE the old
-            # layer first and add a fresh one instead of reassigning `.data`,
-            # because the latter has triggered vispy/GL access violations when
-            # the canvas is mid-draw.
             if 'seg_image' in self.viewer.layers:
                 try:
                     del self.viewer.layers['seg_image']
@@ -9133,7 +9373,7 @@ class BiosensorSeg(Container):
             self.viewer.add_image(track_u16, name='seg_image', colormap='gray')
             self._set_progress(
                 100,
-                f'Tracking image ready: {out_path.name} '
+                f'Tracking image ready (legacy mean): {out_path.name} '
                 f'(channels={"+".join(tags)}, frames {start}-{end}).'
             )
             show_info(f'Tracking image saved: {out_path}')
