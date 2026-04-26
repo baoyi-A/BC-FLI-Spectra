@@ -1455,6 +1455,18 @@ class PTUReader(Container):
                     # tail without crushing genuine signal contrast.
                     self._auto_cycle_idx = 3
                     self._on_auto_contrast()
+                # Persist the seg input grayscale if it isn't already on
+                # disk. This is the bit-identical input Cellpose was
+                # trained on, so BarcodeSeg can skip the slow flim_stack
+                # re-read.
+                seg_path = out_dir / f'{p.stem}_seg_input.tif'
+                if not seg_path.is_file():
+                    try:
+                        seg_lum = _render_barcode_seg_grayscale(tau, inten)
+                        tifffile.imwrite(str(seg_path), seg_lum)
+                    except Exception as e:
+                        print(f'[re-render] seg_input save failed for '
+                              f'{p.stem}: {e}')
                 n_loaded += 1
                 self.progress.value = (i + 1) * 100
                 # Pump Qt so the viewer updates between FOVs.
@@ -1688,9 +1700,16 @@ class PTUReader(Container):
                 try:
                     from PIL import Image as _PILImage
                     out_dir = Path(str(self.output_dir.value))
+                    bare = name.replace('_FastFLIM', '')
                     rgb = self._render_fastflim_rgb(tau_map, total_int)
                     _PILImage.fromarray(rgb).save(
-                        str(out_dir / f"{name.replace('_FastFLIM','')}_fastflim_rgb.png"))
+                        str(out_dir / f"{bare}_fastflim_rgb.png"))
+                    # Also persist the BARCODE-SEG seg input — rendered
+                    # with the FIXED training params so BarcodeSeg can
+                    # skip the slow flim_stack re-read at inference time.
+                    seg_lum = _render_barcode_seg_grayscale(tau_map, total_int)
+                    tifffile.imwrite(
+                        str(out_dir / f"{bare}_seg_input.tif"), seg_lum)
                 except Exception as e_save:
                     print(f'[FastFLIM RGB save] {name}: {e_save}')
             except Exception as e:
@@ -7583,6 +7602,19 @@ def _render_barcode_seg_input_rgb(tau, inten):
     return np.clip(out * 255, 0, 255).astype(np.uint8)
 
 
+def _render_barcode_seg_grayscale(tau, inten):
+    """Render the FastFLIM seg input directly to BT.601 luminance.
+
+    Bit-identical to what the training script (
+    barcode_N_P_napari_seg_review_gui._prepare_images_for_review_and_seg)
+    feeds into Cellpose: render with fixed training params, then take
+    ``0.299 R + 0.587 G + 0.114 B``. Returns uint8 H×W.
+    """
+    rgb = _render_barcode_seg_input_rgb(tau, inten)
+    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    return np.clip(lum, 0, 255).astype(np.uint8)
+
+
 def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
     """Produce the Cellpose seg input for a barcode FOV.
 
@@ -7599,6 +7631,26 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
     """
     sum_tif_path = Path(sum_tif_path)
     sample_dir = Path(sample_dir)
+
+    # Bare FOV stem (strip the trailing "_sum") for sibling-file lookups.
+    bare = sum_tif_path.stem
+    if bare.endswith('_sum'):
+        bare = bare[:-len('_sum')]
+
+    # 1) Pre-rendered seg input from PTU Reader. This is the fast path
+    #    the user expects — no flim_stack re-read, no CLAHE recompute.
+    seg_cached_path = sample_dir / f'{bare}_seg_input.tif'
+    if seg_cached_path.is_file():
+        try:
+            seg = np.asarray(tifffile.imread(str(seg_cached_path)),
+                             dtype=np.float32)
+            if seg.ndim > 2:
+                seg = np.squeeze(seg)
+            return seg, 'seg_input.tif (cached)'
+        except Exception as e:
+            print(f'[barcode-seg] cached seg_input.tif read failed: {e}')
+
+    # 2) No cache — render on the fly from flim_stack + intensity.
     try:
         sum_img = np.asarray(tifffile.imread(str(sum_tif_path)), dtype=np.float32)
         if sum_img.ndim > 2:
@@ -7632,10 +7684,8 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
     if tau is None:
         # Fallback to the saved fastflim_tau.tif.  PTU Reader writes it
         # next to <stem>_sum.tif as <stem>_fastflim_tau.tif (where stem
-        # is the BARE FOV stem without the _sum suffix).
-        bare = sum_tif_path.stem
-        if bare.endswith('_sum'):
-            bare = bare[:-len('_sum')]
+        # is the BARE FOV stem without the _sum suffix — already
+        # computed at the top of this function).
         tau_path = sample_dir / f'{bare}_fastflim_tau.tif'
         if tau_path.is_file():
             try:
