@@ -7498,11 +7498,161 @@ def _save_seg_npy(dest_path: Path, masks: np.ndarray) -> None:
 # ---- BarcodeSeg N/P model configuration ----
 _BARCODE_MODEL_ROOT = Path(r"G:/BC-FLIM-S/LYH")  # where _cellpose_finetune_* folders live
 _CELLPOSE_SRC_PATH = Path(r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main")
-_DEFAULT_N_MODEL = "NinNC-260328-1"
-_DEFAULT_P_MODEL = "CinNC-260328-1"
+# As of 2026-04-25 the barcode N/P Cellpose models are trained on the
+# FastFLIM render (grayscale luminance of the Leica blue-green-red overlay)
+# instead of the raw intensity sum. Defaults updated accordingly. See
+# barcode_N_P_finetune_render_ok0425.py for the training pipeline.
+_DEFAULT_N_MODEL = "NinNC-render-260425-1"
+_DEFAULT_P_MODEL = "CinNC-render-260425-1"
 _DEFAULT_N_DIAMETER = 55.0
 _DEFAULT_P_DIAMETER = 92.0
 _CELLPOSE_BUILTIN = {"cyto", "cyto2", "nuclei", "tissuenet", "livecell", "general"}
+
+# Barcode-Seg render parameters — MUST match the training render in
+# barcode_N_P_napari_seg_review_gui._render_fastflim_rgb so inference
+# sees the same input distribution as training.
+_BARCODE_SEG_TAU_RES = 0.098
+_BARCODE_SEG_TAU_Q_LOW = 30.0
+_BARCODE_SEG_TAU_Q_HIGH = 85.0
+_BARCODE_SEG_INT_CLIP_PCT = 99.0
+_BARCODE_SEG_GAMMA = 0.55
+_BARCODE_SEG_FLOOR = 0.10
+_BARCODE_SEG_USE_CLAHE = True
+_BARCODE_SEG_CLAHE_TILE = 64
+
+
+def _render_barcode_seg_input_rgb(tau, inten):
+    """Replicate `barcode_N_P_napari_seg_review_gui._render_fastflim_rgb`.
+
+    Returns uint8 HxWx3. Used by inference so the Cellpose input is
+    bit-identical to the training-time render.
+    """
+    import matplotlib.colors as _mc
+    cmap = getattr(_render_barcode_seg_input_rgb, '_cmap', None)
+    if cmap is None:
+        cmap = _mc.LinearSegmentedColormap.from_list(
+            'leica_flim',
+            [(0.00, '#5faaff'), (0.50, '#00ff00'), (1.00, '#ff3030')],
+            N=256,
+        )
+        _render_barcode_seg_input_rgb._cmap = cmap
+
+    tau = np.asarray(tau, dtype=np.float32)
+    inten = np.asarray(inten, dtype=np.float32)
+
+    valid = np.isfinite(tau)
+    if valid.any():
+        vals = tau[valid]
+        ql = float(np.percentile(vals, _BARCODE_SEG_TAU_Q_LOW))
+        qh = float(np.percentile(vals, _BARCODE_SEG_TAU_Q_HIGH))
+        if np.isfinite(ql) and np.isfinite(qh) and qh > ql:
+            tau_lo, tau_hi = ql, qh
+        else:
+            tau_lo, tau_hi = float(np.nanmin(tau)), float(np.nanmax(tau))
+    else:
+        tau_lo, tau_hi = 0.0, 1.0
+    if tau_hi <= tau_lo:
+        tau_hi = tau_lo + 1e-3
+
+    tau_norm = np.clip((tau - tau_lo) / (tau_hi - tau_lo), 0.0, 1.0)
+    tau_norm = np.where(np.isfinite(tau), tau_norm, 0.0)
+    rgb = cmap(tau_norm)[..., :3]
+
+    v_max = float(np.percentile(inten, _BARCODE_SEG_INT_CLIP_PCT)) if inten.size else 1.0
+    if v_max <= 0:
+        v_max = 1.0
+    bright = np.clip(inten / v_max, 0.0, 1.0)
+
+    if _BARCODE_SEG_USE_CLAHE:
+        try:
+            from skimage import exposure as _exp
+            tile = max(2, int(_BARCODE_SEG_CLAHE_TILE))
+            h, w = bright.shape
+            bright = _exp.equalize_adapthist(
+                bright.astype(np.float32),
+                kernel_size=(min(tile, max(2, h // 2)),
+                             min(tile, max(2, w // 2))),
+                clip_limit=0.01,
+            ).astype(np.float32)
+        except Exception as _e:
+            print(f'[barcode-seg CLAHE] skipped: {_e}')
+
+    bright = _BARCODE_SEG_FLOOR + (1.0 - _BARCODE_SEG_FLOOR) * np.power(bright, _BARCODE_SEG_GAMMA)
+    bright = np.clip(bright, 0.0, 1.0)
+    out = rgb * bright[..., None]
+    return np.clip(out * 255, 0, 255).astype(np.uint8)
+
+
+def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
+    """Produce the Cellpose seg input for a barcode FOV.
+
+    Reads the intensity sum (`sum_tif_path`) and the per-bin FLIM stack
+    `<sample>/flim_stack/<stem>.tif`, computes weighted-mean tau, renders
+    the FastFLIM Leica blue-green-red overlay, and returns the BT.601
+    luminance grayscale exactly as used during training.
+
+    Returns ``(grayscale_2d_float32, source_label)`` on success. If the
+    FLIM stack is missing, falls back to the saved
+    ``<stem.replace('_sum','')>_fastflim_tau.tif`` map. If neither is
+    available, returns ``(None, '')`` so the caller can use the raw
+    intensity sum as a backward-compatible fallback.
+    """
+    sum_tif_path = Path(sum_tif_path)
+    sample_dir = Path(sample_dir)
+    try:
+        sum_img = np.asarray(tifffile.imread(str(sum_tif_path)), dtype=np.float32)
+        if sum_img.ndim > 2:
+            sum_img = np.squeeze(sum_img)
+    except Exception as e:
+        print(f'[barcode-seg] failed to read sum tif: {e}')
+        return None, ''
+
+    tau = None
+    source = ''
+    stack_path = sample_dir / 'flim_stack' / f'{sum_tif_path.stem}.tif'
+    if stack_path.is_file():
+        try:
+            stack = np.asarray(tifffile.imread(str(stack_path)), dtype=np.float32)
+            if stack.ndim == 3:
+                # Match training: if axes look like (B, H, W) transpose to (H, W, B).
+                if stack.shape[0] < 8 and stack.shape[2] >= 8:
+                    stack_hw_b = stack
+                else:
+                    stack_hw_b = np.transpose(stack, (1, 2, 0))
+                if stack_hw_b.shape[:2] == sum_img.shape[:2]:
+                    eps = 1e-6
+                    b = stack_hw_b.shape[2]
+                    t = (np.arange(b, dtype=np.float32) * _BARCODE_SEG_TAU_RES).reshape(1, 1, b)
+                    denom = np.maximum(sum_img, eps)
+                    tau = (stack_hw_b * t).sum(axis=2) / denom
+                    source = 'flim_stack'
+        except Exception as e:
+            print(f'[barcode-seg] tau compute from flim_stack failed: {e}')
+
+    if tau is None:
+        # Fallback to the saved fastflim_tau.tif.  PTU Reader writes it
+        # next to <stem>_sum.tif as <stem>_fastflim_tau.tif (where stem
+        # is the BARE FOV stem without the _sum suffix).
+        bare = sum_tif_path.stem
+        if bare.endswith('_sum'):
+            bare = bare[:-len('_sum')]
+        tau_path = sample_dir / f'{bare}_fastflim_tau.tif'
+        if tau_path.is_file():
+            try:
+                tau = np.asarray(tifffile.imread(str(tau_path)), dtype=np.float32)
+                if tau.ndim > 2:
+                    tau = np.squeeze(tau)
+                source = 'fastflim_tau.tif'
+            except Exception as e:
+                print(f'[barcode-seg] tau read failed: {e}')
+
+    if tau is None or tau.shape != sum_img.shape:
+        return None, ''
+
+    rgb = _render_barcode_seg_input_rgb(tau, sum_img)
+    # BT.601 luminance, exactly as the training script does.
+    seg_img = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+    return seg_img, source
 
 
 def _resolve_barcode_model_path(model_type: str, extra_roots=()) -> "Path | None":
@@ -7662,14 +7812,30 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "") -> list[str]:
 
 
 class BarcodeSeg(Container):
-    """Single-FOV N/P segmentation on the barcode intensity (sum) image.
+    """Single-FOV N/P segmentation on the FastFLIM-rendered barcode image.
+
+    As of 2026-04-25 the Cellpose models (NinNC-render-260425-1 /
+    CinNC-render-260425-1) are trained on the **FastFLIM render**
+    (Leica blue-green-red overlay → BT.601 luminance) instead of the
+    raw intensity sum. ``_load_image_2d`` reproduces that render at
+    inference time (matching params from ``_BARCODE_SEG_*`` constants)
+    so the Cellpose input is bit-identical to training.
 
     Workflow after PTU Reader:
-    1. Pick sample folder → auto-finds intensity/*_sum.tif
-    2. Click "Auto Segment N & P" → runs both Cellpose models, saves *_seg_n.npy / *_seg_p.npy
-    3. Edit masks interactively in napari (right-click draw, Ctrl+click delete, Z/X toggle, etc.)
-    4. Optional: "Fine-tune" on the current edited masks; new model is saved in the sample
-       folder and added to the model dropdown for reuse.
+    1. Pick sample folder → auto-finds intensity/*_sum.tif (anchor) and
+       loads the FastFLIM render via flim_stack/<stem>.tif (or the saved
+       *_fastflim_tau.tif as a fallback).
+    2. Click "Auto Segment N & P" → runs both Cellpose models on the
+       FastFLIM grayscale, saves *_seg_n.npy / *_seg_p.npy next to the
+       intensity sum.
+    3. Edit masks interactively in napari (right-click draw, Ctrl+click
+       delete, Z/X toggle, etc.)
+    4. Optional: "Fine-tune" on the current edited masks; new model is
+       saved in the sample folder and added to the model dropdown.
+
+    If the FLIM stack is missing, ``_load_image_2d`` falls back to the
+    raw intensity sum so legacy data still works (with the older
+    intensity-trained models if you select them).
     """
     def __init__(self, viewer: "napari.viewer.Viewer"):
         super().__init__(layout='vertical')
@@ -7726,17 +7892,21 @@ class BarcodeSeg(Container):
         self.ft_multi_p_btn.changed.connect(lambda: self._on_finetune_multi('p'))
 
         _tt(self.sample_dir,
-            'Sample folder — must contain intensity/*_sum.tif from PTU Reader.')
+            'Sample folder — must contain intensity/*_sum.tif AND either '
+            'flim_stack/<stem>.tif or <stem>_fastflim_tau.tif from PTU '
+            'Reader. The Cellpose input is the FastFLIM-render grayscale, '
+            'computed on the fly from these.')
         _tt(self.tif_override,
             'Optional: override the auto-detected sum.tif with a specific '
             'file. Leave empty for the default.')
         _tt(self.n_model,
-            'Cellpose model for nucleus (N) segmentation. Custom fine-'
-            'tuned models under <sample>/_finetune/ or the shared plugin '
-            'root are auto-discovered and ranked by recency.')
+            'Cellpose model for nucleus (N) segmentation. As of 2026-04-25 '
+            'the default (NinNC-render-260425-1) is trained on the FastFLIM '
+            'render — picking older intensity-trained models will work but '
+            'may give worse N masks on the new input.')
         _tt(self.p_model,
-            'Cellpose model for cytoplasm (P) segmentation. Custom fine-'
-            'tuned models auto-discovered like N model.')
+            'Cellpose model for cytoplasm (P) segmentation. Default '
+            'CinNC-render-260425-1 is also FastFLIM-render-trained.')
         _tt(self.n_diameter,
             'Approximate nucleus diameter in pixels. Cellpose auto-'
             'detects if you set 0 (slower).')
@@ -7747,8 +7917,11 @@ class BarcodeSeg(Container):
             'Uses CUDA if available; falls back to CPU automatically. '
             'GPU is ~10× faster on 2k×2k images.')
         _tt(self.run_btn,
-            'Runs N and P Cellpose models in sequence. Results auto-save '
-            'to <image>_seg_n.npy / <image>_seg_p.npy next to the source.')
+            'Builds the FastFLIM render grayscale (Leica blue→green→red, '
+            '30/85 percentile auto-range, CLAHE on, gamma 0.55) from this '
+            'FOV\'s flim_stack + intensity, then runs N and P Cellpose '
+            'models. Results auto-save to <image>_seg_n.npy / '
+            '<image>_seg_p.npy next to the intensity sum.')
         _tt(self.reseg_n_btn,
             'Re-runs the current N model on the image (e.g. after you '
             'changed the model or diameter).')
@@ -7897,6 +8070,24 @@ class BarcodeSeg(Container):
         return tifs[0] if tifs else None
 
     def _load_image_2d(self, path: Path) -> np.ndarray:
+        """Load the seg input for ``path`` (the intensity-sum tif).
+
+        For the render-trained models (default since 2026-04-25) we
+        first try to produce the FastFLIM-render grayscale that the
+        models were trained on. If the FLIM stack / tau map is missing
+        we fall back to the raw intensity sum — older intensity-trained
+        models still work in that mode.
+        """
+        # Use the parent of the intensity sum's parent: <sample>/intensity/<stem>_sum.tif
+        # so sample_dir is path.parent.parent.
+        sample_dir = Path(self.sample_dir.value) if self.sample_dir.value else path.parent.parent
+        seg_img, source = _make_barcode_seg_grayscale(sample_dir, path)
+        if seg_img is not None:
+            print(f'[BarcodeSeg] using FastFLIM render input ({source}) for {path.name}')
+            return seg_img
+        # Fallback: raw intensity sum.
+        print(f'[BarcodeSeg] FastFLIM render not available, using raw '
+              f'intensity sum for {path.name}')
         img = tifffile.imread(str(path))
         if img.ndim > 2:
             img = np.squeeze(img)
