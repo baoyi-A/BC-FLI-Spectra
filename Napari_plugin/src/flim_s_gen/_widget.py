@@ -4663,17 +4663,17 @@ def create_group(title: str, form: QFormLayout, bg_color: str, border_color: str
     return container
 
 # Create Part 0: A settings row (light background, no title) with checkboxes and the top-level button.
-def create_part0(read_button, mask_checkbox, revise_checkbox, ratio_checkbox):
+def create_part0(read_button, *checkboxes):
+    """Top row: a primary "Read in all" button plus an arbitrary number
+    of checkbox toggles laid out horizontally.
+    """
     container = QWidget()
-    hlayout = QHBoxLayout() # qh means horizontal layout
+    hlayout = QHBoxLayout()
     hlayout.setContentsMargins(2, 2, 2, 2)
-    # Add the "Read in all files" button first.
     hlayout.addWidget(read_button.native)
     hlayout.addSpacing(20)
-    # Add the checkboxes.
-    hlayout.addWidget(mask_checkbox.native)
-    hlayout.addWidget(revise_checkbox.native)
-    hlayout.addWidget(ratio_checkbox.native)
+    for cb in checkboxes:
+        hlayout.addWidget(cb.native)
     container.setLayout(hlayout)
     container.setStyleSheet("background-color: #;")
     return container
@@ -4719,8 +4719,13 @@ class Trackrevise(Container):
         )
         self.ratio_checkbox = CheckBox(text="FRET for G/B")
         self.ratio_checkbox.value = True
+        # NEW: checkbox to build a BGY pseudo-RGB render (per-frame) on top
+        # of the loaded B/G/Y stacks. Default ON. Lives next to "Read in all".
+        self.gen_render_checkbox = CheckBox(text="Build BGY render")
+        self.gen_render_checkbox.value = True
 
         part0 = create_part0(self.read_in_all_button,
+                             self.gen_render_checkbox,
                              self.mask_256_checkbox,
                              self.revise_mode_checkbox,
                              self.ratio_checkbox)
@@ -5037,6 +5042,11 @@ class Trackrevise(Container):
             'trusting the class averages.')
         _tt(self.ratio_checkbox,
             'Compute FRET ratio as G/B (otherwise: single-channel signal).')
+        _tt(self.gen_render_checkbox,
+            'After Read in all, build a per-frame BGY pseudo-RGB render '
+            '(same Y→R, G→G, B→B mapping + CLAHE + γ as Biosensor Seg) '
+            'and add as the visible top layer; the gray Stack B/G/NIR '
+            'layers are loaded but hidden by default.')
         _tt(self.read_masks_button, 'Load per-frame tracking masks (.npy) from a folder.')
         _tt(self.read_tif_button, 'Load the tracking image stack (.tif).')
         _tt(self.apply_next_button,
@@ -5259,6 +5269,92 @@ class Trackrevise(Container):
         # but biosensor stacks now have many frames, broadcast Masks so that
         # on_click / calculate_signal_ratio / shift-click plotting all work.
         self._broadcast_masks_to_stack_length()
+        # Optional: build a per-frame BGY pseudo-RGB render layer on top of
+        # the loaded gray stacks. Hides the gray Stack B/G/NIR layers when
+        # done so the colour view is the default.
+        if bool(self.gen_render_checkbox.value):
+            self._build_and_show_bgy_render()
+
+    def _build_and_show_bgy_render(self):
+        """Stack B/G/NIR per frame → BGY render → add as visible RGB layer.
+
+        Hides the underlying grayscale stacks. Uses the same fixed render
+        params as BiosensorSeg (so colours line up between widgets).
+        """
+        from qtpy.QtWidgets import QApplication as _QA
+        try:
+            stacks = {}
+            for layer_name, ch in (('Stack B', 'B'),
+                                    ('Stack G', 'G'),
+                                    ('Stack NIR', 'Y')):
+                if layer_name not in self.viewer.layers:
+                    notifications.show_warning(
+                        f'BGY render skipped: {layer_name} not loaded.')
+                    return
+                arr = np.asarray(self.viewer.layers[layer_name].data)
+                if arr.ndim == 2:
+                    arr = arr[np.newaxis, ...]
+                stacks[ch] = arr.astype(np.float32, copy=False)
+
+            shapes = {ch: a.shape for ch, a in stacks.items()}
+            T = min(stacks['B'].shape[0], stacks['G'].shape[0], stacks['Y'].shape[0])
+            H = stacks['B'].shape[1]
+            W = stacks['B'].shape[2]
+            for ch, a in stacks.items():
+                if a.shape[1:3] != (H, W):
+                    notifications.show_error(
+                        f'BGY render aborted: {ch} HxW {a.shape[1:3]} '
+                        f'!= reference {(H, W)}; shapes: {shapes}')
+                    return
+
+            # Pre-allocate output T×H×W×3 uint8.
+            try:
+                out = np.zeros((T, H, W, 3), dtype=np.uint8)
+            except MemoryError:
+                notifications.show_error(
+                    f'BGY render aborted: T={T} H={H} W={W} too big to '
+                    'hold in RAM. Untick "Build BGY render" and inspect '
+                    'frames individually.')
+                return
+
+            self._set_nacha_progress(5, f'Rendering BGY pseudo-RGB on {T} frames...')
+            for t in range(T):
+                out[t] = _render_bgy_seg_input_rgb(
+                    stacks['B'][t], stacks['G'][t], stacks['Y'][t])
+                if (t + 1) % max(1, T // 20) == 0 or t == T - 1:
+                    self._set_nacha_progress(
+                        5 + int(90 * (t + 1) / max(1, T)),
+                        f'BGY render {t + 1}/{T}')
+                    try:
+                        _QA.processEvents()
+                    except Exception:
+                        pass
+
+            # Replace any prior render layer.
+            if 'bgy_render' in self.viewer.layers:
+                try:
+                    del self.viewer.layers['bgy_render']
+                except Exception:
+                    pass
+            self.viewer.add_image(out, name='bgy_render', rgb=True,
+                                   blending='translucent')
+
+            # Hide the gray channel layers — they're still loaded so the
+            # downstream signal calculations keep working, just out of view.
+            for layer_name in ('Stack B', 'Stack G', 'Stack NIR'):
+                if layer_name in self.viewer.layers:
+                    try:
+                        self.viewer.layers[layer_name].visible = False
+                    except Exception:
+                        pass
+
+            self._set_nacha_progress(100, f'BGY render ready ({T} frames).')
+            notifications.show_info(
+                f'BGY render added on top ({T} frames). Stack B/G/NIR hidden.'
+            )
+        except Exception as e:
+            notifications.show_error(f'BGY render failed: {e}')
+            traceback.print_exc()
 
     def _broadcast_masks_to_stack_length(self):
         """Ensure viewer.layers['Masks'].data has >=1 frame per biosensor frame.
