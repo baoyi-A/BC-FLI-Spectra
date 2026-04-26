@@ -8252,16 +8252,88 @@ class BarcodeSeg(Container):
         show_warning(f'Segmentation failed: {exc}')
         traceback.print_exc()
 
+    def _load_fastflim_display_rgb(self, sum_tif_path):
+        """Return an HxWx3 uint8 FastFLIM colour render for the current FOV.
+
+        Tries the cached PNG saved by PTU Reader first
+        (``<sample>/<bare>_fastflim_rgb.png``). Falls back to a fresh
+        render with the BarcodeSeg training params from the saved tau +
+        intensity. Returns ``None`` if neither source is available — the
+        caller can still show the grayscale.
+        """
+        sum_tif_path = Path(sum_tif_path)
+        sample_dir = (Path(str(self.sample_dir.value))
+                      if self.sample_dir.value
+                      else sum_tif_path.parent.parent)
+        bare = sum_tif_path.stem
+        if bare.endswith('_sum'):
+            bare = bare[:-len('_sum')]
+        # 1) cached PNG from PTU Reader (display params at the time of save)
+        rgb_path = sample_dir / f'{bare}_fastflim_rgb.png'
+        if rgb_path.is_file():
+            try:
+                from PIL import Image as _PIL
+                rgb = np.asarray(_PIL.open(str(rgb_path)).convert('RGB'))
+                return rgb
+            except Exception as e:
+                print(f'[BarcodeSeg] failed to read fastflim_rgb.png: {e}')
+        # 2) fall back to a fresh training-params render from tau + sum
+        tau_path = sample_dir / f'{bare}_fastflim_tau.tif'
+        if tau_path.is_file() and sum_tif_path.is_file():
+            try:
+                tau = np.asarray(tifffile.imread(str(tau_path)), dtype=np.float32)
+                if tau.ndim > 2:
+                    tau = np.squeeze(tau)
+                inten = np.asarray(tifffile.imread(str(sum_tif_path)), dtype=np.float32)
+                if inten.ndim > 2:
+                    inten = np.squeeze(inten)
+                if tau.shape == inten.shape:
+                    return _render_barcode_seg_input_rgb(tau, inten)
+            except Exception as e:
+                print(f'[BarcodeSeg] tau-based fallback render failed: {e}')
+        return None
+
     def _setup_viewer_layers(self, img, n_mask, p_mask):
         # Remove + re-add instead of .data = — avoids vispy GL access violations
         # when the canvas is mid-draw.
-        for _name in ('sum', 'mask_n_fill', 'mask_p_fill'):
+        for _name in ('sum', 'fastflim_rgb', 'sum_intensity_raw',
+                      'mask_n_fill', 'mask_p_fill'):
             if _name in self.viewer.layers:
                 try:
                     del self.viewer.layers[_name]
                 except Exception:
                     pass
-        self.viewer.add_image(img, name='sum', colormap='gray')
+
+        # Foreground = FastFLIM colour render (what the user actually wants
+        # to look at while editing). Falls back to the seg-input grayscale
+        # if no render is available on disk.
+        rgb = self._load_fastflim_display_rgb(self._current_src) if self._current_src is not None else None
+        rgb_added = False
+        if rgb is not None:
+            self.viewer.add_image(rgb, name='fastflim_rgb', rgb=True,
+                                   blending='translucent')
+            rgb_added = True
+
+        # Background = the actual Cellpose seg input (BT.601 luminance of
+        # the render). Hidden by default when the colour render is up,
+        # visible otherwise. Layer name kept as 'sum' for backward compat
+        # with downstream code that may grep for it.
+        self.viewer.add_image(img, name='sum', colormap='gray',
+                              visible=not rgb_added)
+
+        # Also keep the RAW intensity sum from disk loaded but hidden, in
+        # case the user wants to peek at the original photon counts. We
+        # only load it when the foreground colour layer is present.
+        if rgb_added and self._current_src is not None and self._current_src.is_file():
+            try:
+                raw = np.asarray(tifffile.imread(str(self._current_src)), dtype=np.float32)
+                if raw.ndim > 2:
+                    raw = np.squeeze(raw)
+                self.viewer.add_image(raw, name='sum_intensity_raw',
+                                       colormap='gray', visible=False)
+            except Exception as e:
+                print(f'[BarcodeSeg] raw sum load skipped: {e}')
+
         ln = self.viewer.add_labels(n_mask.astype(np.int32), name='mask_n_fill')
         ln.mouse_drag_callbacks.append(self._ctrl_click_delete)
         lp = self.viewer.add_labels(p_mask.astype(np.int32), name='mask_p_fill')
