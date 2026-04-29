@@ -8259,6 +8259,67 @@ class BarcodeSeg(Container):
         img = self._load_image_2d(src)
         self._current_img = img
 
+        # If saved N+P masks already exist, give the user a choice instead
+        # of silently overwriting. Mirrors the PTU-Reader Process dialog.
+        n_existing = src.parent / f'{src.stem}_seg_n.npy'
+        p_existing = src.parent / f'{src.stem}_seg_p.npy'
+        if n_existing.is_file() or p_existing.is_file():
+            from qtpy.QtWidgets import QMessageBox as _MB
+            mb = _MB(None)
+            mb.setWindowTitle('Masks already exist')
+            mb.setIcon(_MB.Icon.Question)
+            present = []
+            if n_existing.is_file():
+                present.append(n_existing.name)
+            if p_existing.is_file():
+                present.append(p_existing.name)
+            mb.setText(
+                'Existing mask file(s) on disk:\n  ' + '\n  '.join(present) +
+                '\n\nPick an action:'
+            )
+            b_reseg = mb.addButton('Re-segment (overwrite)',
+                                   _MB.ButtonRole.AcceptRole)
+            b_load  = mb.addButton('Load existing (skip Cellpose)',
+                                   _MB.ButtonRole.ActionRole)
+            b_cancel = mb.addButton('Cancel', _MB.ButtonRole.RejectRole)
+            mb.setDefaultButton(b_load)
+            try:
+                b_reseg.setToolTip(
+                    'Run N + P Cellpose models again and overwrite the '
+                    'existing *_seg_n.npy / *_seg_p.npy files.')
+                b_load.setToolTip(
+                    'Skip Cellpose. Load the saved masks straight into '
+                    'napari for manual editing — useful when you just want '
+                    'to tweak existing masks against the FastFLIM render.')
+            except Exception:
+                pass
+            mb.exec_()
+            clicked = mb.clickedButton()
+            if clicked is b_cancel or clicked is None:
+                show_info('Cancelled — masks unchanged.')
+                return
+            if clicked is b_load:
+                # Load existing masks and skip Cellpose entirely.
+                try:
+                    n_mask = (_load_mask_npy_any(n_existing)
+                              if n_existing.is_file()
+                              else np.zeros(img.shape, dtype=np.int32))
+                    p_mask = (_load_mask_npy_any(p_existing)
+                              if p_existing.is_file()
+                              else np.zeros(img.shape, dtype=np.int32))
+                except Exception as e:
+                    show_warning(f'Failed to load existing masks: {e}')
+                    return
+                self._setup_viewer_layers(img, n_mask, p_mask)
+                self.status_label.value = (
+                    f'Loaded existing masks — N={int(n_mask.max())} cells, '
+                    f'P={int(p_mask.max())} cells. Edit on top of FastFLIM '
+                    f'render and click Save when done.'
+                )
+                show_info('Loaded existing masks; ready for manual editing.')
+                return
+            # else: fall through to re-segment
+
         self.progress.min = 0
         self.progress.max = 100
         self.progress.value = 0
@@ -9585,6 +9646,73 @@ class BiosensorSeg(Container):
         diameter = float(self.diameter.value)
         use_assist = model_name.lower().startswith('bs-bc-assist')
 
+        # Compute the eventual save path now so we can check if it
+        # already exists and offer "Load existing" instead of overwriting.
+        seg_ref_path = self._seg_img_save_path
+        if seg_ref_path is None:
+            seg_ref_path = Path(str(self.sample_folder.value)) / 'seg_image.tif'
+        save_path = seg_ref_path.parent / (seg_ref_path.stem + '_seg.npy')
+
+        if save_path.is_file():
+            from qtpy.QtWidgets import QMessageBox as _MB
+            mb = _MB(None)
+            mb.setWindowTitle('Mask already exists')
+            mb.setIcon(_MB.Icon.Question)
+            mb.setText(
+                f'Existing mask file:\n  {save_path.name}\n\nPick an action:'
+            )
+            b_reseg = mb.addButton('Re-segment (overwrite)',
+                                   _MB.ButtonRole.AcceptRole)
+            b_load = mb.addButton('Load existing (skip Cellpose)',
+                                  _MB.ButtonRole.ActionRole)
+            b_cancel = mb.addButton('Cancel', _MB.ButtonRole.RejectRole)
+            mb.setDefaultButton(b_load)
+            try:
+                b_reseg.setToolTip(
+                    'Run Cellpose again and overwrite the existing '
+                    'seg_image_seg.npy.')
+                b_load.setToolTip(
+                    'Skip Cellpose. Load the saved mask straight into '
+                    'napari for manual editing.')
+            except Exception:
+                pass
+            mb.exec_()
+            clicked = mb.clickedButton()
+            if clicked is b_cancel or clicked is None:
+                show_info('Cancelled — mask unchanged.')
+                return
+            if clicked is b_load:
+                try:
+                    masks = _load_mask_npy_any(save_path)
+                except Exception as e:
+                    show_warning(f'Failed to load existing mask: {e}')
+                    return
+                if 'mask_biosensor' in self.viewer.layers:
+                    try:
+                        del self.viewer.layers['mask_biosensor']
+                    except Exception:
+                        pass
+                lm = self.viewer.add_labels(masks.astype(np.int32),
+                                             name='mask_biosensor')
+                lm.mouse_drag_callbacks.append(self._ctrl_click_delete)
+                if 'draw_points' not in self.viewer.layers:
+                    self.viewer.add_points(
+                        np.zeros((0, 2), dtype=float), name='draw_points',
+                        size=8, face_color='yellow', edge_color='black',
+                    )
+                self._last_mask = masks
+                self._last_mask_save_path = save_path
+                self._set_progress(
+                    100,
+                    f'Loaded existing {save_path.name} — {int(masks.max())} '
+                    f'cells. Edit, then click Save mask.'
+                )
+                show_info(
+                    f'Loaded existing mask ({int(masks.max())} cells); '
+                    f'ready for manual editing.'
+                )
+                return
+
         self.seg_btn.enabled = False
         self.reseg_btn.enabled = False
         try:
@@ -9595,11 +9723,6 @@ class BiosensorSeg(Container):
                 show_warning('BS-BC-assist model selected but no barcode layer loaded. '
                              'Click "Load / Confirm Barcode" first, or running '
                              'single-channel fallback.')
-            # Decide where to save the mask first (subprocess writes it for us).
-            seg_ref_path = self._seg_img_save_path
-            if seg_ref_path is None:
-                seg_ref_path = Path(str(self.sample_folder.value)) / 'seg_image.tif'
-            save_path = seg_ref_path.parent / (seg_ref_path.stem + '_seg.npy')
 
             self._set_progress(
                 40,
