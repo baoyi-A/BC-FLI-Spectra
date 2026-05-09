@@ -8002,6 +8002,13 @@ class BarcodeSeg(Container):
             filter='*.tif', value='',
         )
 
+        # User can pick which heads to run. Most samples are N + P; some
+        # only have N labelling (or only P). Both default ON. The Auto
+        # Segment button respects whichever are checked; if both are off
+        # we warn instead of running nothing.
+        self.do_n = CheckBox(text='Segment N', value=True)
+        self.do_p = CheckBox(text='Segment P', value=True)
+
         self.n_model = ComboBox(
             label='N model',
             choices=[_DEFAULT_N_MODEL, 'nuclei'],
@@ -8016,7 +8023,7 @@ class BarcodeSeg(Container):
         self.p_diameter = FloatSpinBox(label='P diameter (px)', min=5, max=300, step=1, value=_DEFAULT_P_DIAMETER)
         self.use_gpu = CheckBox(text='Use GPU', value=True)
 
-        self.run_btn = PushButton(text='Auto Segment N & P')
+        self.run_btn = PushButton(text='Auto Segment (selected)')
         self.run_btn.changed.connect(self._on_run_auto)
         _style_process_button(self.run_btn)
         self.reseg_n_btn = PushButton(text='Re-seg N (current image)')
@@ -8045,6 +8052,13 @@ class BarcodeSeg(Container):
         _tt(self.tif_override,
             'Optional: override the auto-detected sum.tif with a specific '
             'file. Leave empty for the default.')
+        _tt(self.do_n,
+            'Untick to skip the N model entirely (e.g. samples with only '
+            'cytoplasm labelling). Existing *_seg_n.npy on disk is left '
+            'untouched. Both N and P unchecked is rejected.')
+        _tt(self.do_p,
+            'Untick to skip the P model. Existing *_seg_p.npy on disk is '
+            'left untouched.')
         _tt(self.n_model,
             'Cellpose model for nucleus (N) segmentation. As of 2026-04-25 '
             'the default (NinNC-render-260425-1) is trained on the FastFLIM '
@@ -8130,9 +8144,11 @@ class BarcodeSeg(Container):
         self.append(self.tif_override)
 
         _append_section_divider(self, '— 🧠 Models & parameters —')
+        self.append(self.do_n)
         self.append(self.n_model)
-        self.append(self.p_model)
         self.append(self.n_diameter)
+        self.append(self.do_p)
+        self.append(self.p_model)
         self.append(self.p_diameter)
         self.append(self.use_gpu)
 
@@ -8255,42 +8271,50 @@ class BarcodeSeg(Container):
         if src is None:
             show_warning("Could not find intensity/*_sum.tif — run PTU Reader first or set 'Override TIF'.")
             return
+        do_n = bool(self.do_n.value)
+        do_p = bool(self.do_p.value)
+        if not (do_n or do_p):
+            show_warning('Untick at most one of Segment N / Segment P — '
+                         'both off would do nothing.')
+            return
         self._current_src = src
         img = self._load_image_2d(src)
         self._current_img = img
 
-        # If saved N+P masks already exist, give the user a choice instead
-        # of silently overwriting. Mirrors the PTU-Reader Process dialog.
-        n_existing = src.parent / f'{src.stem}_seg_n.npy'
-        p_existing = src.parent / f'{src.stem}_seg_p.npy'
-        if n_existing.is_file() or p_existing.is_file():
+        # Existing-mask dialog. Only probe the files we'd actually
+        # overwrite this run (i.e. respect the do_n / do_p toggles).
+        n_existing = src.parent / f'{src.stem}_seg_n.npy' if do_n else None
+        p_existing = src.parent / f'{src.stem}_seg_p.npy' if do_p else None
+        existing_present = [
+            f for f in (n_existing, p_existing)
+            if f is not None and f.is_file()
+        ]
+        if existing_present:
             from qtpy.QtWidgets import QMessageBox as _MB
             mb = _MB(None)
             mb.setWindowTitle('Masks already exist')
             mb.setIcon(_MB.Icon.Question)
-            present = []
-            if n_existing.is_file():
-                present.append(n_existing.name)
-            if p_existing.is_file():
-                present.append(p_existing.name)
             mb.setText(
-                'Existing mask file(s) on disk:\n  ' + '\n  '.join(present) +
-                '\n\nPick an action:'
+                'Existing mask file(s) for the SELECTED head(s):\n  '
+                + '\n  '.join(p.name for p in existing_present)
+                + '\n\nPick an action:'
             )
             b_reseg = mb.addButton('Re-segment (overwrite)',
                                    _MB.ButtonRole.AcceptRole)
-            b_load  = mb.addButton('Load existing (skip Cellpose)',
-                                   _MB.ButtonRole.ActionRole)
+            b_load = mb.addButton('Load existing (skip Cellpose)',
+                                  _MB.ButtonRole.ActionRole)
             b_cancel = mb.addButton('Cancel', _MB.ButtonRole.RejectRole)
             mb.setDefaultButton(b_load)
             try:
                 b_reseg.setToolTip(
-                    'Run N + P Cellpose models again and overwrite the '
-                    'existing *_seg_n.npy / *_seg_p.npy files.')
+                    'Run the SELECTED Cellpose head(s) again and overwrite '
+                    'the corresponding *_seg_*.npy file(s). Untoggled '
+                    'head(s) are not touched.')
                 b_load.setToolTip(
-                    'Skip Cellpose. Load the saved masks straight into '
-                    'napari for manual editing — useful when you just want '
-                    'to tweak existing masks against the FastFLIM render.')
+                    'Skip Cellpose. Load the saved mask(s) straight into '
+                    'napari for manual editing — and also pull in any '
+                    'existing mask file for the un-selected head, so the '
+                    'viewer shows everything available.')
             except Exception:
                 pass
             mb.exec_()
@@ -8299,13 +8323,17 @@ class BarcodeSeg(Container):
                 show_info('Cancelled — masks unchanged.')
                 return
             if clicked is b_load:
-                # Load existing masks and skip Cellpose entirely.
+                # Load whatever is on disk (both heads, regardless of do_n /
+                # do_p) so the viewer is complete. Empty placeholder for
+                # missing files so the labels layer can still be drawn on.
+                n_path = src.parent / f'{src.stem}_seg_n.npy'
+                p_path = src.parent / f'{src.stem}_seg_p.npy'
                 try:
-                    n_mask = (_load_mask_npy_any(n_existing)
-                              if n_existing.is_file()
+                    n_mask = (_load_mask_npy_any(n_path)
+                              if n_path.is_file()
                               else np.zeros(img.shape, dtype=np.int32))
-                    p_mask = (_load_mask_npy_any(p_existing)
-                              if p_existing.is_file()
+                    p_mask = (_load_mask_npy_any(p_path)
+                              if p_path.is_file()
                               else np.zeros(img.shape, dtype=np.int32))
                 except Exception as e:
                     show_warning(f'Failed to load existing masks: {e}')
@@ -8323,13 +8351,17 @@ class BarcodeSeg(Container):
         self.progress.min = 0
         self.progress.max = 100
         self.progress.value = 0
-        self.status_label.value = 'Starting segmentation...'
+        self.status_label.value = (
+            f'Starting segmentation '
+            f'({"N" if do_n else "—"} / {"P" if do_p else "—"})...'
+        )
         self.run_btn.enabled = False
         self.reseg_n_btn.enabled = False
         self.reseg_p_btn.enabled = False
 
         worker = self._seg_worker(
             img=img, src=src,
+            do_n=do_n, do_p=do_p,
             n_model_name=self.n_model.value, n_diameter=float(self.n_diameter.value),
             p_model_name=self.p_model.value, p_diameter=float(self.p_diameter.value),
             use_gpu=bool(self.use_gpu.value),
@@ -8341,30 +8373,34 @@ class BarcodeSeg(Container):
         worker.start()
 
     @thread_worker
-    def _seg_worker(self, img, src, n_model_name, n_diameter, p_model_name, p_diameter,
+    def _seg_worker(self, img, src, do_n, do_p,
+                    n_model_name, n_diameter, p_model_name, p_diameter,
                     use_gpu, extra_roots):
         import time as _time
         stem = src.stem
         n_out = src.parent / f'{stem}_seg_n.npy'
         p_out = src.parent / f'{stem}_seg_p.npy'
 
-        yield ('status', 10, f'Running N model ({n_model_name}) in subprocess...')
-        t0 = _time.time()
-        n_mask = _run_infer_subprocess(
-            img=img, base_name=n_model_name,
-            diameter=n_diameter, channels=[0, 0],
-            use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
-        )
-        yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
-
-        yield ('status', 55, f'Running P model ({p_model_name}) in subprocess...')
-        t0 = _time.time()
-        p_mask = _run_infer_subprocess(
-            img=img, base_name=p_model_name,
-            diameter=p_diameter, channels=[0, 0],
-            use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
-        )
-        yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
+        n_mask = None
+        p_mask = None
+        if do_n:
+            yield ('status', 10, f'Running N model ({n_model_name}) in subprocess...')
+            t0 = _time.time()
+            n_mask = _run_infer_subprocess(
+                img=img, base_name=n_model_name,
+                diameter=n_diameter, channels=[0, 0],
+                use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
+            )
+            yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
+        if do_p:
+            yield ('status', 55, f'Running P model ({p_model_name}) in subprocess...')
+            t0 = _time.time()
+            p_mask = _run_infer_subprocess(
+                img=img, base_name=p_model_name,
+                diameter=p_diameter, channels=[0, 0],
+                use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
+            )
+            yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
 
         return (img, n_mask, p_mask)
 
@@ -8393,9 +8429,33 @@ class BarcodeSeg(Container):
 
     def _on_seg_done(self, result):
         img, n_mask, p_mask = result
+        # If a head was skipped (do_n=False or do_p=False) the worker
+        # returned None for that side. Fall back to whatever's on disk so
+        # the viewer always shows both layers when both files exist.
+        src = self._current_src
+        if n_mask is None and src is not None:
+            nf = src.parent / f'{src.stem}_seg_n.npy'
+            if nf.is_file():
+                try:
+                    n_mask = _load_mask_npy_any(nf)
+                except Exception:
+                    n_mask = None
+        if p_mask is None and src is not None:
+            pf = src.parent / f'{src.stem}_seg_p.npy'
+            if pf.is_file():
+                try:
+                    p_mask = _load_mask_npy_any(pf)
+                except Exception:
+                    p_mask = None
+        if n_mask is None:
+            n_mask = np.zeros(img.shape, dtype=np.int32)
+        if p_mask is None:
+            p_mask = np.zeros(img.shape, dtype=np.int32)
         self._setup_viewer_layers(img, n_mask, p_mask)
         self.progress.value = self.progress.max
-        self.status_label.value = f'Done. N={int(n_mask.max())} cells, P={int(p_mask.max())} cells.'
+        self.status_label.value = (
+            f'Done. N={int(n_mask.max())} cells, P={int(p_mask.max())} cells.'
+        )
         self.run_btn.enabled = True
         self.reseg_n_btn.enabled = True
         self.reseg_p_btn.enabled = True
