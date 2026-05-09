@@ -1791,18 +1791,32 @@ def Gen_excel_multi(
     seg_dict:
       - keys are 'n','m','p' or '' (empty means unknown/unspecified localization)
       - values are seg_img (H,W) int masks
+
+    Any of ``stack1..stack4`` may be ``None`` to signal that channel was
+    not acquired. At least ONE must be non-None. The phasor + FastFLIM
+    are computed on the SUM of the available channels; per-channel
+    intensity columns are NaN for missing slots, and any ratio that
+    references a missing channel is also NaN (numpy NaN propagation).
     """
     save_path = os.path.join(basefolder, 'FLIM-S.xlsx')
 
     all_rows = []
 
-    # ---- precompute intensities once (same for all segmentations) ----
-    intensity_1 = np.sum(stack1, axis=0)
-    intensity_2 = np.sum(stack2, axis=0)
-    intensity_3 = np.sum(stack3, axis=0)
-    intensity_4 = np.sum(stack4, axis=0)
-    intensity_image = intensity_1 + intensity_2 + intensity_3 + intensity_4
-    decay_data = stack1 + stack2 + stack3 + stack4
+    stacks_in = (stack1, stack2, stack3, stack4)
+    available = [(i, s) for i, s in enumerate(stacks_in) if s is not None]
+    if not available:
+        raise ValueError("Gen_excel_multi: at least one stack must be provided")
+
+    # ---- precompute per-channel intensities (None for missing slots) ----
+    intensities = [None, None, None, None]
+    for i, s in available:
+        intensities[i] = np.sum(s, axis=0)
+
+    # combined intensity image + decay data: SUM over available channels.
+    # The phasor is scale-invariant, so summing fewer channels still gives
+    # a valid lifetime — just with fewer photons.
+    intensity_image = sum(intensities[i] for i, _ in available)
+    decay_data = sum(stacks_in[i] for i, _ in available)
 
     for loc_key, seg_img in seg_dict.items():
         # loc_key: 'n'/'m'/'p'/''  -> write as 'N'/'M'/'P'/'' in excel
@@ -1841,12 +1855,18 @@ def Gen_excel_multi(
                 harmonics=harmonics
             )
 
-            int_570_590 = np.sum(intensity_1[cell_mask])
-            int_590_610 = np.sum(intensity_2[cell_mask])
-            int_610_638 = np.sum(intensity_3[cell_mask])
-            int_638_720 = np.sum(intensity_4[cell_mask])
+            # Per-channel intensity sums; NaN for slots that were not acquired.
+            def _sum_or_nan(intensity_2d):
+                if intensity_2d is None:
+                    return float('nan')
+                return float(np.sum(intensity_2d[cell_mask]))
+            int_570_590 = _sum_or_nan(intensities[0])
+            int_590_610 = _sum_or_nan(intensities[1])
+            int_610_638 = _sum_or_nan(intensities[2])
+            int_638_720 = _sum_or_nan(intensities[3])
 
-            # 防止极端情况下 total_intensity==0
+            # 防止极端情况下 total_intensity==0; NaN per-channel propagates
+            # through the / denom division naturally.
             denom = total_intensity if total_intensity != 0 else 1.0
             norm_1_4_1 = int_570_590 / denom
             norm_1_4_2 = int_590_610 / denom
@@ -2396,9 +2416,22 @@ class Calculate_FLIM_S(Container):
 
     def process_and_save_to_excel(self):
         stack_layers = [s.value for s in self._stack_selectors]
-        if any(x is None for x in stack_layers):
-            notifications.show_error("Please select Stack 1-4.")
+        # Allow 1–4 channels — some samples only have a subset. Phasor +
+        # FastFLIM use the SUM of whatever's provided; per-channel
+        # spectral intensities are written as NaN for missing slots.
+        used = [(i, l) for i, l in enumerate(stack_layers) if l is not None]
+        if not used:
+            notifications.show_error(
+                "Pick at least one Stack channel (Stack 1 / 2 / 3 / 4).")
             return
+        if len(used) < 4:
+            missing = [str(i + 1) for i, l in enumerate(stack_layers) if l is None]
+            notifications.show_info(
+                f"Only {len(used)}/4 channels provided (missing: "
+                f"{', '.join(missing)}). Phasor + FastFLIM are computed on "
+                f"the SUM of the available channel(s); the per-channel "
+                f"Int columns for the missing ones are written as NaN."
+            )
 
         basefolder = str(self._base_dir.value)
         seg_dict = self._resolve_segmentations(basefolder)
@@ -2410,7 +2443,7 @@ class Calculate_FLIM_S(Container):
             notifications.show_error(msg)
             return
 
-        fov = os.path.split(stack_layers[0].name)[-1].split('_ch')[0]
+        fov = os.path.split(used[0][1].name)[-1].split('_ch')[0]
 
         params = dict(
             basefolder=basefolder,
@@ -2423,7 +2456,10 @@ class Calculate_FLIM_S(Container):
             harmonics=self._harmonics.value,
             fov=fov,
         )
-        stacks = [np.asarray(s.data) for s in stack_layers]
+        # Build a length-4 list of stacks with None for missing slots.
+        stacks = [None, None, None, None]
+        for i, layer in used:
+            stacks[i] = np.asarray(layer.data)
 
         self._progress.min = 0
         self._progress.max = 100
