@@ -2115,8 +2115,16 @@ class Calculate_FLIM_S(Container):
         self._viewer = viewer
 
         # stacks
+        # nullable=True so each slot can be left empty — the widget now
+        # accepts 1-4 channels; missing slots get NaN intensity columns
+        # in the Excel and the phasor + FastFLIM are computed on the
+        # SUM of whatever's selected.
         self._stack_selectors = [
-            create_widget(label=f"Stack {i + 1}", annotation="napari.layers.Image")
+            create_widget(
+                label=f"Stack {i + 1} [optional]",
+                annotation="napari.layers.Image",
+                options={"nullable": True},
+            )
             for i in range(4)
         ]
 
@@ -2191,8 +2199,11 @@ class Calculate_FLIM_S(Container):
             'Sample folder. Calculate FLIM-S reads flim_stack/*_ch*.tif and '
             'writes FLIM-S.xlsx here.')
         for i, sel in enumerate(self._stack_selectors):
-            _tt(sel, f'Channel {i+1} FLIM decay stack (H×W×T). Auto-picked '
-                     f'from flim_stack/*_ch{i+1}.tif if available.')
+            _tt(sel, f'Channel {i+1} FLIM decay stack (H×W×T). OPTIONAL — '
+                     f'leave empty if not acquired. Auto-picked from '
+                     f'flim_stack/*_ch{i+1}.tif when present. Process '
+                     f'requires at least one stack; missing channels are '
+                     f'written as NaN in FLIM-S.xlsx.')
         _tt(self._seg_n,
             'Optional nucleus mask (e.g. mask_n_fill from Barcode Seg). '
             'Leave empty if you only have a combined mask.')
@@ -2285,6 +2296,18 @@ class Calculate_FLIM_S(Container):
 
     def _populate_initial_layers(self):
         # stacks: first try matching existing napari Image layers; fall back to disk.
+        # Reset to None first so a slot stays empty when no matching channel
+        # is found (instead of auto-defaulting to the first Image layer in
+        # the viewer).
+        for selector in self._stack_selectors:
+            try:
+                selector.reset_choices()
+            except Exception:
+                pass
+            try:
+                selector.value = None
+            except Exception:
+                pass
         for i, selector in enumerate(self._stack_selectors):
             target_tag = f"_ch{i + 1}"
             matched = None
