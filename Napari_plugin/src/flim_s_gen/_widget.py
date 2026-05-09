@@ -1829,6 +1829,7 @@ def Gen_excel_multi(
 
             peak_idx = int(np.argmax(roi_decay_data))
             total_intensity = np.sum(intensity_image[cell_mask])
+            area_px = int(cell_mask.sum())
 
             phasor_g, phasor_s, lifetime, chi_square, fastflim = calcu_phasor_info(
                 roi_decay_data,
@@ -1852,6 +1853,7 @@ def Gen_excel_multi(
             norm_1_4_3 = int_610_638 / denom
             norm_1_4_4 = int_638_720 / denom
 
+            mean_intensity = total_intensity / area_px if area_px > 0 else 0.0
             all_rows.append({
                 'Localization': loc_out,
                 'G': phasor_g,
@@ -1859,6 +1861,8 @@ def Gen_excel_multi(
                 'Lifetime': lifetime,
                 'Chi^2': chi_square,
                 'Total intensity': total_intensity,
+                'Area (px)': area_px,
+                'Mean intensity': mean_intensity,
                 'Mask label': label,
                 'FastFLIM': fastflim,
                 'Int 570-590': int_570_590,
