@@ -8279,12 +8279,18 @@ class BarcodeSeg(Container):
 
         self.tips_label = Label(
             value=(
-                '<b>Edit shortcuts</b> — select <code>mask_n_fill</code> / '
-                '<code>mask_p_fill</code> first, then:<br>'
-                '• <b>Right-click</b> to draw polygon, <b>Enter</b> to commit, '
-                '<b>Esc</b> to cancel<br>'
-                '• <b>Z / X</b> toggle N / P visibility, '
-                '<b>Ctrl+click</b> delete label, <b>S</b> cycle contrast<br>'
+                '<b>Edit shortcuts</b> — click <code>mask_n_fill</code> / '
+                '<code>mask_p_fill</code> in the layer list first, then:<br>'
+                '• <b>Right-click</b> draw polygon · <b>Enter</b> commit · '
+                '<b>Esc</b> cancel<br>'
+                '• <b>2</b> paint brush · <b>3</b> fill · <b>4</b> pick label · '
+                '<b>5</b> pan/zoom · <b>1</b> erase '
+                '<i>(napari Labels mode)</i><br>'
+                '• <b>[</b> / <b>]</b> brush size −/+ · '
+                '<b>M</b> new (next free) label · <b>=</b> / <b>−</b> +/− label id · '
+                '<b>Ctrl+Z</b> undo · <b>Space</b> (hold) pan/zoom<br>'
+                '• <b>Z / X</b> toggle N / P visibility · '
+                '<b>Ctrl+click</b> delete label · <b>S</b> cycle contrast<br>'
                 '• <b>Auto-save</b>: Auto Segment / Re-seg write '
                 '<code>*_seg_n.npy</code> / <code>*_seg_p.npy</code> on disk. '
                 'Click <b>Save masks</b> after manual edits.'
@@ -8341,6 +8347,18 @@ class BarcodeSeg(Container):
         _add_cellpose_header(self, title='Barcode Segmentation (N & P)')
         _tighten_container(self)
         self._refresh_model_choices()
+        # napari sometimes clobbers the dropdown contents during dock
+        # realisation (the QComboBox we just populated to 100 ends up
+        # visible with only the 2 constructor defaults). Schedule TWO
+        # deferred refreshes — one immediately after the current event
+        # loop iteration, one ~400 ms later — so the user always sees
+        # the full list without needing the manual button.
+        try:
+            from qtpy.QtCore import QTimer as _QT
+            _QT.singleShot(0,   self._refresh_model_choices)
+            _QT.singleShot(400, self._refresh_model_choices)
+        except Exception as _e:
+            print(f'[BarcodeSeg] deferred refresh setup failed: {_e}')
         try:
             self.sample_dir.changed.connect(self._refresh_model_choices)
         except Exception:
@@ -9610,6 +9628,14 @@ class BiosensorSeg(Container):
         self.sample_folder.changed.connect(self._refresh_seg_model_choices)
         self._auto_fill_paths()
         self._refresh_seg_model_choices()
+        # Same deferred-refresh trick as BarcodeSeg — napari's dock
+        # realisation can clobber the QComboBox items.
+        try:
+            from qtpy.QtCore import QTimer as _QT
+            _QT.singleShot(0,   self._refresh_seg_model_choices)
+            _QT.singleShot(400, self._refresh_seg_model_choices)
+        except Exception:
+            pass
         self._bind_viewer_callbacks()
 
     def _refresh_seg_model_choices(self, *_args):
