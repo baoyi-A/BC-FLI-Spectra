@@ -262,8 +262,16 @@ def _run_infer_subprocess(
     default_roots: list[str] = []
     try:
         default_roots = [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose_finetune_*'))]
+        default_roots += [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*'))]
     except Exception:
         pass
+
+    # Decide which python interpreter (v2 vs v4 cellpose env) handles
+    # this model, then suppress the local cellpose-main checkout if we're
+    # routing to v4 (its env has cellpose 4.x installed via pip).
+    is_v4 = _is_v4_model(base_name, extra_roots=extra_roots)
+    py_path = _python_for_model(base_name, extra_roots=extra_roots)
+    cellpose_src = '' if is_v4 else (str(_CELLPOSE_SRC_PATH) if _CELLPOSE_SRC_PATH.exists() else '')
 
     out_path = Path(out_path)
     cfg = dict(
@@ -273,7 +281,7 @@ def _run_infer_subprocess(
         diameter=float(diameter) if diameter and diameter > 0 else 0,
         channels=list(channels),
         use_gpu=bool(use_gpu),
-        cellpose_src=str(_CELLPOSE_SRC_PATH) if _CELLPOSE_SRC_PATH.exists() else '',
+        cellpose_src=cellpose_src,
         extra_roots=[str(r) for r in (extra_roots or [])],
         default_finetune_roots=default_roots,
         out_path=str(out_path),
@@ -285,7 +293,7 @@ def _run_infer_subprocess(
 
     runner = Path(__file__).resolve().parent / '_finetune_runner.py'
     proc = subprocess.run(
-        [sys.executable, '-u', str(runner), cfg_path],
+        [str(py_path), '-u', str(runner), cfg_path],
         capture_output=True, text=True,
     )
     try:
@@ -329,14 +337,21 @@ def _run_finetune_subprocess(
     default_roots: list[str] = []
     try:
         default_roots = [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose_finetune_*'))]
+        default_roots += [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*'))]
     except Exception:
         pass
+
+    # Route to the right cellpose interpreter (v2 vs v4) based on the
+    # base model's kind. Same heuristic as inference.
+    is_v4 = _is_v4_model(base_name, extra_roots=extra_roots)
+    py_path = _python_for_model(base_name, extra_roots=extra_roots)
+    cellpose_src = '' if is_v4 else (str(_CELLPOSE_SRC_PATH) if _CELLPOSE_SRC_PATH.exists() else '')
 
     cfg = dict(
         base_name=base_name, new_name=new_name,
         save_dir=str(save_dir), n_epochs=int(n_epochs),
         channels=list(channels), use_gpu=bool(use_gpu),
-        cellpose_src=str(_CELLPOSE_SRC_PATH) if _CELLPOSE_SRC_PATH.exists() else '',
+        cellpose_src=cellpose_src,
         extra_roots=[str(r) for r in (extra_roots or [])],
         default_finetune_roots=default_roots,
     )
@@ -359,7 +374,7 @@ def _run_finetune_subprocess(
 
     runner = Path(__file__).resolve().parent / '_finetune_runner.py'
     proc = subprocess.run(
-        [sys.executable, '-u', str(runner), cfg_path],
+        [str(py_path), '-u', str(runner), cfg_path],
         capture_output=True, text=True,
     )
     try:
@@ -7676,6 +7691,66 @@ def _save_seg_npy(dest_path: Path, masks: np.ndarray) -> None:
 # ---- BarcodeSeg N/P model configuration ----
 _BARCODE_MODEL_ROOT = Path(r"G:/BC-FLIM-S/LYH")  # where _cellpose_finetune_* folders live
 _CELLPOSE_SRC_PATH = Path(r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main")
+
+# ---- Cellpose dual-version support ------------------------------------
+# v2 (the BC-FLIM env, with the local cellpose-main checkout on sys.path)
+# is the existing path used by all the *-render-260425-1 / BS-BC-assist-*
+# models. v4 (CellposeSAM, separate conda env) is required by any model
+# whose weights file is huge (~1 GB) — those names typically contain
+# 'cpsam' / 'sam' / 'cellpose4'. Subprocess routing picks the matching
+# python interpreter based on the model.
+_CELLPOSE_V2_PYTHON = Path(r"D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe")
+_CELLPOSE_V4_PYTHON = Path(r"D:/Softwares/Anaconda/Anaconda3/envs/cellpose4/python.exe")
+# v4 (CellposeSAM) weight files are >>200 MB; v2 weights typically
+# <100 MB. Use 200 MB as the heuristic split.
+_CELLPOSE_V4_SIZE_THR_BYTES = 200 * 1024 * 1024
+
+
+def _is_v4_model(model_name, extra_roots=()):
+    """Heuristic: True if `model_name` should be loaded by Cellpose 4.
+
+    Rules (any wins):
+      1. Resolved weight file size > 200 MB (v4 SAM weights are ~1 GB).
+      2. Name contains 'cpsam' or '-sam' or 'cellpose4' (case-insensitive).
+      3. Path contains '_cellpose4_finetune_'.
+    Otherwise treated as v2.
+    """
+    name = str(model_name)
+    low = name.lower()
+    if 'cpsam' in low or '-sam' in low or 'cellposesam' in low or 'cellpose4' in low:
+        return True
+    try:
+        p = _resolve_barcode_model_path(name, extra_roots=extra_roots)
+    except Exception:
+        p = None
+    if p is None:
+        return False
+    try:
+        if str(p).lower().find('_cellpose4_finetune_') != -1:
+            return True
+        if p.is_file() and p.stat().st_size > _CELLPOSE_V4_SIZE_THR_BYTES:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _python_for_model(model_name, extra_roots=()) -> Path:
+    """Return the python.exe path that should run inference / training
+    for the given model. Falls back to v2 python if the corresponding
+    env is missing.
+    """
+    if _is_v4_model(model_name, extra_roots=extra_roots):
+        if _CELLPOSE_V4_PYTHON.is_file():
+            return _CELLPOSE_V4_PYTHON
+        # v4 model but no v4 env — fall back with a console warning.
+        print(f'[cellpose-route] WARN: model "{model_name}" looks like v4 but '
+              f'{_CELLPOSE_V4_PYTHON} not found; falling back to v2 (likely to fail).')
+    if _CELLPOSE_V2_PYTHON.is_file():
+        return _CELLPOSE_V2_PYTHON
+    # Final fallback: whatever interpreter is currently running.
+    import sys as _sys
+    return Path(_sys.executable)
 # As of 2026-04-25 the barcode N/P Cellpose models are trained on the
 # FastFLIM render (grayscale luminance of the Leica blue-green-red overlay)
 # instead of the raw intensity sum. Defaults updated accordingly. See
@@ -7865,17 +7940,23 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
 
 
 def _resolve_barcode_model_path(model_type: str, extra_roots=()) -> "Path | None":
-    """Resolve a Cellpose custom model name to a concrete file path."""
+    """Resolve a Cellpose custom model name to a concrete file path.
+
+    Scans both ``_cellpose_finetune_*`` (v2 finetune outputs) and
+    ``_cellpose4_finetune_*`` (CellposeSAM finetune outputs) under the
+    shared model root.
+    """
     p = Path(model_type)
     if p.exists():
         return p
     cached = Path.home() / ".cellpose" / "models" / model_type
     if cached.exists():
         return cached
-    for d in sorted(_BARCODE_MODEL_ROOT.glob("_cellpose_finetune_*")):
-        c = d / model_type / "models" / model_type
-        if c.exists():
-            return c
+    for pattern in ("_cellpose_finetune_*", "_cellpose4_finetune_*"):
+        for d in sorted(_BARCODE_MODEL_ROOT.glob(pattern)):
+            c = d / model_type / "models" / model_type
+            if c.exists():
+                return c
     for root in extra_roots:
         for cand in (
             Path(root) / "_finetune" / model_type / "models" / model_type,
@@ -7992,7 +8073,8 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "") -> list[str]:
                     _consider(mdir / "models" / mdir.name, mdir.name)
 
     try:
-        root_iter = list(_BARCODE_MODEL_ROOT.glob("_cellpose_finetune_*"))
+        root_iter = list(_BARCODE_MODEL_ROOT.glob("_cellpose_finetune_*")) + \
+                     list(_BARCODE_MODEL_ROOT.glob("_cellpose4_finetune_*"))
     except Exception:
         root_iter = []
     for d in root_iter:
@@ -8050,7 +8132,8 @@ class BarcodeSeg(Container):
         super().__init__(layout='vertical')
         self.viewer = viewer
         self._model_cache: dict = {}
-        self._current_img: np.ndarray | None = None
+        self._current_img: np.ndarray | None = None        # 2D gray
+        self._current_img_rgb: np.ndarray | None = None    # HxWx3 uint8 RGB
         self._current_src: Path | None = None
         self._draw_state = {"layer": "", "pts": [], "active": False}
         self._contrast_ratios = [1.0, 0.5, 0.25, 0.12, 0.06]
@@ -8295,28 +8378,41 @@ class BarcodeSeg(Container):
         return tifs[0] if tifs else None
 
     def _load_image_2d(self, path: Path) -> np.ndarray:
-        """Load the seg input for ``path`` (the intensity-sum tif).
+        """Load the GRAY seg input for ``path`` (the intensity-sum tif).
 
-        For the render-trained models (default since 2026-04-25) we
-        first try to produce the FastFLIM-render grayscale that the
-        models were trained on. If the FLIM stack / tau map is missing
-        we fall back to the raw intensity sum — older intensity-trained
-        models still work in that mode.
+        For v2 render-trained models we produce the FastFLIM-render BT.601
+        luminance the models were trained on. If the FLIM stack / tau map
+        is missing we fall back to the raw intensity sum.
+
+        For v4 models the GRAY result is still computed (kept as a
+        fallback layer), but the worker prefers the RGB form returned by
+        :meth:`_load_fastflim_display_rgb`. See :meth:`_cellpose_input_for`.
         """
-        # Use the parent of the intensity sum's parent: <sample>/intensity/<stem>_sum.tif
-        # so sample_dir is path.parent.parent.
         sample_dir = Path(self.sample_dir.value) if self.sample_dir.value else path.parent.parent
         seg_img, source = _make_barcode_seg_grayscale(sample_dir, path)
         if seg_img is not None:
             print(f'[BarcodeSeg] using FastFLIM render input ({source}) for {path.name}')
             return seg_img
-        # Fallback: raw intensity sum.
         print(f'[BarcodeSeg] FastFLIM render not available, using raw '
               f'intensity sum for {path.name}')
         img = tifffile.imread(str(path))
         if img.ndim > 2:
             img = np.squeeze(img)
         return np.asarray(img, dtype=np.float32)
+
+    def _cellpose_input_for(self, model_name, gray, rgb, extra_roots=()):
+        """Pick gray vs RGB based on the selected model's version.
+
+        v4 (CellposeSAM) was trained on the FastFLIM RGB render — feeding
+        it grayscale would shrink its 3-channel input to 1-channel and
+        hurt accuracy. v2 was trained on BT.601 luminance grayscale;
+        feeding RGB would confuse it.
+
+        Falls back to gray when the corresponding form is not available.
+        """
+        if _is_v4_model(model_name, extra_roots=extra_roots) and rgb is not None:
+            return rgb
+        return gray
 
     def _get_model(self, name: str):
         if name not in self._model_cache:
@@ -8343,6 +8439,11 @@ class BarcodeSeg(Container):
         self._current_src = src
         img = self._load_image_2d(src)
         self._current_img = img
+        # Also produce the FastFLIM colour render (HxWx3 uint8) so v4
+        # CellposeSAM models can be fed RGB. None when no tau / sum
+        # available — _cellpose_input_for falls back to gray then.
+        self._current_img_rgb = self._load_fastflim_display_rgb(src)
+        extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
 
         # Existing-mask dialog. Only probe the files we'd actually
         # overwrite this run (i.e. respect the do_n / do_p toggles).
@@ -8422,13 +8523,18 @@ class BarcodeSeg(Container):
         self.reseg_n_btn.enabled = False
         self.reseg_p_btn.enabled = False
 
+        # Per-head input: v4 → RGB if available, v2 → grayscale.
+        n_input = self._cellpose_input_for(self.n_model.value, img,
+                                            self._current_img_rgb, extra)
+        p_input = self._cellpose_input_for(self.p_model.value, img,
+                                            self._current_img_rgb, extra)
         worker = self._seg_worker(
-            img=img, src=src,
+            n_img=n_input, p_img=p_input, src=src,
             do_n=do_n, do_p=do_p,
             n_model_name=self.n_model.value, n_diameter=float(self.n_diameter.value),
             p_model_name=self.p_model.value, p_diameter=float(self.p_diameter.value),
             use_gpu=bool(self.use_gpu.value),
-            extra_roots=[str(self.sample_dir.value)] if self.sample_dir.value else [],
+            extra_roots=extra,
         )
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_seg_done)
@@ -8436,7 +8542,7 @@ class BarcodeSeg(Container):
         worker.start()
 
     @thread_worker
-    def _seg_worker(self, img, src, do_n, do_p,
+    def _seg_worker(self, n_img, p_img, src, do_n, do_p,
                     n_model_name, n_diameter, p_model_name, p_diameter,
                     use_gpu, extra_roots):
         import time as _time
@@ -8450,7 +8556,7 @@ class BarcodeSeg(Container):
             yield ('status', 10, f'Running N model ({n_model_name}) in subprocess...')
             t0 = _time.time()
             n_mask = _run_infer_subprocess(
-                img=img, base_name=n_model_name,
+                img=n_img, base_name=n_model_name,
                 diameter=n_diameter, channels=[0, 0],
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
             )
@@ -8459,13 +8565,18 @@ class BarcodeSeg(Container):
             yield ('status', 55, f'Running P model ({p_model_name}) in subprocess...')
             t0 = _time.time()
             p_mask = _run_infer_subprocess(
-                img=img, base_name=p_model_name,
+                img=p_img, base_name=p_model_name,
                 diameter=p_diameter, channels=[0, 0],
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
             )
             yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
 
-        return (img, n_mask, p_mask)
+        # The display layer below uses the GRAY image (n_img if N
+        # selected, else p_img — pick whichever exists, prefer n_img).
+        # But if both are RGB (v4 case), fall back to the cached gray
+        # via _current_img on _on_seg_done.
+        ref_img = n_img if (do_n and n_img is not None) else p_img
+        return (ref_img, n_mask, p_mask)
 
     def _get_cached_model(self, name, use_gpu, extra_roots):
         """Thread-safe accessor that builds a cellpose model once per name."""
@@ -8491,7 +8602,11 @@ class BarcodeSeg(Container):
             show_warning(payload[1])
 
     def _on_seg_done(self, result):
-        img, n_mask, p_mask = result
+        ref_img, n_mask, p_mask = result
+        # _setup_viewer_layers wants the 2-D GRAY image (RGB would be
+        # painted with colormap='gray' which is wrong). The cached gray
+        # is on self._current_img regardless of v4 vs v2 routing.
+        img = self._current_img if self._current_img is not None else ref_img
         # If a head was skipped (do_n=False or do_p=False) the worker
         # returned None for that side. Fall back to whatever's on disk so
         # the viewer always shows both layers when both files exist.
@@ -8510,11 +8625,19 @@ class BarcodeSeg(Container):
                     p_mask = _load_mask_npy_any(pf)
                 except Exception:
                     p_mask = None
+        # img may be HxW (gray) or HxWx3 (RGB) here; use HxW shape only.
+        ref_shape = img.shape[:2] if hasattr(img, 'shape') else (1, 1)
         if n_mask is None:
-            n_mask = np.zeros(img.shape, dtype=np.int32)
+            n_mask = np.zeros(ref_shape, dtype=np.int32)
         if p_mask is None:
-            p_mask = np.zeros(img.shape, dtype=np.int32)
-        self._setup_viewer_layers(img, n_mask, p_mask)
+            p_mask = np.zeros(ref_shape, dtype=np.int32)
+        # Force the display layer to be the GRAY 2-D image, not the RGB
+        # version that may have been fed to a v4 model — _setup_viewer
+        # adds the colour render via _load_fastflim_display_rgb anyway.
+        gray_img = self._current_img if (
+            self._current_img is not None and self._current_img.ndim == 2
+        ) else img
+        self._setup_viewer_layers(gray_img, n_mask, p_mask)
         self.progress.value = self.progress.max
         self.status_label.value = (
             f'Done. N={int(n_mask.max())} cells, P={int(p_mask.max())} cells.'
@@ -8631,12 +8754,17 @@ class BarcodeSeg(Container):
             show_warning('No image loaded. Click "Auto Segment" first.')
             return
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_n.npy'
+        extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        n_input = self._cellpose_input_for(
+            self.n_model.value, self._current_img,
+            getattr(self, '_current_img_rgb', None), extra,
+        )
         try:
             mask = _run_infer_subprocess(
-                img=self._current_img, base_name=str(self.n_model.value),
+                img=n_input, base_name=str(self.n_model.value),
                 diameter=float(self.n_diameter.value), channels=[0, 0],
                 use_gpu=bool(self.use_gpu.value),
-                extra_roots=[str(self.sample_dir.value)] if self.sample_dir.value else [],
+                extra_roots=extra,
                 out_path=out_path,
             )
         except Exception as e:
@@ -8656,12 +8784,17 @@ class BarcodeSeg(Container):
             show_warning('No image loaded. Click "Auto Segment" first.')
             return
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_p.npy'
+        extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        p_input = self._cellpose_input_for(
+            self.p_model.value, self._current_img,
+            getattr(self, '_current_img_rgb', None), extra,
+        )
         try:
             mask = _run_infer_subprocess(
-                img=self._current_img, base_name=str(self.p_model.value),
+                img=p_input, base_name=str(self.p_model.value),
                 diameter=float(self.p_diameter.value), channels=[0, 0],
                 use_gpu=bool(self.use_gpu.value),
-                extra_roots=[str(self.sample_dir.value)] if self.sample_dir.value else [],
+                extra_roots=extra,
                 out_path=out_path,
             )
         except Exception as e:
@@ -8721,9 +8854,16 @@ class BarcodeSeg(Container):
         self.ft_n_btn.enabled = False
         self.ft_p_btn.enabled = False
 
+        # Fine-tune on the same input form the model expects: RGB for v4,
+        # gray for v2.
+        ft_input = self._cellpose_input_for(
+            base_name, self._current_img,
+            getattr(self, '_current_img_rgb', None),
+            extra_roots=[str(sample_dir)],
+        )
         worker = self._finetune_worker(
             target=target, base_name=base_name, new_name=new_name,
-            save_dir=save_dir, img=self._current_img, mask=mask,
+            save_dir=save_dir, img=ft_input, mask=mask,
             n_epochs=n_epochs, use_gpu=bool(self.use_gpu.value),
             extra_roots=[str(sample_dir)],
         )
