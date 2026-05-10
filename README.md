@@ -16,7 +16,7 @@ It exposes **seven widgets** under `Plugins → BC‑FLIM‑Spectra`:
 - 🎬 **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).
 - 📈 **NaCha** — final alignment and per‑class signal readout / visualization.
 
-For details, see [Napari plugin/README](Napari%20plugin/README.md).
+For details, see [Napari plugin/README](Napari_plugin/README.md).
 
 ---
 
@@ -30,7 +30,7 @@ It provides scripts for preprocessing, training, inference, and visualization:
 - 🔍 `Test_LUMINA.py` — inference on new data.
 - 🔥 `Visualize_heatmap.py` — visualize results.
 
-For details, see [LUMINA classification/README](LUMINA%20classification/README.md).
+For details, see [LUMINA classification/README](LUMINA_classification/README.md).
 
 ---
 

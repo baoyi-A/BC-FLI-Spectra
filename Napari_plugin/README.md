@@ -78,29 +78,64 @@ viewer layers on transition, keeping the session clean.
 
 ## 🔧 Installation
 
-A clean environment is recommended.
+The plugin runs Cellpose in **subprocess‑isolated child processes** (to
+keep CUDA / OpenGL state out of napari's main process), and Cellpose 2.x
+and 4.x have **incompatible APIs** + different model formats. As a
+result the recommended setup is **three conda envs** — one for napari +
+the plugin, plus one each for cellpose 2 and cellpose 4. The plugin
+auto‑detects which python belongs to which slot, so you don't have to
+configure paths by hand.
 
 ```bash
-# 1️⃣ Create & activate environment
+# 1️⃣ napari + this plugin (the env you actually launch napari from)
 conda create -n nacha python=3.10 -y
 conda activate nacha
 
-# 2️⃣ Install PyTorch (pick the command for your OS / CUDA from
-#    https://pytorch.org/get-started/locally/)
-#    Example (CUDA 12.1):
+# Install PyTorch matching your OS / CUDA (https://pytorch.org/get-started/locally/)
+# Example (CUDA 12.1):
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 
-# 3️⃣ Install Cellpose (used by Barcode Seg and Biosensor Seg)
-pip install cellpose
-
-# 4️⃣ Install Track-Anything (used by B&P Tracker and NaCha)
-#    Official instructions: https://github.com/gaomingqi/Track-Anything
+# Install Track-Anything (used by B&P Tracker and NaCha)
 git clone https://github.com/gaomingqi/Track-Anything.git
 cd Track-Anything && pip install -r requirements.txt && cd ..
 
-# 5️⃣ Install this plugin (editable mode recommended)
+# Install this plugin (editable mode recommended)
 cd Path_To_BC-FLI-Spectra/Napari_plugin
 pip install -e .   # or: pip install .
+
+# 2️⃣ Cellpose 2.x env (segmentation Barcode/Biosensor — legacy 2-channel models)
+conda deactivate
+conda create -n cellpose2 python=3.10 -y
+conda activate cellpose2
+pip install "cellpose==2.2.3"
+
+# 3️⃣ Cellpose 4.x env (CellposeSAM — current 3-channel default models)
+conda deactivate
+conda create -n cellpose4 python=3.10 -y
+conda activate cellpose4
+pip install "cellpose>=4.1,<5"
+```
+
+The plugin scans your conda envs at startup, picks one v2 candidate +
+one v4 candidate (scored by env‑name affinity + version recency), and
+writes the chosen pythons to `~/.bc_flim_spectra_envs.json`. Override
+the slot anytime with the env vars `BCFLIM_CELLPOSE_V2_PYTHON` and
+`BCFLIM_CELLPOSE_V4_PYTHON`, or by editing that JSON file.
+
+### CellposeSAM weights (~1.15 GB)
+
+The first time you run a v4 model with the default name `cpsam`,
+Cellpose downloads the weights from `cellpose.org`. **In China this
+download is often blocked.** Two workarounds:
+
+```bash
+# (a) point Cellpose at a HuggingFace mirror
+export HF_ENDPOINT=https://hf-mirror.com   # bash / zsh
+$env:HF_ENDPOINT = "https://hf-mirror.com"  # PowerShell
+
+# (b) download manually and drop into the cache
+#     URL: https://hf-mirror.com/mouseland/cellpose-sam/resolve/main/cpsam
+#     Target: ~/.cellpose/models/cpsam   (Windows: %USERPROFILE%\.cellpose\models\cpsam)
 ```
 
 > 📝 Notes
@@ -112,6 +147,9 @@ pip install -e .   # or: pip install .
 > • Make sure your CUDA driver / toolkit matches the PyTorch build you
 >   install. Cellpose inference and fine‑tuning both accept a `Use GPU`
 >   checkbox; if GPU is not available they fall back to CPU.
+> • Track‑Anything has loose torch / CUDA constraints; if its
+>   `requirements.txt` upgrades torch beyond what your driver supports,
+>   pip‑install it with `--no-deps` and resolve dependencies manually.
 
 ---
 
@@ -125,6 +163,47 @@ napari
 Open the menu **`Plugins → BC‑FLIM‑Spectra`** and pick one of the seven
 widgets. A **Next** button at the bottom of each widget advances to the
 next stage in the canonical workflow order.
+
+---
+
+## 🧭 How Cellpose env routing works
+
+The plugin never imports Cellpose into the napari process. Every train
+or inference call goes through `_finetune_runner.py` launched as a
+**subprocess**, and the plugin chooses **which python** to launch based
+on the model:
+
+| Model name pattern                              | Routed env | Input shape |
+| ----------------------------------------------- | ---------- | ----------- |
+| `*-cpsam-*`, `*cellpose4*`, weight file >200 MB | v4         | 3‑channel RGB render |
+| `cpsam` (the v4 builtin)                        | v4         | 3‑channel RGB render |
+| Anything else (incl. `cyto2`, `nuclei`, custom v2) | v2      | 1‑ or 2‑channel grayscale |
+
+The two BarcodeSeg defaults (N: `NinNC-cpsam-fastflimRGB-…`, P:
+`CinNC-cpsam-fastflimRGB-…`) are v4 → routed to the `cellpose4` env.
+BiosensorSeg's default (`BS-BC-assist-cls-bgy-260426`) is v2 → routed
+to the `cellpose2` env. **You don't pick the env, the model name does.**
+
+If the v4 env isn't installed the routing logs a warning and falls back
+to v2. The plugin's status panel in BarcodeSeg shows ✓/✗ per slot at a
+glance, with the resolved python paths and override hints.
+
+```python
+# Override at runtime via env vars (highest priority)
+$env:BCFLIM_CELLPOSE_V2_PYTHON = "D:\envs\my_cellpose2\python.exe"
+$env:BCFLIM_CELLPOSE_V4_PYTHON = "D:\envs\my_cellpose4\python.exe"
+
+# Or edit the persistent cache
+notepad $env:USERPROFILE\.bc_flim_spectra_envs.json
+```
+
+To see which env was picked and why:
+
+```python
+import logging
+logging.getLogger("bc_flim_spectra").setLevel(logging.INFO)
+import flim_s_gen   # logs: v2 python: …, v4 python: …, scoring decisions
+```
 
 ---
 

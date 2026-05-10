@@ -37,8 +37,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/BC-FLIM-Spectra"
-Issues = "https://github.com/yourname/BC-FLIM-Spectra/issues"
+Homepage = "https://github.com/baoyi-A/BC-FLI-Spectra"
+Issues = "https://github.com/baoyi-A/BC-FLI-Spectra/issues"
 
 # Let napari discover your plugin manifest (napari.yaml).
 # Put your napari.yaml under the top-level package `flim_s_gen/`.

@@ -7689,8 +7689,26 @@ def _save_seg_npy(dest_path: Path, masks: np.ndarray) -> None:
 
 
 # ---- BarcodeSeg N/P model configuration ----
-_BARCODE_MODEL_ROOT = Path(r"G:/BC-FLIM-S/LYH")  # where _cellpose_finetune_* folders live
-_CELLPOSE_SRC_PATH = Path(r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main")
+# Shared lab model store (where _cellpose_finetune_* / _cellpose4_finetune_*
+# folders live). Override on a per-machine basis with BCFLIM_MODEL_ROOT;
+# the original lab path stays as fallback so internal users don't have to
+# set anything. External users without that drive just see empty globs and
+# rely on the per-sample _finetune/ folder + ~/.cellpose cache.
+import logging as _logging
+import os as _os_init
+_log = _logging.getLogger("bc_flim_spectra")
+if not _log.handlers:
+    _h = _logging.StreamHandler()
+    _h.setFormatter(_logging.Formatter('[%(name)s] %(levelname)s %(message)s'))
+    _log.addHandler(_h)
+    _log.setLevel(_logging.INFO)
+    _log.propagate = False
+_BARCODE_MODEL_ROOT = Path(_os_init.environ.get(
+    'BCFLIM_MODEL_ROOT', r"G:/BC-FLIM-S/LYH"))
+# Optional checkout of cellpose 2.x source — only used by the v2 subprocess
+# runner if a local working copy is needed (most users don't need this).
+_CELLPOSE_SRC_PATH = Path(_os_init.environ.get(
+    'BCFLIM_CELLPOSE_SRC', r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main"))
 
 # ---- Cellpose dual-version support ------------------------------------
 # v2 (CellposeModel(model_type=..., pretrained_model=...)) and v4
@@ -7701,16 +7719,13 @@ _CELLPOSE_SRC_PATH = Path(r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main")
 #   1. Environment variables BCFLIM_CELLPOSE_V2_PYTHON / BCFLIM_CELLPOSE_V4_PYTHON
 #   2. User-edited config file ~/.bc_flim_spectra_envs.json
 #   3. Filesystem auto-scan of common conda env locations (looks at the
-#      installed cellpose's METADATA file — no subprocess, instant)
-#   4. Hardcoded development defaults (this machine's paths)
+#      installed cellpose's METADATA file — no subprocess, instant). When
+#      multiple envs match a slot we score by name affinity + version
+#      recency rather than picking alphabetically.
 # A successfully resolved set is written back to the config file so
 # subsequent launches skip the scan.
 
 _CELLPOSE_ENV_CACHE = Path.home() / '.bc_flim_spectra_envs.json'
-_CELLPOSE_HARDCODED_DEFAULTS = {
-    'v2': Path(r"D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe"),
-    'v4': Path(r"D:/Softwares/Anaconda/Anaconda3/envs/cellpose4/python.exe"),
-}
 
 
 def _read_cellpose_version_from_env(env_dir):
@@ -7794,16 +7809,40 @@ def _scan_conda_envs():
     return out
 
 
+def _score_env_for_slot(env_dir, ver, slot):
+    """Higher = better fit for this cellpose-version slot.
+
+    Combines name affinity (env name suggests cellpose / nacha) with
+    version recency, so e.g. ``cellpose4`` (4.1.1) beats ``binary_classify``
+    (4.0.6) for the v4 slot even when the latter sorts alphabetically first.
+    """
+    name = env_dir.name.lower()
+    score = 0.0
+    if 'cellpose' in name:
+        score += 100
+    if 'nacha' in name or 'bc-flim' in name or 'bc_flim' in name:
+        score += 80
+    if slot == 'v4' and ('4' in name or 'sam' in name):
+        score += 50
+    if slot == 'v2' and ('2' in name) and '4' not in name:
+        score += 30
+    try:
+        parts = [int(x) for x in ver.split('.')[:3]]
+        score += parts[0] * 10 + parts[1] * 1 + parts[2] * 0.1
+    except Exception:
+        pass
+    return score
+
+
 def _resolve_cellpose_envs():
     """Apply the priority chain. Returns dict {'v2': Path|None, 'v4': Path|None}.
 
     Priority (first hit per slot wins):
         1. Env vars BCFLIM_CELLPOSE_{V2,V4}_PYTHON
         2. User config file ``~/.bc_flim_spectra_envs.json``
-        3. Hardcoded dev-machine defaults if they exist on this filesystem
-        4. Auto-scan of common conda env locations (and persist to cache)
-    Step 3 is gated by ``is_file()`` so other users on different machines
-    skip straight to auto-scan.
+        3. Auto-scan of common conda env locations: enumerate every env
+           that has cellpose installed, then score by name affinity +
+           version recency and pick the best per slot.
     """
     import os as _os
     out = {'v2': None, 'v4': None}
@@ -7825,15 +7864,9 @@ def _resolve_cellpose_envs():
                         out[k] = p
         except Exception:
             pass
-    # 3. hardcoded dev-machine defaults (gated on existence — other users
-    #    skip to auto-scan).
-    for k in ('v2', 'v4'):
-        if out[k] is None:
-            d = _CELLPOSE_HARDCODED_DEFAULTS.get(k)
-            if d and d.is_file():
-                out[k] = d
-    # 4. auto-scan if anything still missing
+    # 3. auto-scan with scoring if anything still missing
     if out['v2'] is None or out['v4'] is None:
+        candidates = {'v2': [], 'v4': []}
         for env_dir in _scan_conda_envs():
             ver = _read_cellpose_version_from_env(env_dir)
             if not ver:
@@ -7846,8 +7879,25 @@ def _resolve_cellpose_envs():
             if py is None:
                 continue
             slot = 'v4' if major >= 4 else 'v2'
-            if out[slot] is None:
-                out[slot] = py
+            candidates[slot].append((env_dir, ver, py))
+        for slot in ('v2', 'v4'):
+            if out[slot] is not None or not candidates[slot]:
+                continue
+            ranked = sorted(
+                candidates[slot],
+                key=lambda c: _score_env_for_slot(c[0], c[1], slot),
+                reverse=True,
+            )
+            out[slot] = ranked[0][2]
+            if len(ranked) > 1:
+                others = ', '.join(
+                    f'{c[0].name}({c[1]})' for c in ranked[1:]
+                )
+                _log.info(
+                    'cellpose %s: picked %s (%s) over %d other candidate(s): %s',
+                    slot, ranked[0][0].name, ranked[0][1],
+                    len(ranked) - 1, others,
+                )
     # Persist whatever we ended up with so subsequent loads skip the scan.
     try:
         _CELLPOSE_ENV_CACHE.write_text(json.dumps(
@@ -7858,27 +7908,28 @@ def _resolve_cellpose_envs():
     return out
 
 
-# Resolve once at import time; print a diagnostic.
+# Resolve once at import time; log diagnostics (override level via
+# logging.getLogger("bc_flim_spectra").setLevel(...)).
 import json
 _RESOLVED_CELLPOSE_ENVS = _resolve_cellpose_envs()
-_CELLPOSE_V2_PYTHON = (
-    _RESOLVED_CELLPOSE_ENVS.get('v2') or _CELLPOSE_HARDCODED_DEFAULTS['v2']
+_CELLPOSE_NOT_FOUND = Path('cellpose_python_not_found')
+_CELLPOSE_V2_PYTHON = _RESOLVED_CELLPOSE_ENVS.get('v2') or _CELLPOSE_NOT_FOUND
+_CELLPOSE_V4_PYTHON = _RESOLVED_CELLPOSE_ENVS.get('v4') or _CELLPOSE_NOT_FOUND
+_log.info(
+    'v2 python: %s (found=%s)',
+    _CELLPOSE_V2_PYTHON, _CELLPOSE_V2_PYTHON.is_file(),
 )
-_CELLPOSE_V4_PYTHON = (
-    _RESOLVED_CELLPOSE_ENVS.get('v4') or _CELLPOSE_HARDCODED_DEFAULTS['v4']
+_log.info(
+    'v4 python: %s (found=%s)',
+    _CELLPOSE_V4_PYTHON, _CELLPOSE_V4_PYTHON.is_file(),
 )
-print(
-    f'[cellpose-envs] v2={_CELLPOSE_V2_PYTHON} '
-    f'(found={_CELLPOSE_V2_PYTHON.is_file()})'
-)
-print(
-    f'[cellpose-envs] v4={_CELLPOSE_V4_PYTHON} '
-    f'(found={_CELLPOSE_V4_PYTHON.is_file()})'
-)
-print(
-    f'[cellpose-envs] override via env vars BCFLIM_CELLPOSE_V2_PYTHON / '
-    f'BCFLIM_CELLPOSE_V4_PYTHON, or edit {_CELLPOSE_ENV_CACHE}'
-)
+if not (_CELLPOSE_V2_PYTHON.is_file() or _CELLPOSE_V4_PYTHON.is_file()):
+    _log.warning(
+        'no cellpose env found. Install cellpose 2.x and/or 4.x in a '
+        'conda env, or set BCFLIM_CELLPOSE_V2_PYTHON / '
+        'BCFLIM_CELLPOSE_V4_PYTHON, or edit %s',
+        _CELLPOSE_ENV_CACHE,
+    )
 # v4 (CellposeSAM) weight files are >>200 MB; v2 weights typically
 # <100 MB. Use 200 MB as the heuristic split.
 _CELLPOSE_V4_SIZE_THR_BYTES = 200 * 1024 * 1024
@@ -7965,10 +8016,11 @@ def _python_for_model(model_name, extra_roots=()) -> Path:
     if _is_v4_model(model_name, extra_roots=extra_roots):
         if _has_v4_env():
             return _CELLPOSE_V4_PYTHON
-        print(f'[cellpose-route] WARN: model "{model_name}" looks like v4 but '
-              f'{_CELLPOSE_V4_PYTHON} not found; falling back to v2 env. '
-              f'Install cellpose 4 in a separate env and update '
-              f'_CELLPOSE_V4_PYTHON to enable this route.')
+        _log.warning(
+            'model "%s" looks like v4 but no v4 env found; falling back to '
+            'v2. Install cellpose 4.x in a separate env and set '
+            'BCFLIM_CELLPOSE_V4_PYTHON to enable.', model_name,
+        )
     if _CELLPOSE_V2_PYTHON.is_file():
         return _CELLPOSE_V2_PYTHON
     import sys as _sys
