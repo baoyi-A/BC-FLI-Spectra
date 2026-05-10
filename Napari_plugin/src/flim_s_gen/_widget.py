@@ -7693,14 +7693,192 @@ _BARCODE_MODEL_ROOT = Path(r"G:/BC-FLIM-S/LYH")  # where _cellpose_finetune_* fo
 _CELLPOSE_SRC_PATH = Path(r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main")
 
 # ---- Cellpose dual-version support ------------------------------------
-# v2 (the BC-FLIM env, with the local cellpose-main checkout on sys.path)
-# is the existing path used by all the *-render-260425-1 / BS-BC-assist-*
-# models. v4 (CellposeSAM, separate conda env) is required by any model
-# whose weights file is huge (~1 GB) — those names typically contain
-# 'cpsam' / 'sam' / 'cellpose4'. Subprocess routing picks the matching
-# python interpreter based on the model.
-_CELLPOSE_V2_PYTHON = Path(r"D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe")
-_CELLPOSE_V4_PYTHON = Path(r"D:/Softwares/Anaconda/Anaconda3/envs/cellpose4/python.exe")
+# v2 (CellposeModel(model_type=..., pretrained_model=...)) and v4
+# (CellposeSAM) live in DIFFERENT conda envs. The plugin probes which
+# one to use per model and routes subprocess calls accordingly.
+#
+# Resolution order (first hit wins):
+#   1. Environment variables BCFLIM_CELLPOSE_V2_PYTHON / BCFLIM_CELLPOSE_V4_PYTHON
+#   2. User-edited config file ~/.bc_flim_spectra_envs.json
+#   3. Filesystem auto-scan of common conda env locations (looks at the
+#      installed cellpose's METADATA file — no subprocess, instant)
+#   4. Hardcoded development defaults (this machine's paths)
+# A successfully resolved set is written back to the config file so
+# subsequent launches skip the scan.
+
+_CELLPOSE_ENV_CACHE = Path.home() / '.bc_flim_spectra_envs.json'
+_CELLPOSE_HARDCODED_DEFAULTS = {
+    'v2': Path(r"D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe"),
+    'v4': Path(r"D:/Softwares/Anaconda/Anaconda3/envs/cellpose4/python.exe"),
+}
+
+
+def _read_cellpose_version_from_env(env_dir):
+    """Return cellpose version string installed in ``env_dir``, or None.
+
+    Filesystem-only — looks for ``cellpose-<version>.dist-info/METADATA``
+    under site-packages. No subprocess. Should be ~ms per env.
+    """
+    env_dir = Path(env_dir)
+    # Windows: <env>/Lib/site-packages/. Linux/mac: <env>/lib/pythonX.Y/site-packages
+    site_pkgs_candidates = [env_dir / 'Lib' / 'site-packages']
+    site_pkgs_candidates += list(env_dir.glob('lib/python*/site-packages'))
+    for sp in site_pkgs_candidates:
+        if not sp.is_dir():
+            continue
+        for di in sp.glob('cellpose-*.dist-info'):
+            md = di / 'METADATA'
+            if not md.is_file():
+                continue
+            try:
+                for line in md.read_text(errors='ignore').splitlines():
+                    if line.startswith('Version:'):
+                        return line.split(':', 1)[1].strip()
+            except Exception:
+                continue
+    return None
+
+
+def _python_for_env(env_dir):
+    """python.exe under ``env_dir`` (Windows) or env_dir/bin/python (POSIX)."""
+    env_dir = Path(env_dir)
+    win = env_dir / 'python.exe'
+    if win.is_file():
+        return win
+    posix = env_dir / 'bin' / 'python'
+    if posix.is_file():
+        return posix
+    return None
+
+
+def _scan_conda_envs():
+    """Find <conda-root>/envs/* directories on this machine.
+
+    Tries CONDA_ROOT / CONDA_PREFIX_1 env vars + several well-known
+    locations. Cheap — just filesystem checks, no env probing yet.
+    """
+    import sys as _sys
+    candidates = []
+    # Active conda
+    for v in ('CONDA_ROOT', 'CONDA_PREFIX_1'):
+        p = os.environ.get(v)
+        if p:
+            candidates.append(Path(p) / 'envs')
+    # Walk up from the parent of the running interpreter — if we're
+    # running from inside an env, sibling envs are at ../<env>.
+    cur = Path(_sys.executable).resolve()
+    for up in [cur.parent, cur.parent.parent, cur.parent.parent.parent]:
+        if up.parent.name == 'envs':
+            candidates.append(up.parent)
+    home = Path.home()
+    candidates += [
+        home / 'anaconda3' / 'envs',
+        home / 'miniconda3' / 'envs',
+        Path(r'D:/Softwares/Anaconda/Anaconda3/envs'),
+        Path(r'C:/ProgramData/Anaconda3/envs'),
+        Path('/opt/conda/envs'),
+    ]
+    seen = set()
+    out = []
+    for envs_root in candidates:
+        try:
+            envs_root = envs_root.resolve()
+        except Exception:
+            continue
+        if envs_root in seen or not envs_root.is_dir():
+            continue
+        seen.add(envs_root)
+        for env_dir in sorted(envs_root.iterdir()):
+            if env_dir.is_dir():
+                out.append(env_dir)
+    return out
+
+
+def _resolve_cellpose_envs():
+    """Apply the priority chain. Returns dict {'v2': Path|None, 'v4': Path|None}.
+
+    Priority (first hit per slot wins):
+        1. Env vars BCFLIM_CELLPOSE_{V2,V4}_PYTHON
+        2. User config file ``~/.bc_flim_spectra_envs.json``
+        3. Hardcoded dev-machine defaults if they exist on this filesystem
+        4. Auto-scan of common conda env locations (and persist to cache)
+    Step 3 is gated by ``is_file()`` so other users on different machines
+    skip straight to auto-scan.
+    """
+    import os as _os
+    out = {'v2': None, 'v4': None}
+    # 1. env vars
+    for k in ('v2', 'v4'):
+        ev = _os.environ.get(f'BCFLIM_CELLPOSE_{k.upper()}_PYTHON')
+        if ev:
+            p = Path(ev)
+            if p.is_file():
+                out[k] = p
+    # 2. config file cache
+    if _CELLPOSE_ENV_CACHE.is_file():
+        try:
+            cfg = json.loads(_CELLPOSE_ENV_CACHE.read_text())
+            for k in ('v2', 'v4'):
+                if out[k] is None and cfg.get(k):
+                    p = Path(cfg[k])
+                    if p.is_file():
+                        out[k] = p
+        except Exception:
+            pass
+    # 3. hardcoded dev-machine defaults (gated on existence — other users
+    #    skip to auto-scan).
+    for k in ('v2', 'v4'):
+        if out[k] is None:
+            d = _CELLPOSE_HARDCODED_DEFAULTS.get(k)
+            if d and d.is_file():
+                out[k] = d
+    # 4. auto-scan if anything still missing
+    if out['v2'] is None or out['v4'] is None:
+        for env_dir in _scan_conda_envs():
+            ver = _read_cellpose_version_from_env(env_dir)
+            if not ver:
+                continue
+            try:
+                major = int(ver.split('.')[0])
+            except Exception:
+                continue
+            py = _python_for_env(env_dir)
+            if py is None:
+                continue
+            slot = 'v4' if major >= 4 else 'v2'
+            if out[slot] is None:
+                out[slot] = py
+    # Persist whatever we ended up with so subsequent loads skip the scan.
+    try:
+        _CELLPOSE_ENV_CACHE.write_text(json.dumps(
+            {k: (str(v) if v else None) for k, v in out.items()}, indent=2,
+        ))
+    except Exception:
+        pass
+    return out
+
+
+# Resolve once at import time; print a diagnostic.
+import json
+_RESOLVED_CELLPOSE_ENVS = _resolve_cellpose_envs()
+_CELLPOSE_V2_PYTHON = (
+    _RESOLVED_CELLPOSE_ENVS.get('v2') or _CELLPOSE_HARDCODED_DEFAULTS['v2']
+)
+_CELLPOSE_V4_PYTHON = (
+    _RESOLVED_CELLPOSE_ENVS.get('v4') or _CELLPOSE_HARDCODED_DEFAULTS['v4']
+)
+print(
+    f'[cellpose-envs] v2={_CELLPOSE_V2_PYTHON} '
+    f'(found={_CELLPOSE_V2_PYTHON.is_file()})'
+)
+print(
+    f'[cellpose-envs] v4={_CELLPOSE_V4_PYTHON} '
+    f'(found={_CELLPOSE_V4_PYTHON.is_file()})'
+)
+print(
+    f'[cellpose-envs] override via env vars BCFLIM_CELLPOSE_V2_PYTHON / '
+    f'BCFLIM_CELLPOSE_V4_PYTHON, or edit {_CELLPOSE_ENV_CACHE}'
+)
 # v4 (CellposeSAM) weight files are >>200 MB; v2 weights typically
 # <100 MB. Use 200 MB as the heuristic split.
 _CELLPOSE_V4_SIZE_THR_BYTES = 200 * 1024 * 1024
@@ -7736,13 +7914,39 @@ def _is_v4_model(model_name, extra_roots=()):
 
 
 def _has_v4_env() -> bool:
-    """True iff the v4 (cellpose 4 / SAM) python interpreter exists.
-
-    Used to gracefully degrade: a fresh install with only one cellpose
-    env still works for v2 models; v4 model selection becomes a soft
-    error with a clear message.
-    """
+    """True iff the v4 (cellpose 4 / SAM) python interpreter exists."""
     return _CELLPOSE_V4_PYTHON.is_file()
+
+
+def _has_v2_env() -> bool:
+    return _CELLPOSE_V2_PYTHON.is_file()
+
+
+def _describe_cellpose_envs() -> str:
+    """Short HTML status string suitable for a Label widget.
+
+    Used by Barcode Seg / Biosensor Seg / Calculate FLIM-S so the user
+    can see at a glance which Cellpose envs are available.
+    """
+    v2_ok = _has_v2_env()
+    v4_ok = _has_v4_env()
+    v2_color = '#1B5E20' if v2_ok else '#B71C1C'
+    v4_color = '#1B5E20' if v4_ok else '#B71C1C'
+    v2_mark = '✓' if v2_ok else '✗'
+    v4_mark = '✓' if v4_ok else '✗'
+    v2_path = str(_CELLPOSE_V2_PYTHON)
+    v4_path = str(_CELLPOSE_V4_PYTHON)
+    return (
+        f'<b>Cellpose envs:</b> '
+        f'<span style="color:{v2_color}">{v2_mark} v2</span> · '
+        f'<span style="color:{v4_color}">{v4_mark} v4</span><br>'
+        f'<span style="font-size:10px">'
+        f'v2 → {v2_path}<br>'
+        f'v4 → {v4_path}<br>'
+        f'override: env vars BCFLIM_CELLPOSE_V2_PYTHON / '
+        f'BCFLIM_CELLPOSE_V4_PYTHON, or edit {_CELLPOSE_ENV_CACHE}'
+        f'</span>'
+    )
 
 
 def _python_for_model(model_name, extra_roots=()) -> Path:
@@ -8190,6 +8394,27 @@ class BarcodeSeg(Container):
         self.refresh_models_btn = PushButton(text='⟳ Refresh model list')
         self.refresh_models_btn.changed.connect(self._on_refresh_models_clicked)
 
+        # Tiny env-status label so users see which Cellpose envs are
+        # available without opening console. Updates if v2/v4 python
+        # paths change at runtime (env var, config edit).
+        self.env_status_label = Label(value=_describe_cellpose_envs())
+        try:
+            self.env_status_label.native.setTextFormat(1)  # Qt.RichText
+            self.env_status_label.native.setWordWrap(True)
+            self.env_status_label.native.setStyleSheet(
+                'QLabel {'
+                '  background-color: #ECEFF1;'
+                '  border: 1px solid #B0BEC5;'
+                '  border-radius: 4px;'
+                '  padding: 4px 6px;'
+                '  font-size: 11px;'
+                '  color: #263238;'
+                '  font-family: Calibri;'
+                '}'
+            )
+        except Exception:
+            pass
+
         self.run_btn = PushButton(text='Auto Segment (selected)')
         self.run_btn.changed.connect(self._on_run_auto)
         _style_process_button(self.run_btn)
@@ -8325,6 +8550,14 @@ class BarcodeSeg(Container):
         self.append(self.p_diameter)
         self.append(self.use_gpu)
         self.append(self.refresh_models_btn)
+        self.append(self.env_status_label)
+        # Wire model dropdown changes to a channel/version hint so the
+        # user immediately sees "v4 → RGB" or "v2 → grayscale".
+        try:
+            self.n_model.changed.connect(self._on_model_pick_show_hint)
+            self.p_model.changed.connect(self._on_model_pick_show_hint)
+        except Exception:
+            pass
 
         _append_section_divider(self, '— ▶ Segment & edit —')
         self.append(self.run_btn)
@@ -8366,6 +8599,28 @@ class BarcodeSeg(Container):
         self._bind_viewer_callbacks()
 
     # ----- choices / paths -----
+
+    def _on_model_pick_show_hint(self, *_args):
+        """Show 'v2 → grayscale' / 'v4 → RGB' in the status label so the
+        user knows which input form Auto Segment will feed for each head.
+        Also flags if the v4 env is missing when a v4 model is picked.
+        """
+        extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        bits = []
+        for tag, combo in (('N', self.n_model), ('P', self.p_model)):
+            name = str(combo.value or '')
+            if not name:
+                continue
+            v4 = _is_v4_model(name, extra_roots=extra)
+            form = 'RGB' if v4 else 'gray'
+            ver = 'v4' if v4 else 'v2'
+            warn = ''
+            if v4 and not _has_v4_env():
+                warn = '  ⚠ v4 env not found'
+            bits.append(f'{tag}={ver}/{form}{warn}')
+        self.status_label.value = (
+            'Model preview: ' + '  ·  '.join(bits) if bits else 'No model selected.'
+        )
 
     def _on_refresh_models_clicked(self, *_args):
         """Manual button: re-scan model dirs + reflect counts in the
