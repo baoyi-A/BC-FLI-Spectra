@@ -7973,12 +7973,13 @@ def _python_for_model(model_name, extra_roots=()) -> Path:
         return _CELLPOSE_V2_PYTHON
     import sys as _sys
     return Path(_sys.executable)
-# As of 2026-04-25 the barcode N/P Cellpose models are trained on the
-# FastFLIM render (grayscale luminance of the Leica blue-green-red overlay)
-# instead of the raw intensity sum. Defaults updated accordingly. See
-# barcode_N_P_finetune_render_ok0425.py for the training pipeline.
-_DEFAULT_N_MODEL = "NinNC-render-260425-1"
-_DEFAULT_P_MODEL = "CinNC-render-260425-1"
+# As of 2026-05-10 the barcode N/P defaults are CellposeSAM (v4) models
+# trained on the FastFLIM RGB render. v4 takes the 3-channel render
+# directly so we keep more lifetime + intensity information than the
+# v2 luminance grayscale path. The older v2 *-render-260425-1 models
+# are still in the dropdown for users without a v4 conda env.
+_DEFAULT_N_MODEL = "NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam"
+_DEFAULT_P_MODEL = "CinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam"
 _DEFAULT_N_DIAMETER = 55.0
 _DEFAULT_P_DIAMETER = 92.0
 _CELLPOSE_BUILTIN = {"cyto", "cyto2", "nuclei", "tissuenet", "livecell", "general"}
@@ -8452,13 +8453,16 @@ class BarcodeSeg(Container):
             'Untick to skip the P model. Existing *_seg_p.npy on disk is '
             'left untouched.')
         _tt(self.n_model,
-            'Cellpose model for nucleus (N) segmentation. As of 2026-04-25 '
-            'the default (NinNC-render-260425-1) is trained on the FastFLIM '
-            'render — picking older intensity-trained models will work but '
-            'may give worse N masks on the new input.')
+            'Cellpose model for nucleus (N) segmentation. Default is '
+            'NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam — a Cellpose v4 '
+            '(CellposeSAM) model trained on the 3-channel FastFLIM RGB '
+            'render. Names containing "cpsam" → v4 RGB input; names like '
+            '*-render-260425-1 → v2 grayscale input. The widget routes '
+            'subprocess + input form per model automatically.')
         _tt(self.p_model,
-            'Cellpose model for cytoplasm (P) segmentation. Default '
-            'CinNC-render-260425-1 is also FastFLIM-render-trained.')
+            'Cellpose model for cytoplasm (P) segmentation. Default is '
+            'CinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam (v4). Same '
+            'auto-routing as N model.')
         _tt(self.n_diameter,
             'Approximate nucleus diameter in pixels. Cellpose auto-'
             'detects if you set 0 (slower).')
@@ -9786,12 +9790,13 @@ class BiosensorSeg(Container):
             'Legacy intensity model selected: averages the chosen frames '
             'per channel and across enabled channels (old behaviour).')
         _tt(self.seg_model,
-            'Cellpose model. Default BS-BC-assist-cls-bgy-260426 is '
-            'trained on the BGY pseudo-RGB render and expects the '
-            'render-grayscale input that Generate produces. Older '
-            'BS-BC-assist-cls-* (no -bgy- in the name) were trained on '
-            'the intensity sum and switch the widget back to the legacy '
-            'frame-mean flow automatically.')
+            'Cellpose model. Default BS-BC-assist-cls-bgy-260426 is a '
+            'Cellpose v2 model trained on the BGY render grayscale + '
+            'barcode-cls aux (2-channel input). Older BS-BC-assist-cls-* '
+            '(no -bgy- in the name) → legacy frame-mean intensity flow. '
+            '\n\nCellpose v4 (CellposeSAM) also supports 2-channel input '
+            'via the nchan argument; if you later train a *-cpsam-bs-* '
+            'model the widget will route it to the v4 env automatically.')
         _tt(self.barcode_cls_path,
             'Barcode classification TIF (one class label per cell) from '
             'the Seeded K-Means step. Auto-filled when the sample folder '
