@@ -7735,20 +7735,38 @@ def _is_v4_model(model_name, extra_roots=()):
     return False
 
 
+def _has_v4_env() -> bool:
+    """True iff the v4 (cellpose 4 / SAM) python interpreter exists.
+
+    Used to gracefully degrade: a fresh install with only one cellpose
+    env still works for v2 models; v4 model selection becomes a soft
+    error with a clear message.
+    """
+    return _CELLPOSE_V4_PYTHON.is_file()
+
+
 def _python_for_model(model_name, extra_roots=()) -> Path:
     """Return the python.exe path that should run inference / training
-    for the given model. Falls back to v2 python if the corresponding
-    env is missing.
+    for the given model. Falls back gracefully when an env is missing.
+
+    Routing:
+      - v4 model + v4 env present  -> v4 python
+      - v4 model + v4 env MISSING  -> v2 python (with a console warning;
+                                       the actual cellpose load will fail
+                                       with a clearer message in the
+                                       runner output)
+      - v2 model                   -> v2 python
+      - everything missing         -> current interpreter (last resort)
     """
     if _is_v4_model(model_name, extra_roots=extra_roots):
-        if _CELLPOSE_V4_PYTHON.is_file():
+        if _has_v4_env():
             return _CELLPOSE_V4_PYTHON
-        # v4 model but no v4 env — fall back with a console warning.
         print(f'[cellpose-route] WARN: model "{model_name}" looks like v4 but '
-              f'{_CELLPOSE_V4_PYTHON} not found; falling back to v2 (likely to fail).')
+              f'{_CELLPOSE_V4_PYTHON} not found; falling back to v2 env. '
+              f'Install cellpose 4 in a separate env and update '
+              f'_CELLPOSE_V4_PYTHON to enable this route.')
     if _CELLPOSE_V2_PYTHON.is_file():
         return _CELLPOSE_V2_PYTHON
-    # Final fallback: whatever interpreter is currently running.
     import sys as _sys
     return Path(_sys.executable)
 # As of 2026-04-25 the barcode N/P Cellpose models are trained on the
@@ -8357,8 +8375,24 @@ class BarcodeSeg(Container):
                     seen.add(n)
             return out
 
-        self.n_model.choices = tuple(_with_defaults(n_ranked, _DEFAULT_N_MODEL, ['nuclei']))
-        self.p_model.choices = tuple(_with_defaults(p_ranked, _DEFAULT_P_MODEL, ['cyto2']))
+        n_choices = tuple(_with_defaults(n_ranked, _DEFAULT_N_MODEL, ['nuclei']))
+        p_choices = tuple(_with_defaults(p_ranked, _DEFAULT_P_MODEL, ['cyto2']))
+        self.n_model.choices = n_choices
+        self.p_model.choices = p_choices
+        # Belt-and-braces refresh: rebuild the underlying QComboBox items
+        # in case magicgui's .choices setter raced with widget realisation.
+        for combo, items in ((self.n_model, n_choices), (self.p_model, p_choices)):
+            try:
+                native = combo.native
+                if hasattr(native, 'clear') and hasattr(native, 'addItems'):
+                    native.blockSignals(True)
+                    native.clear()
+                    native.addItems(list(items))
+                    native.blockSignals(False)
+            except Exception as e:
+                print(f'[BarcodeSeg] dropdown refresh fallback failed: {e}')
+        print(f'[BarcodeSeg] dropdowns refreshed: N={len(n_choices)} '
+              f'P={len(p_choices)} options.')
         if cur_n in self.n_model.choices:
             self.n_model.value = cur_n
         if cur_p in self.p_model.choices:
