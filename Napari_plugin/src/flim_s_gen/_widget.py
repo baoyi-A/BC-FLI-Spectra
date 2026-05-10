@@ -8187,6 +8187,9 @@ class BarcodeSeg(Container):
         self.p_diameter = FloatSpinBox(label='P diameter (px)', min=5, max=300, step=1, value=_DEFAULT_P_DIAMETER)
         self.use_gpu = CheckBox(text='Use GPU', value=True)
 
+        self.refresh_models_btn = PushButton(text='⟳ Refresh model list')
+        self.refresh_models_btn.changed.connect(self._on_refresh_models_clicked)
+
         self.run_btn = PushButton(text='Auto Segment (selected)')
         self.run_btn.changed.connect(self._on_run_auto)
         _style_process_button(self.run_btn)
@@ -8315,6 +8318,7 @@ class BarcodeSeg(Container):
         self.append(self.p_model)
         self.append(self.p_diameter)
         self.append(self.use_gpu)
+        self.append(self.refresh_models_btn)
 
         _append_section_divider(self, '— ▶ Segment & edit —')
         self.append(self.run_btn)
@@ -8344,6 +8348,19 @@ class BarcodeSeg(Container):
         self._bind_viewer_callbacks()
 
     # ----- choices / paths -----
+
+    def _on_refresh_models_clicked(self, *_args):
+        """Manual button: re-scan model dirs + reflect counts in the
+        status label so the user can see what the refresh actually did
+        (UI sometimes shows stale dropdown contents until you re-open it).
+        """
+        self._refresh_model_choices()
+        n = len(list(self.n_model.choices))
+        p = len(list(self.p_model.choices))
+        self.status_label.value = (
+            f'Models refreshed: N dropdown={n}, P dropdown={p}. '
+            f'(Re-open the dropdown to see new entries.)'
+        )
 
     def _refresh_model_choices(self, *_args):
         """Rebuild the N / P dropdowns from all known custom-model locations.
@@ -8391,8 +8408,16 @@ class BarcodeSeg(Container):
                     native.blockSignals(False)
             except Exception as e:
                 print(f'[BarcodeSeg] dropdown refresh fallback failed: {e}')
-        print(f'[BarcodeSeg] dropdowns refreshed: N={len(n_choices)} '
-              f'P={len(p_choices)} options.')
+        msg = (f'[BarcodeSeg] dropdowns refreshed: N={len(n_choices)} '
+               f'P={len(p_choices)} options.')
+        print(msg)
+        try:
+            import datetime as _dt
+            with open(r'C:/Users/admin/AppData/Local/Temp/bcflim_diag.log', 'a',
+                      encoding='utf-8') as _lf:
+                _lf.write(f'{_dt.datetime.now().isoformat()} {msg}\n')
+        except Exception:
+            pass
         if cur_n in self.n_model.choices:
             self.n_model.value = cur_n
         if cur_p in self.p_model.choices:
