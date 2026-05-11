@@ -250,12 +250,18 @@ def _clear_all_viewer_layers(viewer):
 
 def _run_infer_subprocess(
     *, img, base_name, diameter, channels, use_gpu, extra_roots, out_path,
+    cellprob_threshold=None, flow_threshold=None,
 ):
     """Run Cellpose inference in a child Python. Returns a uint16 mask ndarray.
 
     Shares the isolation logic with fine-tune: importing torch in the child
     means the napari main process never touches CUDA/GL-reactive code, so
     vispy's rendering does not crash later in the session.
+
+    ``cellprob_threshold`` and ``flow_threshold`` are optional. Pass
+    ``None`` (default) and the runner falls back to cellpose's own
+    defaults (0.0 / 0.4) — that's the legacy behaviour. Models with a
+    sibling ``config.json`` pass explicit values for both.
     """
     import pickle, subprocess, sys, tempfile, os as _os, numpy as _np
 
@@ -286,6 +292,13 @@ def _run_infer_subprocess(
         default_finetune_roots=default_roots,
         out_path=str(out_path),
     )
+    # Only forward thresholds when the caller actually specified them —
+    # the runner treats absence as "use cellpose default", which is the
+    # legacy behaviour for every model that doesn't ship a config.json.
+    if cellprob_threshold is not None:
+        cfg['cellprob_threshold'] = float(cellprob_threshold)
+    if flow_threshold is not None:
+        cfg['flow_threshold'] = float(flow_threshold)
     fd, cfg_path = tempfile.mkstemp(prefix='infer_cfg_', suffix='.pkl')
     _os.close(fd)
     with open(cfg_path, 'wb') as f:
@@ -8334,6 +8347,120 @@ def _is_valid_model_choice(name: str, extra_roots=()) -> bool:
     except Exception:
         return False
 
+
+# ---- Per-model config -----------------------------------------------------
+# A finetuned model can ship a sibling ``config.json`` carrying:
+#   - input_kind:        intensity_sum / barcode_seg_grayscale / barcode_seg_rgb
+#   - diameter:          float (pre-fills GUI spinbox)
+#   - cellprob_threshold/flow_threshold: passed straight to cellpose.eval
+#   - channels:          [int, int]   (cellpose v2 ch index)
+#   - post_process:      {"method": "merge_fragments", "merge_gap": int, "min_merged_px": int} or {"method": "none"}
+#   - notes:             free text shown in widget tooltip
+#
+# Lookup order (first hit wins):
+#   1. <model_file>.config.json
+#   2. <model_file>'s parent / "config.json"           (cellpose convention)
+#   3. <model_file>'s grandparent / "config.json"      (the …/models/name layout)
+# Returns None if nothing is found — caller must handle (legacy default).
+_MODEL_CONFIG_DEFAULTS = {
+    'input_kind': 'barcode_seg_grayscale',
+    'diameter': None,
+    'cellprob_threshold': None,
+    'flow_threshold': None,
+    'channels': None,
+    'post_process': {'method': 'none'},
+    'notes': '',
+}
+
+
+def _load_model_config(model_name: str, extra_roots=()):
+    """Return parsed config dict (with defaults merged in), or ``None``
+    if no config.json is found alongside the model.
+
+    The returned dict always has every key from ``_MODEL_CONFIG_DEFAULTS``
+    so callers don't need to guard each lookup.
+    """
+    if not model_name:
+        return None
+    if model_name in _CELLPOSE_BUILTIN:
+        return None
+    try:
+        p = _resolve_barcode_model_path(model_name, extra_roots=extra_roots)
+    except Exception:
+        p = None
+    if p is None:
+        return None
+    candidates = [
+        p.with_suffix(p.suffix + '.config.json'),
+        Path(str(p) + '.config.json'),
+        p.parent / 'config.json',
+        p.parent.parent / 'config.json',
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                cfg = dict(_MODEL_CONFIG_DEFAULTS)
+                loaded = json.loads(c.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict):
+                    cfg.update(loaded)
+                # Normalise post_process dict so callers can rely on shape.
+                pp = cfg.get('post_process') or {}
+                if not isinstance(pp, dict):
+                    pp = {}
+                pp.setdefault('method', 'none')
+                cfg['post_process'] = pp
+                cfg['_source'] = str(c)
+                return cfg
+        except Exception as e:
+            _log.warning('failed to parse model config %s: %s', c, e)
+    return None
+
+
+def _apply_postproc(masks, cfg: dict):
+    """Run the post-process step declared in ``cfg.post_process``.
+
+    Currently supports ``method='merge_fragments'``. Anything else (or
+    no config) returns ``masks`` untouched, so legacy callers keep
+    seeing raw cellpose output.
+    """
+    if masks is None or not cfg:
+        return masks
+    pp = cfg.get('post_process') or {}
+    method = (pp.get('method') or 'none').lower()
+    if method in ('', 'none'):
+        return masks
+    if method == 'merge_fragments':
+        try:
+            from .postproc import merge_fragments
+            gap = int(pp.get('merge_gap', 3))
+            min_px = int(pp.get('min_merged_px', 400))
+            return merge_fragments(masks, gap_px=gap, min_px=min_px)
+        except Exception as e:
+            _log.warning('merge_fragments failed (%s) — returning raw masks', e)
+            return masks
+    _log.warning('unknown post_process method %r — returning raw masks', method)
+    return masks
+
+
+def _summarise_model_config(cfg: dict) -> str:
+    """Render a compact one-line summary of a model config for tooltips."""
+    if not cfg:
+        return ''
+    bits = [f"input={cfg.get('input_kind')}"]
+    if cfg.get('diameter') is not None:
+        bits.append(f"diam={cfg['diameter']}")
+    if cfg.get('cellprob_threshold') is not None:
+        bits.append(f"cellprob={cfg['cellprob_threshold']}")
+    if cfg.get('flow_threshold') is not None:
+        bits.append(f"flow={cfg['flow_threshold']}")
+    pp = cfg.get('post_process') or {}
+    if pp.get('method') and pp.get('method') != 'none':
+        bits.append(
+            f"post={pp['method']}(gap={pp.get('merge_gap')},"
+            f"min={pp.get('min_merged_px')})"
+        )
+    return ' '.join(bits)
+
 # Barcode-Seg render parameters — MUST match the training render in
 # barcode_N_P_napari_seg_review_gui._render_fastflim_rgb so inference
 # sees the same input distribution as training.
@@ -8968,11 +9095,17 @@ class BarcodeSeg(Container):
     def _on_model_pick_show_hint(self, *_args):
         """Show 'v2 → grayscale' / 'v4 → RGB' in the status label so the
         user knows which input form Auto Segment will feed for each head.
-        Also flags if the v4 env is missing when a v4 model is picked.
+        Also flags if the v4 env is missing when a v4 model is picked,
+        and surfaces any per-model config.json that was found.
         """
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
         bits = []
-        for tag, combo in (('N', self.n_model), ('P', self.p_model)):
+        cfg_lines = []
+        cfg_seen = False
+        for tag, combo, diam_widget in (
+            ('N', self.n_model, self.n_diameter),
+            ('P', self.p_model, self.p_diameter),
+        ):
             name = str(combo.value or '')
             if not name:
                 continue
@@ -8982,10 +9115,26 @@ class BarcodeSeg(Container):
             warn = ''
             if v4 and not _has_v4_env():
                 warn = '  ⚠ v4 env not found'
-            bits.append(f'{tag}={ver}/{form}{warn}')
-        self.status_label.value = (
-            'Model preview: ' + '  ·  '.join(bits) if bits else 'No model selected.'
-        )
+            cfg = _load_model_config(name, extra_roots=extra)
+            cfg_tag = ''
+            if cfg:
+                cfg_seen = True
+                cfg_tag = '  📄cfg'
+                # Pre-populate the diameter spinbox from config (only if
+                # the config actually carries a diameter — leave the user
+                # value alone otherwise).
+                if cfg.get('diameter') is not None:
+                    try:
+                        diam_widget.value = float(cfg['diameter'])
+                    except Exception:
+                        pass
+                summary = _summarise_model_config(cfg)
+                cfg_lines.append(f'{tag}: {summary}')
+            bits.append(f'{tag}={ver}/{form}{cfg_tag}{warn}')
+        msg = 'Model preview: ' + '  ·  '.join(bits) if bits else 'No model selected.'
+        if cfg_seen:
+            msg += '\n' + '\n'.join(cfg_lines)
+        self.status_label.value = msg
 
     # ---------- Diameter ruler ----------
     def _on_show_diameter_ref(self, checked):
@@ -9126,16 +9275,37 @@ class BarcodeSeg(Container):
             img = np.squeeze(img)
         return np.asarray(img, dtype=np.float32)
 
-    def _cellpose_input_for(self, model_name, gray, rgb, extra_roots=()):
-        """Pick gray vs RGB based on the selected model's version.
+    def _cellpose_input_for(self, model_name, gray, rgb, extra_roots=(),
+                              raw_path=None):
+        """Pick the right input form for ``model_name``.
 
-        v4 (CellposeSAM) was trained on the FastFLIM RGB render — feeding
-        it grayscale would shrink its 3-channel input to 1-channel and
-        hurt accuracy. v2 was trained on BT.601 luminance grayscale;
-        feeding RGB would confuse it.
+        Routing rules (first applicable wins):
+          1. Model has a ``config.json`` declaring ``input_kind`` →
+             honour it.  ``intensity_sum`` re-reads the raw uint16
+             sum.tif (``raw_path``), bypassing all τ rendering.
+          2. v4 (CellposeSAM) + RGB available → RGB (3-channel render).
+          3. Otherwise grayscale (luminance render).
 
-        Falls back to gray when the corresponding form is not available.
+        Falls back to gray whenever the requested form is unavailable.
         """
+        cfg = _load_model_config(model_name, extra_roots=extra_roots) or {}
+        kind = cfg.get('input_kind')
+        if kind == 'intensity_sum' and raw_path is not None:
+            try:
+                raw = tifffile.imread(str(raw_path))
+                if raw.ndim > 2:
+                    raw = np.squeeze(raw)
+                return np.asarray(raw, dtype=np.float32)
+            except Exception as e:
+                _log.warning(
+                    'config %s requested input_kind=intensity_sum but raw '
+                    'load failed (%s); falling back to gray.', model_name, e,
+                )
+        if kind == 'barcode_seg_rgb' and rgb is not None:
+            return rgb
+        if kind == 'barcode_seg_grayscale':
+            return gray
+        # Legacy path — no config or config didn't recognise the kind.
         if _is_v4_model(model_name, extra_roots=extra_roots) and rgb is not None:
             return rgb
         return gray
@@ -9249,11 +9419,17 @@ class BarcodeSeg(Container):
         self.reseg_n_btn.enabled = False
         self.reseg_p_btn.enabled = False
 
-        # Per-head input: v4 → RGB if available, v2 → grayscale.
+        # Per-head input: v4 → RGB if available, v2 → grayscale. Models
+        # with a config.json may override this to e.g. raw intensity_sum.
         n_input = self._cellpose_input_for(self.n_model.value, img,
-                                            self._current_img_rgb, extra)
+                                            self._current_img_rgb, extra,
+                                            raw_path=src)
         p_input = self._cellpose_input_for(self.p_model.value, img,
-                                            self._current_img_rgb, extra)
+                                            self._current_img_rgb, extra,
+                                            raw_path=src)
+        # Per-head inference + post-proc parameters from optional config.json.
+        n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
+        p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
         worker = self._seg_worker(
             n_img=n_input, p_img=p_input, src=src,
             do_n=do_n, do_p=do_p,
@@ -9261,6 +9437,7 @@ class BarcodeSeg(Container):
             p_model_name=self.p_model.value, p_diameter=float(self.p_diameter.value),
             use_gpu=bool(self.use_gpu.value),
             extra_roots=extra,
+            n_cfg=n_cfg, p_cfg=p_cfg,
         )
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_seg_done)
@@ -9270,11 +9447,14 @@ class BarcodeSeg(Container):
     @thread_worker
     def _seg_worker(self, n_img, p_img, src, do_n, do_p,
                     n_model_name, n_diameter, p_model_name, p_diameter,
-                    use_gpu, extra_roots):
+                    use_gpu, extra_roots, n_cfg=None, p_cfg=None):
         import time as _time
         stem = src.stem
         n_out = src.parent / f'{stem}_seg_n.npy'
         p_out = src.parent / f'{stem}_seg_p.npy'
+
+        n_cfg = n_cfg or {}
+        p_cfg = p_cfg or {}
 
         n_mask = None
         p_mask = None
@@ -9283,18 +9463,26 @@ class BarcodeSeg(Container):
             t0 = _time.time()
             n_mask = _run_infer_subprocess(
                 img=n_img, base_name=n_model_name,
-                diameter=n_diameter, channels=[0, 0],
+                diameter=n_diameter,
+                channels=n_cfg.get('channels') or [0, 0],
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
+                cellprob_threshold=n_cfg.get('cellprob_threshold'),
+                flow_threshold=n_cfg.get('flow_threshold'),
             )
+            n_mask = _apply_postproc(n_mask, n_cfg)
             yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
         if do_p:
             yield ('status', 55, f'Running P model ({p_model_name}) in subprocess...')
             t0 = _time.time()
             p_mask = _run_infer_subprocess(
                 img=p_img, base_name=p_model_name,
-                diameter=p_diameter, channels=[0, 0],
+                diameter=p_diameter,
+                channels=p_cfg.get('channels') or [0, 0],
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
+                cellprob_threshold=p_cfg.get('cellprob_threshold'),
+                flow_threshold=p_cfg.get('flow_threshold'),
             )
+            p_mask = _apply_postproc(p_mask, p_cfg)
             yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
 
         # The display layer below uses the GRAY image (n_img if N
@@ -9481,21 +9669,27 @@ class BarcodeSeg(Container):
             return
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_n.npy'
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
         n_input = self._cellpose_input_for(
             self.n_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
+            raw_path=self._current_src,
         )
         try:
             mask = _run_infer_subprocess(
                 img=n_input, base_name=str(self.n_model.value),
-                diameter=float(self.n_diameter.value), channels=[0, 0],
+                diameter=float(self.n_diameter.value),
+                channels=n_cfg.get('channels') or [0, 0],
                 use_gpu=bool(self.use_gpu.value),
                 extra_roots=extra,
                 out_path=out_path,
+                cellprob_threshold=n_cfg.get('cellprob_threshold'),
+                flow_threshold=n_cfg.get('flow_threshold'),
             )
         except Exception as e:
             show_warning(f'Re-seg N failed: {e}')
             return
+        mask = _apply_postproc(mask, n_cfg)
         if 'mask_n_fill' in self.viewer.layers:
             try:
                 del self.viewer.layers['mask_n_fill']
@@ -9511,21 +9705,27 @@ class BarcodeSeg(Container):
             return
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_p.npy'
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
         p_input = self._cellpose_input_for(
             self.p_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
+            raw_path=self._current_src,
         )
         try:
             mask = _run_infer_subprocess(
                 img=p_input, base_name=str(self.p_model.value),
-                diameter=float(self.p_diameter.value), channels=[0, 0],
+                diameter=float(self.p_diameter.value),
+                channels=p_cfg.get('channels') or [0, 0],
                 use_gpu=bool(self.use_gpu.value),
                 extra_roots=extra,
                 out_path=out_path,
+                cellprob_threshold=p_cfg.get('cellprob_threshold'),
+                flow_threshold=p_cfg.get('flow_threshold'),
             )
         except Exception as e:
             show_warning(f'Re-seg P failed: {e}')
             return
+        mask = _apply_postproc(mask, p_cfg)
         if 'mask_p_fill' in self.viewer.layers:
             try:
                 del self.viewer.layers['mask_p_fill']

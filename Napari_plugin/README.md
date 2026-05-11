@@ -207,6 +207,56 @@ import flim_s_gen   # logs: v2 python: …, v4 python: …, scoring decisions
 
 ---
 
+## 🧩 Per‑model config (BYO model)
+
+Different finetuned Cellpose models often need different inputs and
+inference parameters. Instead of forking the widget per model, the
+plugin reads an optional **`config.json`** sitting next to the model
+weight and applies its settings transparently:
+
+| Key                       | Effect                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `input_kind`              | `intensity_sum` (raw `_sum.tif`), `barcode_seg_grayscale` (FastFLIM luminance, default), or `barcode_seg_rgb` (FastFLIM 3‑channel render) |
+| `diameter`                | Pre‑fills the BarcodeSeg diameter spinbox when the model is selected                       |
+| `cellprob_threshold`      | Forwarded to `model.eval(...)` — needed for sparse / membrane models                       |
+| `flow_threshold`          | Forwarded to `model.eval(...)`                                                            |
+| `channels`                | Cellpose v2 channel indices                                                                |
+| `post_process.method`     | `merge_fragments` (morph close + min‑area filter) or `none`                                |
+| `post_process.merge_gap`  | Closing radius in pixels                                                                    |
+| `post_process.min_merged_px` | Drop connected components smaller than this after closing                                 |
+| `notes`                   | Free text shown in the status hint when the model is picked                                |
+
+**Discovery**: when the user picks a model in the dropdown, the plugin
+looks for `config.json` (a) right next to the weight file, (b) in the
+weight's parent dir, or (c) one level up (the `…/<model_name>/models/<model_name>` layout `git` checkouts use). First hit wins. Missing
+→ legacy behaviour (FastFLIM grayscale input, cellpose defaults, no
+post‑proc). All existing user models keep working unchanged.
+
+**Example** — the JQW NBL2 cell‑membrane model
+(`Napari_plugin/examples/jqw_nbl2_membrane_v7.config.json`):
+
+```json
+{
+  "input_kind": "intensity_sum",
+  "diameter": 30,
+  "cellprob_threshold": -6.0,
+  "flow_threshold": 1.5,
+  "channels": [0, 0],
+  "post_process": {
+    "method": "merge_fragments", "merge_gap": 3, "min_merged_px": 400
+  },
+  "notes": "Trained on raw uint16 sum.tif; cellprob heavily negative because membrane signal is sparse."
+}
+```
+
+Drop that JSON next to the weight, restart napari, pick the model in
+BarcodeSeg → diameter auto‑fills to 30, inference uses the right
+thresholds, output is post‑processed before showing up as a labels
+layer. The status hint shows a `📄cfg` tag so you know the override
+took effect.
+
+---
+
 ## 🗺 Quick workflow
 
 1. 📥 **PTU Reader** — load a `.ptu` and decode it into an intensity stack

@@ -134,11 +134,15 @@ def _run_v2(cfg) -> int:
 
     op = str(cfg.get("op", "train")).lower()
     if op == "infer":
-        out = base_model.eval(
-            cfg["img"],
+        eval_kw = dict(
             diameter=float(cfg.get("diameter", 0) or None),
             channels=cfg.get("channels", [0, 0]),
         )
+        if "cellprob_threshold" in cfg and cfg["cellprob_threshold"] is not None:
+            eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
+        if "flow_threshold" in cfg and cfg["flow_threshold"] is not None:
+            eval_kw["flow_threshold"] = float(cfg["flow_threshold"])
+        out = base_model.eval(cfg["img"], **eval_kw)
         masks = out[0] if isinstance(out, (tuple, list)) else out
         if isinstance(masks, list):
             masks = masks[0]
@@ -214,6 +218,11 @@ def _run_v4(cfg) -> int:
                 eval_kw["channel_axis"] = -1
         except Exception:
             pass
+        # Optional per-model thresholds passed from the config.json.
+        if "cellprob_threshold" in cfg and cfg["cellprob_threshold"] is not None:
+            eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
+        if "flow_threshold" in cfg and cfg["flow_threshold"] is not None:
+            eval_kw["flow_threshold"] = float(cfg["flow_threshold"])
         out = base_model.eval(img, **eval_kw)
         masks = out[0] if isinstance(out, (tuple, list)) else out
         if isinstance(masks, list):
