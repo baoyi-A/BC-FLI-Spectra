@@ -8165,15 +8165,38 @@ def _looks_like_model_weight(p: "Path") -> bool:
 
 # ---- Cross-widget folder memory --------------------------------------
 # Stash the most-recent sample folder so downstream widgets pre-fill their
-# FileEdits instead of forcing the user to repick. We use a process-level
-# cache (napari is single-viewer in practice) — the ``viewer`` arg is kept
-# in the API for future per-viewer scoping but currently ignored.
+# FileEdits instead of forcing the user to repick. The cache is also
+# persisted to ~/.bc_flim_spectra_state.json so the next napari session
+# pre-fills with whatever folder the user was last working on.
 _LAST_SAMPLE_DIR_KEY = 'bc_flim_spectra:last_sample_dir'
 _LAST_SAMPLE_DIR: "Path | None" = None
+_BCFLIM_STATE_FILE = Path.home() / '.bc_flim_spectra_state.json'
+
+
+def _load_persisted_state() -> dict:
+    """Read ~/.bc_flim_spectra_state.json or return empty dict."""
+    try:
+        if _BCFLIM_STATE_FILE.is_file():
+            return json.loads(_BCFLIM_STATE_FILE.read_text(encoding='utf-8'))
+    except Exception as e:
+        _log.debug('state load failed: %s', e)
+    return {}
+
+
+def _save_persisted_state(state: dict) -> None:
+    """Atomically write the user-state JSON. Tolerant of IO errors."""
+    try:
+        _BCFLIM_STATE_FILE.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False),
+            encoding='utf-8',
+        )
+    except Exception as e:
+        _log.debug('state save failed: %s', e)
 
 
 def _get_remembered_sample_dir(viewer, fallback):
-    """Return the last-used sample dir if one was set this session,
+    """Return the last-used sample dir if one was set (this session or
+    last session, persisted in ~/.bc_flim_spectra_state.json),
     otherwise ``fallback``."""
     global _LAST_SAMPLE_DIR
     if _LAST_SAMPLE_DIR is not None and Path(_LAST_SAMPLE_DIR).is_dir():
@@ -8182,14 +8205,32 @@ def _get_remembered_sample_dir(viewer, fallback):
 
 
 def _remember_sample_dir(viewer, path):
-    """Record ``path`` as the new shared sample folder if it exists."""
+    """Record ``path`` as the new shared sample folder and persist it to
+    disk so the next session pre-fills it too."""
     global _LAST_SAMPLE_DIR
     try:
         p = str(path) if path else ''
         if p and Path(p).is_dir():
-            _LAST_SAMPLE_DIR = Path(p)
+            new_path = Path(p)
+            if _LAST_SAMPLE_DIR != new_path:
+                _LAST_SAMPLE_DIR = new_path
+                state = _load_persisted_state()
+                state['last_sample_dir'] = str(new_path)
+                _save_persisted_state(state)
     except Exception:
         pass
+
+
+# Restore last-session folder at import (silent if the file is missing /
+# the folder no longer exists).
+try:
+    _persisted = _load_persisted_state()
+    _last = _persisted.get('last_sample_dir')
+    if _last and Path(_last).is_dir():
+        _LAST_SAMPLE_DIR = Path(_last)
+        _log.info('restored last sample folder: %s', _LAST_SAMPLE_DIR)
+except Exception:
+    pass
 
 
 # ---- Diameter reference circle --------------------------------------------
