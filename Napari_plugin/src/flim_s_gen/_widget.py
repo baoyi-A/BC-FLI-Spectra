@@ -1034,10 +1034,21 @@ class PTUReader(Container):
         self.clahe_tile = SpinBox(
             label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
         )
-        # Auto-contrast button: declared before tooltip pass below so the
-        # _tt(self.auto_contrast_btn, ...) call has something to attach to.
-        self.auto_contrast_btn = PushButton(text='Auto contrast ↻')
-        self.auto_contrast_btn.clicked.connect(self._on_auto_contrast)
+        # Auto-contrast buttons. The original button cycles both lifetime
+        # and intensity together (legacy behaviour). The two scoped
+        # buttons let users tune τ-range and brightness clip independently
+        # — each has its own preset cycle so pressing "τ only" repeatedly
+        # tightens the lifetime colormap without nudging brightness, and
+        # vice versa.
+        self.auto_contrast_btn = PushButton(text='Auto contrast ↻ (all)')
+        self.auto_contrast_btn.clicked.connect(
+            lambda *_: self._on_auto_contrast(scope='all'))
+        self.auto_tau_btn = PushButton(text='Auto τ ↻')
+        self.auto_tau_btn.clicked.connect(
+            lambda *_: self._on_auto_contrast(scope='lifetime'))
+        self.auto_intensity_btn = PushButton(text='Auto I ↻')
+        self.auto_intensity_btn.clicked.connect(
+            lambda *_: self._on_auto_contrast(scope='intensity'))
         # Tooltips for every control — the user hovers to see what each does.
         _tt(self.tau_min,
             'Colormap blue end (short tau, ns). Auto-set from data 12th '
@@ -1065,20 +1076,34 @@ class PTUReader(Container):
             'Approximately half of your typical cell diameter in pixels. '
             'Larger tile = broader equalisation, less noise amplification.')
         _tt(self.auto_contrast_btn,
-            'One-click contrast preset. Cycles through 6 presets and '
-            'loops: (100,0) → (95,10) → (90,20) → (85,30) → (80,40) → '
-            '(75,50) → back to (100,0). Each preset re-derives tau '
-            'min/max as the (lower%, upper%) percentiles over signal '
-            'pixels, and sets Intensity clip to the upper percent. The '
-            'low end is clipped harder than the high end because the '
-            'blue (short-tau) region carries noisier background pixels.')
+            'One-click contrast preset — cycles BOTH lifetime range and '
+            'intensity clip. 6 presets, loops: (100,0) → (95,10) → '
+            '(90,20) → (85,30) → (80,40) → (75,50) → repeat. Each preset '
+            're-derives tau min/max as the (lower%, upper%) percentiles '
+            'over signal pixels, and sets Intensity clip to the upper '
+            'percent. Low end clipped harder than high — short-tau '
+            'pixels carry the noisiest background.')
+        _tt(self.auto_tau_btn,
+            'Auto-contrast cycle for the LIFETIME colormap only — '
+            'tau_min / tau_max. Same 6 presets as the master button '
+            'but never touches Intensity clip. Has its own cycle index '
+            'so τ tightens independently of I.')
+        _tt(self.auto_intensity_btn,
+            'Auto-contrast cycle for INTENSITY (brightness) clip only. '
+            'Sets the upper percentile (100 → 95 → ... → 75) without '
+            'touching the lifetime colormap. Has its own cycle index.')
 
         # Cached per-FOV FastFLIM data for live re-render. Keyed by layer
         # name (stem + "_FastFLIM"). Each value is a dict with keys
         # {'tau': 2D float32, 'inten': 2D float32}.
         self._fastflim_cache: dict = {}
 
-        # Auto-contrast cycle state. -1 so the first click lands on idx 0.
+        # Auto-contrast cycle state — one cycle per scope so τ-only and
+        # I-only buttons advance independently. -1 → first click lands on idx 0.
+        self._auto_cycle_idx_all = -1
+        self._auto_cycle_idx_lifetime = -1
+        self._auto_cycle_idx_intensity = -1
+        # Legacy attribute kept for any code that still reads it (back-compat).
         self._auto_cycle_idx = -1
 
         # Widgets
@@ -1147,6 +1172,17 @@ class PTUReader(Container):
 
         _append_section_divider(self, '— 🎨 FastFLIM display (live apply) —')
         self.append(self.auto_contrast_btn)
+        # Scoped auto-contrast buttons side-by-side so they don't dominate
+        # the panel vertically.
+        _auto_scoped_row = Container(
+            layout='horizontal',
+            widgets=[self.auto_tau_btn, self.auto_intensity_btn],
+        )
+        try:
+            _auto_scoped_row.margins = (0, 0, 0, 0)
+        except Exception:
+            pass
+        self.append(_auto_scoped_row)
         self.append(self.brightness_gamma)
         self.append(self.brightness_floor)
         self.append(self.use_clahe)
@@ -1303,79 +1339,81 @@ class PTUReader(Container):
         (75, 50),    # idx 5 — very aggressive
     )
 
-    def _on_auto_contrast(self, *_args):
-        """Cycle the tau + intensity contrast one step tighter.
+    def _on_auto_contrast(self, scope: str = 'all', *_args):
+        """Cycle contrast one step tighter for the given scope.
 
-        Uses the currently cached (tau, intensity) of the FIRST FOV to
-        compute asymmetric percentiles of tau over signal pixels and
-        writes the result into the tau_min / tau_max / intensity_clip
-        spinboxes. The live-apply connections on those spinboxes then
-        trigger a re-render of every cached FastFLIM layer.
+        ``scope='all'``       — both lifetime range and intensity clip
+                                (legacy behaviour).
+        ``scope='lifetime'``  — tau_min / tau_max only.
+        ``scope='intensity'`` — intensity_clip only.
 
-        Asymmetric because the low-tau (blue) end is noisier: we clip
-        the low end about 2× harder than the high end. At idx 0 the
-        full tau range is shown and no intensity clipping is applied.
+        Each scope has its own preset cycle index so the three buttons
+        advance independently. The lifetime calculation reads the FIRST
+        cached FOV's (tau, intensity) arrays; intensity-only doesn't
+        need any percentile pass, it just writes the upper value.
         """
         if not self._fastflim_cache:
             show_info('Auto contrast: run Process first — no FastFLIM data '
                       'cached yet.')
             return
+        if scope not in ('all', 'lifetime', 'intensity'):
+            scope = 'all'
         presets = PTUReader._AUTO_CONTRAST_PRESETS
-        self._auto_cycle_idx = (self._auto_cycle_idx + 1) % len(presets)
-        upper, lower = presets[self._auto_cycle_idx]
+        idx_attr = f'_auto_cycle_idx_{scope}'
+        cur = getattr(self, idx_attr, -1)
+        cur = (cur + 1) % len(presets)
+        setattr(self, idx_attr, cur)
+        # Keep the legacy single-counter in sync when the 'all' button is used.
+        if scope == 'all':
+            self._auto_cycle_idx = cur
+        upper, lower = presets[cur]
         upper = float(upper)
         lower = float(lower)
 
-        # Visual feedback: progress bar + status. Cheap (single
-        # percentile call on cached arrays) but on multi-FOV setups the
-        # subsequent redraw can take a beat.
         try:
             self.progress.min = 0
             self.progress.max = 100
             self.progress.value = 10
             self.status_label.value = (
-                f'Auto contrast preset {self._auto_cycle_idx + 1}/'
-                f'{len(presets)} — computing percentiles...'
+                f'Auto contrast [{scope}] preset {cur + 1}/{len(presets)}'
+                f' — computing...'
             )
             from qtpy.QtWidgets import QApplication as _QA
             _QA.processEvents()
         except Exception:
             pass
 
-        first = next(iter(self._fastflim_cache.values()))
-        tau = np.asarray(first['tau'], dtype=np.float32)
-        inten = np.asarray(first['inten'], dtype=np.float32)
+        tau_lo_clamped = tau_hi_clamped = None
+        if scope in ('all', 'lifetime'):
+            first = next(iter(self._fastflim_cache.values()))
+            tau = np.asarray(first['tau'], dtype=np.float32)
+            inten = np.asarray(first['inten'], dtype=np.float32)
+            thr = float(np.percentile(inten, 10)) if inten.size else 0.0
+            mask = (inten > thr) & np.isfinite(tau)
+            if not mask.any():
+                mask = np.isfinite(tau)
+            if upper >= 100.0 or lower <= 0.0:
+                tau_lo = float(np.nanmin(tau[mask]))
+                tau_hi = float(np.nanmax(tau[mask]))
+            else:
+                tau_lo = float(np.percentile(tau[mask], lower))
+                tau_hi = float(np.percentile(tau[mask], upper))
+            if tau_hi <= tau_lo:
+                tau_hi = tau_lo + 1e-3
+            tau_lo_clamped = max(
+                float(self.tau_min.min), min(tau_lo, float(self.tau_min.max)))
+            tau_hi_clamped = max(
+                float(self.tau_max.min), min(tau_hi, float(self.tau_max.max)))
 
-        # Signal mask: ignore pixels with near-zero photon count so
-        # percentiles are not dragged toward 0 by empty background.
-        thr = float(np.percentile(inten, 10)) if inten.size else 0.0
-        mask = (inten > thr) & np.isfinite(tau)
-        if not mask.any():
-            mask = np.isfinite(tau)
-
-        if upper >= 100.0 or lower <= 0.0:
-            tau_lo = float(np.nanmin(tau[mask]))
-            tau_hi = float(np.nanmax(tau[mask]))
-        else:
-            tau_lo = float(np.percentile(tau[mask], lower))
-            tau_hi = float(np.percentile(tau[mask], upper))
-        if tau_hi <= tau_lo:
-            tau_hi = tau_lo + 1e-3
-
-        # Clamp to spinbox range so we never raise ValueError when the
-        # data tau goes beyond the SpinBox's hardcoded max (e.g. noisy
-        # short-tau pixels giving weighted-mean ~13 ns on a max=10 box).
-        tau_lo_clamped = max(float(self.tau_min.min), min(tau_lo, float(self.tau_min.max)))
-        tau_hi_clamped = max(float(self.tau_max.min), min(tau_hi, float(self.tau_max.max)))
-
-        # Batch the three writes so we only redraw ONCE at the end,
-        # not three times.
+        # Batch writes so the redraw fires once at the end.
         self._suppress_redraw = True
         try:
             self.progress.value = 40
-            self.tau_min.value = round(tau_lo_clamped, 3)
-            self.tau_max.value = round(tau_hi_clamped, 3)
-            self.intensity_clip.value = round(upper, 1)
+            if scope in ('all', 'lifetime'):
+                self.tau_min.value = round(tau_lo_clamped, 3)
+                self.tau_max.value = round(tau_hi_clamped, 3)
+            if scope in ('all', 'intensity'):
+                self.intensity_clip.value = round(upper, 1)
         finally:
             self._suppress_redraw = False
         self.progress.value = 70
@@ -1387,12 +1425,23 @@ class PTUReader(Container):
         self._redraw_all_fastflim()
         self.progress.value = 100
 
-        msg = (
-            f'Auto contrast {self._auto_cycle_idx + 1}/{len(presets)}: '
-            f'tau {tau_lo_clamped:.2f}–{tau_hi_clamped:.2f} ns '
-            f'(pctl {int(lower)}–{int(upper)}), '
-            f'intensity clip {int(upper)}%.'
-        )
+        if scope == 'all':
+            msg = (
+                f'Auto [{scope}] {cur + 1}/{len(presets)}: '
+                f'τ {tau_lo_clamped:.2f}–{tau_hi_clamped:.2f} ns '
+                f'(pctl {int(lower)}–{int(upper)}), I clip {int(upper)}%.'
+            )
+        elif scope == 'lifetime':
+            msg = (
+                f'Auto [τ] {cur + 1}/{len(presets)}: '
+                f'τ {tau_lo_clamped:.2f}–{tau_hi_clamped:.2f} ns '
+                f'(pctl {int(lower)}–{int(upper)}). I clip unchanged.'
+            )
+        else:  # intensity
+            msg = (
+                f'Auto [I] {cur + 1}/{len(presets)}: '
+                f'I clip {int(upper)}%. τ range unchanged.'
+            )
         try:
             self.status_label.value = msg
         except Exception:
