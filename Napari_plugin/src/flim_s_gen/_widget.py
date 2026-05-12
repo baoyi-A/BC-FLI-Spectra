@@ -830,9 +830,10 @@ _CELLPOSE_LOGO_PATH = _PLUGIN_RESOURCES / 'cellpose_logo.png'
 _TRACK_ANYTHING_LOGO_PATH = _PLUGIN_RESOURCES / 'track_anything_logo.png'
 
 
-def _tighten_container(container, spacing: int = 2, margins=(4, 4, 4, 4)):
+def _tighten_container(container, spacing: int = 1, margins=(3, 3, 3, 3)):
     """Reduce the default row spacing / margins on a magicgui Container so
-    dense widgets fit without squeezing the napari canvas."""
+    dense widgets fit without squeezing the napari canvas. Widget font
+    sizes are left at the napari default — only inter-row gaps shrink."""
     try:
         lay = container.native.layout()
         if lay is not None:
@@ -840,6 +841,26 @@ def _tighten_container(container, spacing: int = 2, margins=(4, 4, 4, 4)):
             lay.setContentsMargins(*margins)
     except Exception:
         pass
+
+
+def _hrow(*ws):
+    """Return a horizontal Container with the given widgets, near-zero
+    margins. Pair related buttons / checkboxes onto a single row so the
+    workflow widget doesn't grow vertically forever — fonts stay at the
+    default size, only the spacing tightens."""
+    c = Container(layout='horizontal', widgets=list(ws))
+    try:
+        c.margins = (0, 0, 0, 0)
+    except Exception:
+        pass
+    try:
+        lay = c.native.layout()
+        if lay is not None:
+            lay.setSpacing(2)
+            lay.setContentsMargins(0, 0, 0, 0)
+    except Exception:
+        pass
+    return c
 
 
 def _append_section_divider(container, text: str):
@@ -8716,11 +8737,20 @@ def _load_model_config(model_name: str, extra_roots=()):
                 loaded = json.loads(c.read_text(encoding='utf-8'))
                 if isinstance(loaded, dict):
                     cfg.update(loaded)
-                # Normalise post_process dict so callers can rely on shape.
-                pp = cfg.get('post_process') or {}
-                if not isinstance(pp, dict):
-                    pp = {}
-                pp.setdefault('method', 'none')
+                # Normalise post_process. Accept either:
+                #   - dict (single step, current behaviour)
+                #   - list of dicts (chained steps applied in order, e.g.
+                #     merge_fragments -> split_at_kinks)
+                # Any other shape -> no-op default.
+                pp = cfg.get('post_process')
+                if isinstance(pp, list):
+                    pp = [s if isinstance(s, dict) else {} for s in pp]
+                    for s in pp:
+                        s.setdefault('method', 'none')
+                elif isinstance(pp, dict):
+                    pp.setdefault('method', 'none')
+                else:
+                    pp = {'method': 'none'}
                 cfg['post_process'] = pp
                 cfg['_source'] = str(c)
                 return cfg
@@ -8729,49 +8759,81 @@ def _load_model_config(model_name: str, extra_roots=()):
     return None
 
 
-def _apply_postproc(masks, cfg: dict, save_path: "Path | None" = None):
-    """Run the post-process step declared in ``cfg.post_process``.
-
-    Currently supports ``method='merge_fragments'``. Anything else (or
-    no config) returns ``masks`` untouched, so legacy callers keep
-    seeing raw cellpose output.
-
-    When post-proc fires AND ``save_path`` is given, overwrite the
-    on-disk ``.npy`` (in the same ``{'masks': uint32}`` envelope the
-    plugin's loader understands) so subsequent "Load existing" passes
-    pick up the merged result instead of the raw fragments. The
-    runner's initial save is a plain ndarray; we replace it. This is
-    the fix for the JQW NBL2 case where Load existing was returning
-    1500 carmera fragments instead of the post-processed ~65 cells.
+def _run_one_postproc_step(masks, step: dict):
+    """Apply a single post-process step described by ``step`` (a dict with
+    a ``method`` key + method-specific params). Returns the resulting
+    masks; on unknown method / exception logs a warning and returns the
+    input unchanged.
     """
-    if masks is None or not cfg:
-        return masks
-    pp = cfg.get('post_process') or {}
-    method = (pp.get('method') or 'none').lower()
+    method = (step.get('method') or 'none').lower()
     if method in ('', 'none'):
         return masks
     if method == 'merge_fragments':
         try:
             from .postproc import merge_fragments
-            gap = int(pp.get('merge_gap', 3))
-            min_px = int(pp.get('min_merged_px', 400))
-            close_holes_px = int(pp.get('close_holes_px', 0))
-            erode_px = int(pp.get('erode_px', 0))
-            out = merge_fragments(masks, gap_px=gap, min_px=min_px,
-                                   close_holes_px=close_holes_px,
-                                   erode_px=erode_px)
-            if save_path is not None:
-                try:
-                    _save_seg_npy(Path(save_path), out)
-                except Exception as e:
-                    _log.warning('post-proc save back failed (%s): %s',
-                                  save_path, e)
-            return out
+            return merge_fragments(
+                masks,
+                gap_px=int(step.get('merge_gap', 3)),
+                min_px=int(step.get('min_merged_px', 400)),
+                close_holes_px=int(step.get('close_holes_px', 0)),
+                erode_px=int(step.get('erode_px', 0)),
+            )
         except Exception as e:
-            _log.warning('merge_fragments failed (%s) — returning raw masks', e)
+            _log.warning('merge_fragments failed (%s) — returning prev masks', e)
             return masks
-    _log.warning('unknown post_process method %r — returning raw masks', method)
+    if method == 'split_at_kinks':
+        try:
+            from .postproc import split_at_kinks
+            return split_at_kinks(
+                masks,
+                kink_angle_deg=float(step.get('kink_angle_deg', 60.0)),
+                kink_window=int(step.get('kink_window', 8)),
+                min_segment_px=int(step.get('min_segment_px', 100)),
+                cut_width=int(step.get('cut_width', 1)),
+            )
+        except Exception as e:
+            _log.warning('split_at_kinks failed (%s) — returning prev masks', e)
+            return masks
+    _log.warning('unknown post_process method %r — returning prev masks', method)
     return masks
+
+
+def _apply_postproc(masks, cfg: dict, save_path: "Path | None" = None):
+    """Run the post-process pipeline declared in ``cfg.post_process``.
+
+    ``cfg.post_process`` may be:
+      * a dict  — single step, e.g. ``{'method': 'merge_fragments', ...}``
+      * a list of dicts — chained steps applied in order, e.g.
+        ``[{'method': 'merge_fragments', ...},
+            {'method': 'split_at_kinks', ...}]``
+      * absent / ``{'method': 'none'}`` — no-op (legacy behaviour).
+
+    When post-proc actually runs AND ``save_path`` is given, the on-disk
+    ``.npy`` is overwritten in the plugin's ``{'masks': uint32}`` envelope
+    so subsequent "Load existing" passes see the post-processed result.
+    """
+    if masks is None or not cfg:
+        return masks
+    pp = cfg.get('post_process')
+    if not pp:
+        return masks
+    steps = pp if isinstance(pp, list) else [pp]
+
+    # If every step is a no-op, skip the save-back too.
+    if all((s.get('method') or 'none').lower() in ('', 'none') for s in steps):
+        return masks
+
+    out = masks
+    for step in steps:
+        out = _run_one_postproc_step(out, step)
+
+    if save_path is not None:
+        try:
+            _save_seg_npy(Path(save_path), out)
+        except Exception as e:
+            _log.warning('post-proc save back failed (%s): %s',
+                          save_path, e)
+    return out
 
 
 def _summarise_model_config(cfg: dict) -> str:
@@ -8785,12 +8847,24 @@ def _summarise_model_config(cfg: dict) -> str:
         bits.append(f"cellprob={cfg['cellprob_threshold']}")
     if cfg.get('flow_threshold') is not None:
         bits.append(f"flow={cfg['flow_threshold']}")
-    pp = cfg.get('post_process') or {}
-    if pp.get('method') and pp.get('method') != 'none':
-        bits.append(
-            f"post={pp['method']}(gap={pp.get('merge_gap')},"
-            f"min={pp.get('min_merged_px')})"
-        )
+    pp = cfg.get('post_process')
+    steps = pp if isinstance(pp, list) else ([pp] if isinstance(pp, dict) else [])
+    for s in steps:
+        m = (s.get('method') or 'none').lower()
+        if m in ('', 'none'):
+            continue
+        if m == 'merge_fragments':
+            bits.append(
+                f"post=merge_fragments(gap={s.get('merge_gap')},"
+                f"min={s.get('min_merged_px')})"
+            )
+        elif m == 'split_at_kinks':
+            bits.append(
+                f"post=split_at_kinks(angle={s.get('kink_angle_deg')},"
+                f"win={s.get('kink_window')},min={s.get('min_segment_px')})"
+            )
+        else:
+            bits.append(f"post={m}")
     return ' '.join(bits)
 
 # Barcode-Seg render parameters — MUST match the training render in
@@ -9243,6 +9317,31 @@ class BarcodeSeg(Container):
         self.show_diameter_ref.changed.connect(self._on_show_diameter_ref)
         self.n_diameter.changed.connect(self._on_diameter_changed)
         self.p_diameter.changed.connect(self._on_diameter_changed)
+        # Post-processing knobs exposed as GUI spinboxes so users can tune
+        # close-holes and erode interactively after a seg run. Both default
+        # to 0 (no-op). Auto-populate from the selected model's config.json
+        # on pick; user tweaks override the config value at inference time.
+        # 'Re-apply' runs the post-proc on the currently shown masks
+        # without re-running cellpose — fast feedback for parameter sweeps.
+        self.close_holes_px = SpinBox(
+            label='Close holes ≤ (px)', min=0, max=10000, step=10, value=0,
+        )
+        self.erode_px = SpinBox(
+            label='Erode mask (px)', min=0, max=20, step=1, value=0,
+        )
+        self.reapply_postproc_btn = PushButton(text='♻ Re-apply')
+        self.reapply_postproc_btn.changed.connect(self._on_reapply_postproc)
+        # Undo: close + erode are destructive (the previous raw masks are
+        # gone after Re-apply), so we keep a one-shot backup of the masks
+        # taken right before each Re-apply press. Undo restores it both
+        # in the viewer and on disk. Bound to Shift+S too.
+        self.undo_postproc_btn = PushButton(text='↶ Undo post-proc')
+        self.undo_postproc_btn.changed.connect(self._on_undo_postproc)
+        self._postproc_backup: dict = {}
+        try:
+            self.viewer.bind_key('Shift-S', lambda v: self._on_undo_postproc())
+        except Exception:
+            pass
 
         self.refresh_models_btn = PushButton(text='⟳ Refresh model list')
         self.refresh_models_btn.changed.connect(self._on_refresh_models_clicked)
@@ -9377,6 +9476,25 @@ class BarcodeSeg(Container):
         _tt(self.next_fov_btn,
             'Switch to the next FOV (wrap-around). After "Auto Segment '
             'ALL FOVs" this is how you walk through the batch results.')
+        _tt(self.close_holes_px,
+            'Per-cell hole filling cap (pixels). Fills background holes '
+            'fully enclosed by a label when the hole is smaller than '
+            'this. 0 = off. Auto-populated from the selected model\'s '
+            'config.json if present. Destructive — undo with ↶ or Shift+S.')
+        _tt(self.erode_px,
+            'Per-cell erosion radius (pixels). Peels one ring off each '
+            'label\'s outline — useful when the model traces a too-thick '
+            'membrane. 0 = off. Destructive — undo with ↶ or Shift+S.')
+        _tt(self.reapply_postproc_btn,
+            'Re-run close-holes + erode on the masks currently in the '
+            'viewer using the spinbox values above. No cellpose run, '
+            'cheap and fast — good for parameter sweeps. Both the napari '
+            'layer and the on-disk *_seg_*.npy get overwritten. The '
+            'state BEFORE this press is backed up for one Undo.')
+        _tt(self.undo_postproc_btn,
+            'Restore the masks captured before the last ♻ Re-apply. '
+            'Shift+S is bound to the same action. Works once — a second '
+            'Undo without an intervening Re-apply is a no-op.')
         _tt(self.use_gpu,
             'Uses CUDA if available; falls back to CPU automatically. '
             'GPU is ~10× faster on 2k×2k images.')
@@ -9456,17 +9574,16 @@ class BarcodeSeg(Container):
         self.append(self.load_img_btn)
 
         _append_section_divider(self, '— 🧠 Models & parameters —')
-        self.append(self.do_n)
+        # do_n / do_p on one row to halve the height of the head selectors.
+        self.append(_hrow(self.do_n, self.do_p))
         self.append(self.n_model)
-        self.append(self.n_diameter)
-        self.append(self.n_channels_choice)
-        self.append(self.do_p)
+        self.append(_hrow(self.n_diameter, self.n_channels_choice))
         self.append(self.p_model)
-        self.append(self.p_diameter)
-        self.append(self.p_channels_choice)
-        self.append(self.use_gpu)
-        self.append(self.show_diameter_ref)
-        self.append(self.refresh_models_btn)
+        self.append(_hrow(self.p_diameter, self.p_channels_choice))
+        # Three small toggles / refresh button live on one row instead of
+        # eating three full-height rows.
+        self.append(_hrow(self.use_gpu, self.show_diameter_ref,
+                            self.refresh_models_btn))
         self.append(self.env_status_label)
         # Wire model dropdown changes to a channel/version hint so the
         # user immediately sees "v4 → RGB" or "v2 → grayscale". Also
@@ -9483,28 +9600,27 @@ class BarcodeSeg(Container):
 
         _append_section_divider(self, '— ▶ Segment & edit —')
         self.append(self.run_btn)
-        self.append(self.run_all_btn)
-        self.append(self.stop_btn)
-        # Prev / Next side-by-side so they live on one row.
-        _fov_nav_row = Container(
-            layout='horizontal',
-            widgets=[self.prev_fov_btn, self.next_fov_btn],
-        )
-        try:
-            _fov_nav_row.margins = (0, 0, 0, 0)
-        except Exception:
-            pass
-        self.append(_fov_nav_row)
-        self.append(self.reseg_n_btn)
-        self.append(self.reseg_p_btn)
+        # Run-all + Stop on a single row — both are batch-control buttons.
+        self.append(_hrow(self.run_all_btn, self.stop_btn))
+        # Prev / Next FOV nav side-by-side.
+        self.append(_hrow(self.prev_fov_btn, self.next_fov_btn))
+        # Re-seg N / Re-seg P share one row (matches the do_n / do_p layout
+        # logic — both heads at the same vertical level).
+        self.append(_hrow(self.reseg_n_btn, self.reseg_p_btn))
+        # Post-proc knobs + Re-apply / Undo on a small section. close/erode
+        # are narrow spinboxes so they fit together; Re-apply + Undo share
+        # a row (Undo is bound to Shift+S as well).
+        _append_section_divider(self, '— 🧹 Post-process —')
+        self.append(_hrow(self.close_holes_px, self.erode_px))
+        self.append(_hrow(self.reapply_postproc_btn, self.undo_postproc_btn))
         self.append(self.save_btn)
 
         _append_section_divider(self, '— 🎓 Fine-tune —')
         self.append(self.ft_epochs)
-        self.append(self.ft_n_btn)
-        self.append(self.ft_p_btn)
-        self.append(self.ft_multi_n_btn)
-        self.append(self.ft_multi_p_btn)
+        # Single-image ft buttons share a row (parallel to N+P), and
+        # multi-folder ft buttons share their own row.
+        self.append(_hrow(self.ft_n_btn, self.ft_p_btn))
+        self.append(_hrow(self.ft_multi_n_btn, self.ft_multi_p_btn))
 
         self.append(self.progress)
         self.append(self.status_label)
@@ -9573,6 +9689,19 @@ class BarcodeSeg(Container):
                         diam_widget.value = float(cfg['diameter'])
                     except Exception:
                         pass
+                # Pre-populate the shared close/erode spinboxes from this
+                # model's config.post_process. We don't know which head
+                # the user cares about more, so the last config wins (P
+                # config overwrites N config if both have post-proc).
+                pp = cfg.get('post_process') or {}
+                if pp.get('method') == 'merge_fragments':
+                    try:
+                        if pp.get('close_holes_px') is not None:
+                            self.close_holes_px.value = int(pp['close_holes_px'])
+                        if pp.get('erode_px') is not None:
+                            self.erode_px.value = int(pp['erode_px'])
+                    except Exception:
+                        pass
                 summary = _summarise_model_config(cfg)
                 cfg_lines.append(f'{tag}: {summary}')
             bits.append(f'{tag}={ver}/{form}{cfg_tag}{warn}')
@@ -9625,6 +9754,146 @@ class BarcodeSeg(Container):
             show_info('Segmentation stopped.')
         else:
             show_info('No segmentation running.')
+
+    # ---------- Post-proc Re-apply ----------
+    def _cfg_with_gui_postproc(self, cfg: dict | None) -> dict:
+        """Inject the close/erode spinbox values into a model's config so
+        GUI overrides win at inference time. Handles both dict-form and
+        list-form ``post_process``: finds (or adds) the merge_fragments
+        step, sets close_holes_px / erode_px on it, leaves any sibling
+        steps (e.g. split_at_kinks) alone."""
+        out = dict(cfg) if cfg else {}
+        cl = int(self.close_holes_px.value)
+        er = int(self.erode_px.value)
+        if cl <= 0 and er <= 0:
+            return out  # no GUI override; legacy / config-only behaviour
+        pp = out.get('post_process')
+        if pp is None:
+            steps = []
+        elif isinstance(pp, list):
+            steps = [dict(s) if isinstance(s, dict) else {} for s in pp]
+        else:
+            steps = [dict(pp)]
+        # Locate a merge_fragments step or add a fresh one (gap=0 / min=1
+        # so we don't accidentally drop existing labels — we just want
+        # the close + erode side-effects).
+        mf = None
+        for s in steps:
+            if (s.get('method') or '').lower() == 'merge_fragments':
+                mf = s
+                break
+        if mf is None:
+            mf = {'method': 'merge_fragments', 'merge_gap': 0, 'min_merged_px': 1}
+            steps.append(mf)
+        if cl > 0:
+            mf['close_holes_px'] = cl
+        if er > 0:
+            mf['erode_px'] = er
+        out['post_process'] = steps
+        return out
+
+    def _on_reapply_postproc(self, *_args):
+        """Re-run merge_fragments on the masks already in the viewer using
+        the current Close-holes / Erode spinbox values.
+
+        Reads ``mask_n_fill`` / ``mask_p_fill`` from the napari layers,
+        applies the same post-proc the worker would (close + erode), and
+        writes the result back to both the napari layer and disk. Cheap
+        (no GPU), useful for sweeping params without re-running cellpose.
+        """
+        cl = int(self.close_holes_px.value)
+        er = int(self.erode_px.value)
+        if cl <= 0 and er <= 0:
+            show_info('Close-holes and Erode are both 0 — nothing to do.')
+            return
+        from .postproc import merge_fragments as _mf
+        any_done = False
+        # Wipe previous backup so the latest Re-apply is the one Undo
+        # restores. Only ONE level of undo for simplicity.
+        self._postproc_backup = {}
+        for layer_name, suffix in (('mask_n_fill', '_seg_n.npy'),
+                                     ('mask_p_fill', '_seg_p.npy')):
+            if layer_name not in self.viewer.layers:
+                continue
+            try:
+                cur = np.asarray(self.viewer.layers[layer_name].data)
+            except Exception:
+                continue
+            if cur.max() == 0:
+                continue
+            # Save backup BEFORE we mutate.
+            self._postproc_backup[layer_name] = (cur.copy(), suffix)
+            try:
+                # gap_px=0 + min_px=1 so we don't drop existing labels,
+                # only apply the close + erode steps.
+                new_mask = _mf(cur, gap_px=0, min_px=1,
+                                close_holes_px=cl, erode_px=er)
+            except Exception as e:
+                show_warning(f'{layer_name} re-apply failed: {e}')
+                continue
+            try:
+                del self.viewer.layers[layer_name]
+            except Exception:
+                pass
+            ln = self.viewer.add_labels(new_mask.astype(np.int32),
+                                          name=layer_name)
+            try:
+                ln.mouse_drag_callbacks.append(self._ctrl_click_delete)
+            except Exception:
+                pass
+            # Persist back to disk so Load existing picks up the new mask.
+            if self._current_src is not None:
+                out_path = self._current_src.parent / f'{self._current_src.stem}{suffix}'
+                try:
+                    _save_seg_npy(out_path, new_mask)
+                except Exception as e:
+                    show_warning(f'{layer_name} disk save failed: {e}')
+            any_done = True
+        if any_done:
+            self.status_label.value = (
+                f'Re-applied post-proc: close_holes={cl}, erode={er}.  '
+                f'Shift+S or ↶ Undo to revert.'
+            )
+            show_info('Post-proc re-applied. Shift+S to undo.')
+        else:
+            self._postproc_backup = {}  # nothing to undo
+            show_info('No masks loaded to re-apply on.')
+
+    def _on_undo_postproc(self, *_args):
+        """Restore the masks captured before the last Re-apply press.
+        Writes back to both the viewer and disk, then drops the backup —
+        a second Shift+S press is a no-op until you Re-apply again."""
+        if not self._postproc_backup:
+            show_info('Nothing to undo (no Re-apply was performed).')
+            return
+        restored = 0
+        for layer_name, (backup, suffix) in list(self._postproc_backup.items()):
+            if layer_name in self.viewer.layers:
+                try:
+                    del self.viewer.layers[layer_name]
+                except Exception:
+                    pass
+            try:
+                ln = self.viewer.add_labels(backup.astype(np.int32),
+                                              name=layer_name)
+                try:
+                    ln.mouse_drag_callbacks.append(self._ctrl_click_delete)
+                except Exception:
+                    pass
+            except Exception as e:
+                show_warning(f'{layer_name} undo restore failed: {e}')
+                continue
+            if self._current_src is not None:
+                out_path = self._current_src.parent / f'{self._current_src.stem}{suffix}'
+                try:
+                    _save_seg_npy(out_path, backup)
+                except Exception as e:
+                    show_warning(f'{layer_name} disk restore failed: {e}')
+            restored += 1
+        self._postproc_backup = {}
+        if restored:
+            self.status_label.value = f'Undone post-proc on {restored} mask(s).'
+            show_info(f'Restored {restored} mask(s).')
 
     # ---------- Diameter ruler ----------
     def _on_show_diameter_ref(self, checked):
@@ -9919,6 +10188,8 @@ class BarcodeSeg(Container):
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
         n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
         p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
+        n_cfg = self._cfg_with_gui_postproc(n_cfg)
+        p_cfg = self._cfg_with_gui_postproc(p_cfg)
         n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
         p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
         self.run_btn.enabled = False
@@ -10271,6 +10542,9 @@ class BarcodeSeg(Container):
         # Per-head inference + post-proc parameters from optional config.json.
         n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
         p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
+        # GUI close/erode spinboxes override the config's post_process.
+        n_cfg = self._cfg_with_gui_postproc(n_cfg)
+        p_cfg = self._cfg_with_gui_postproc(p_cfg)
         # GUI channel picker overrides cfg.channels if user changed it.
         n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
         p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
@@ -10533,6 +10807,7 @@ class BarcodeSeg(Container):
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_n.npy'
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
         n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
+        n_cfg = self._cfg_with_gui_postproc(n_cfg)
         n_input = self._cellpose_input_for(
             self.n_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
@@ -10576,6 +10851,7 @@ class BarcodeSeg(Container):
         out_path = self._current_src.parent / f'{self._current_src.stem}_seg_p.npy'
         extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
         p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
+        p_cfg = self._cfg_with_gui_postproc(p_cfg)
         p_input = self._cellpose_input_for(
             self.p_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
@@ -11331,16 +11607,14 @@ class BiosensorSeg(Container):
         _append_section_divider(self, '— 🧠 Step 3: Segment & edit —')
         self.append(self.seg_model)
         self.append(self.diameter)
-        self.append(self.show_diameter_ref)
-        self.append(self.use_gpu)
+        # use_gpu + show_diameter_ref share a row to save vertical space.
+        self.append(_hrow(self.use_gpu, self.show_diameter_ref))
         self.append(self.seg_btn)
-        self.append(self.reseg_btn)
-        self.append(self.save_btn)
+        self.append(_hrow(self.reseg_btn, self.save_btn))
 
         _append_section_divider(self, '— 🎓 Fine-tune —')
         self.append(self.ft_epochs)
-        self.append(self.ft_btn)
-        self.append(self.ft_multi_btn)
+        self.append(_hrow(self.ft_btn, self.ft_multi_btn))
 
         self.append(self.progress)
         self.append(self.status_label)
