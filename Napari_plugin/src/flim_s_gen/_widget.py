@@ -8399,55 +8399,92 @@ def _current_image_shape(viewer):
 
 
 def _draw_diameter_circles(viewer, circles):
-    """Render diameter reference circles in the canvas top-left.
+    """Render diameter reference circles + text labels.
 
     ``circles`` is a list of ``(diameter_px, label, color_hex)`` tuples.
-    Caller is responsible for calling :func:`_remove_diameter_circles`
-    before re-drawing (we delete + re-add to handle diameter changes).
+    The first attempt at this rendered too small to see on a 2048×2048
+    image: edges 3 data-units thick are subpixel at typical fit-to-view
+    zoom. Current implementation:
+      - Edge width scales with image size (~0.4% of the long axis)
+      - Circles placed in the upper-left but offset so they're not
+        clipped by other layer outlines
+      - A Points layer with a text annotation ("N=55", "P=92")
+        sits beside each circle so the user knows what's what
     """
     shape = _current_image_shape(viewer)
     if not shape:
         return
     H, W = shape
-    pad = max(20.0, 0.01 * max(H, W))
+    pad = max(40.0, 0.02 * max(H, W))
+    edge_w = max(4.0, 0.004 * max(H, W))   # ~8 px on a 2048 image
     bboxes = []
-    edge_colors = []
-    labels = []
+    edge_colors_circle = []
+    label_points = []
+    label_strings = []
+    label_colors = []
     y = pad
     for diam, label, color in circles:
         d = float(diam)
-        # Avoid drawing circles bigger than the image
-        d = min(d, 0.5 * min(H, W))
+        d = min(d, 0.5 * min(H, W))   # never bigger than half the image
         x = pad
         bbox = np.array([
             [y, x], [y + d, x], [y + d, x + d], [y, x + d],
         ], dtype=float)
         bboxes.append(bbox)
-        edge_colors.append(color)
-        labels.append(label)
+        edge_colors_circle.append(color)
+        # Place text just to the right of the circle, vertically centred.
+        label_points.append([y + d / 2, x + d + pad * 0.3])
+        label_strings.append(f'{label}={int(round(d))} px')
+        label_colors.append(color)
         y += d + pad * 0.6
     _remove_diameter_circles(viewer)
     try:
         viewer.add_shapes(
             data=bboxes,
             shape_type='ellipse',
-            edge_color=edge_colors,
+            edge_color=edge_colors_circle,
             face_color=[(0, 0, 0, 0)] * len(bboxes),
-            edge_width=3,
+            edge_width=edge_w,
             name=_DIAMETER_REF_LAYER,
-            opacity=0.9,
+            opacity=1.0,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning('diameter ref shapes layer failed: %s', e)
+        return
+    # Companion Points layer carrying the text labels. Single layer so
+    # _remove_diameter_circles cleans them up together (it also drops
+    # this layer below).
+    try:
+        pts = np.array(label_points, dtype=float)
+        # text size in data units — same scaling as edge_width.
+        font_size = max(12.0, 0.012 * max(H, W))
+        viewer.add_points(
+            pts,
+            name=_DIAMETER_REF_LAYER + '_text',
+            size=1,                       # invisible markers, only text matters
+            face_color=[(0, 0, 0, 0)] * len(pts),
+            edge_color=[(0, 0, 0, 0)] * len(pts),
+            text={
+                'string': label_strings,
+                'size': font_size,
+                'color': label_colors,
+                'anchor': 'center',
+                'translation': [0, 0],
+            },
+            opacity=1.0,
+        )
+    except Exception as e:
+        _log.warning('diameter ref text layer failed: %s', e)
 
 
 def _remove_diameter_circles(viewer):
-    """Remove the diameter reference Shapes layer if present."""
-    if _DIAMETER_REF_LAYER in viewer.layers:
-        try:
-            del viewer.layers[_DIAMETER_REF_LAYER]
-        except Exception:
-            pass
+    """Remove the diameter reference Shapes + Text layers if present."""
+    for layer_name in (_DIAMETER_REF_LAYER, _DIAMETER_REF_LAYER + '_text'):
+        if layer_name in viewer.layers:
+            try:
+                del viewer.layers[layer_name]
+            except Exception:
+                pass
 
 
 def _is_valid_model_choice(name: str, extra_roots=()) -> bool:
@@ -8564,12 +8601,20 @@ def _load_model_config(model_name: str, extra_roots=()):
     return None
 
 
-def _apply_postproc(masks, cfg: dict):
+def _apply_postproc(masks, cfg: dict, save_path: "Path | None" = None):
     """Run the post-process step declared in ``cfg.post_process``.
 
     Currently supports ``method='merge_fragments'``. Anything else (or
     no config) returns ``masks`` untouched, so legacy callers keep
     seeing raw cellpose output.
+
+    When post-proc fires AND ``save_path`` is given, overwrite the
+    on-disk ``.npy`` (in the same ``{'masks': uint32}`` envelope the
+    plugin's loader understands) so subsequent "Load existing" passes
+    pick up the merged result instead of the raw fragments. The
+    runner's initial save is a plain ndarray; we replace it. This is
+    the fix for the JQW NBL2 case where Load existing was returning
+    1500 carmera fragments instead of the post-processed ~65 cells.
     """
     if masks is None or not cfg:
         return masks
@@ -8582,7 +8627,14 @@ def _apply_postproc(masks, cfg: dict):
             from .postproc import merge_fragments
             gap = int(pp.get('merge_gap', 3))
             min_px = int(pp.get('min_merged_px', 400))
-            return merge_fragments(masks, gap_px=gap, min_px=min_px)
+            out = merge_fragments(masks, gap_px=gap, min_px=min_px)
+            if save_path is not None:
+                try:
+                    _save_seg_npy(Path(save_path), out)
+                except Exception as e:
+                    _log.warning('post-proc save back failed (%s): %s',
+                                  save_path, e)
+            return out
         except Exception as e:
             _log.warning('merge_fragments failed (%s) — returning raw masks', e)
             return masks
@@ -9405,6 +9457,16 @@ class BarcodeSeg(Container):
             circles.append((self.p_diameter.value, 'P', '#FFD700'))
         if circles:
             _draw_diameter_circles(self.viewer, circles)
+            # Reset camera so the circles are guaranteed in view — users
+            # zoomed in elsewhere on the image would otherwise wonder
+            # where the (correctly-drawn) ring went.
+            try:
+                self.viewer.reset_view()
+            except Exception:
+                pass
+            show_info(
+                'Diameter ref shown: red=N, gold=P. Top-left corner.'
+            )
         else:
             _remove_diameter_circles(self.viewer)
 
@@ -9825,7 +9887,7 @@ class BarcodeSeg(Container):
                 flow_threshold=n_cfg.get('flow_threshold'),
                 proc_holder=proc_holder,
             )
-            n_mask = _apply_postproc(n_mask, n_cfg)
+            n_mask = _apply_postproc(n_mask, n_cfg, save_path=n_out)
             yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
         if do_p:
             yield ('status', 55, f'Running P model ({p_model_name}) in subprocess... ch={p_channels}')
@@ -9839,7 +9901,7 @@ class BarcodeSeg(Container):
                 flow_threshold=p_cfg.get('flow_threshold'),
                 proc_holder=proc_holder,
             )
-            p_mask = _apply_postproc(p_mask, p_cfg)
+            p_mask = _apply_postproc(p_mask, p_cfg, save_path=p_out)
             yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
 
         # The display layer below uses the GRAY image (n_img if N
@@ -10055,7 +10117,7 @@ class BarcodeSeg(Container):
             return
         finally:
             self.stop_btn.enabled = False
-        mask = _apply_postproc(mask, n_cfg)
+        mask = _apply_postproc(mask, n_cfg, save_path=out_path)
         if 'mask_n_fill' in self.viewer.layers:
             try:
                 del self.viewer.layers['mask_n_fill']
@@ -10098,7 +10160,7 @@ class BarcodeSeg(Container):
             return
         finally:
             self.stop_btn.enabled = False
-        mask = _apply_postproc(mask, p_cfg)
+        mask = _apply_postproc(mask, p_cfg, save_path=out_path)
         if 'mask_p_fill' in self.viewer.layers:
             try:
                 del self.viewer.layers['mask_p_fill']
