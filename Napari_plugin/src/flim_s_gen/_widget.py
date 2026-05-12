@@ -8071,7 +8071,12 @@ def _describe_cellpose_envs() -> str:
     """Short HTML status string suitable for a Label widget.
 
     Used by Barcode Seg / Biosensor Seg / Calculate FLIM-S so the user
-    can see at a glance which Cellpose envs are available.
+    can see at a glance which Cellpose envs are available AND where
+    the plugin is currently looking for custom models. That last bit
+    matters because BCFLIM_MODEL_ROOT only propagates to processes
+    started AFTER it's set system-wide — a desktop-shortcut napari
+    launched before the env var was set can silently fall back to the
+    hardcoded G:/BC-FLIM-S/LYH default and find zero models.
     """
     v2_ok = _has_v2_env()
     v4_ok = _has_v4_env()
@@ -8081,15 +8086,29 @@ def _describe_cellpose_envs() -> str:
     v4_mark = '✓' if v4_ok else '✗'
     v2_path = str(_CELLPOSE_V2_PYTHON)
     v4_path = str(_CELLPOSE_V4_PYTHON)
+    root_exists = _BARCODE_MODEL_ROOT.exists()
+    root_color = '#1B5E20' if root_exists else '#B71C1C'
+    root_mark = '✓' if root_exists else '✗'
+    # Count how many candidate finetune dirs sit under the resolved root.
+    try:
+        n_v2 = len(list(_BARCODE_MODEL_ROOT.glob('_cellpose_finetune_*')))
+        n_v4 = len(list(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*')))
+    except Exception:
+        n_v2 = n_v4 = 0
+    env_set = '✓ env var' if _os_init.environ.get('BCFLIM_MODEL_ROOT') else '✗ env var (using fallback)'
     return (
         f'<b>Cellpose envs:</b> '
         f'<span style="color:{v2_color}">{v2_mark} v2</span> · '
         f'<span style="color:{v4_color}">{v4_mark} v4</span><br>'
+        f'<b>Model root:</b> '
+        f'<span style="color:{root_color}">{root_mark} '
+        f'{_BARCODE_MODEL_ROOT}</span> '
+        f'({n_v2 + n_v4} finetune dirs, {env_set})<br>'
         f'<span style="font-size:10px">'
         f'v2 → {v2_path}<br>'
         f'v4 → {v4_path}<br>'
         f'override: env vars BCFLIM_CELLPOSE_V2_PYTHON / '
-        f'BCFLIM_CELLPOSE_V4_PYTHON, or edit {_CELLPOSE_ENV_CACHE}'
+        f'BCFLIM_CELLPOSE_V4_PYTHON / BCFLIM_MODEL_ROOT, or edit {_CELLPOSE_ENV_CACHE}'
         f'</span>'
     )
 
@@ -8346,6 +8365,34 @@ def _is_valid_model_choice(name: str, extra_roots=()) -> bool:
         return _resolve_barcode_model_path(name, extra_roots=extra_roots) is not None
     except Exception:
         return False
+
+
+# ---- Cellpose channels=[main, aux] presets for the GUI picker ----
+# cellpose convention: 0=grayscale, 1=R, 2=G, 3=B (main, optional aux nuclei).
+# v4 (cpsam) mostly ignores this and segments the whole image regardless;
+# matters more for v2 models fed multi-channel input.
+_CELLPOSE_CHANNEL_AUTO_LABEL = '(auto / from config)'
+_CELLPOSE_CHANNEL_PRESETS = (
+    _CELLPOSE_CHANNEL_AUTO_LABEL,
+    'grayscale [0,0]',
+    'R only [1,0]',
+    'G only [2,0]',
+    'B only [3,0]',
+    'R + B aux [1,3]',
+    'G + B aux [2,3]',
+    'R + G aux [1,2]',
+)
+
+
+def _channel_preset_to_kwarg(label):
+    """Parse a preset string back to [main, aux] ints, or ``None`` for auto."""
+    if not label or label == _CELLPOSE_CHANNEL_AUTO_LABEL:
+        return None
+    import re as _re
+    m = _re.search(r'\[(\d+),\s*(\d+)\]', str(label))
+    if not m:
+        return None
+    return [int(m.group(1)), int(m.group(2))]
 
 
 # ---- Per-model config -----------------------------------------------------
@@ -8846,10 +8893,28 @@ class BarcodeSeg(Container):
         )
         self.sample_dir.changed.connect(
             lambda v: _remember_sample_dir(self.viewer, v))
+        # Quick channel/file picker — lists every *_sum.tif / *_ch*.tif under
+        # the current sample's intensity/ folder. The leading "(auto)" entry
+        # means "use whatever _intensity_sum_tif() finds" (legacy behaviour).
+        # Picking anything else fills tif_override.
+        self.image_choice = ComboBox(
+            label='Image to seg',
+            choices=['(auto)'],
+            value='(auto)',
+        )
+        self.image_choice.changed.connect(self._on_image_choice_changed)
         self.tif_override = FileEdit(
             label='Override TIF (optional)', mode='r',
             filter='*.tif', value='',
         )
+        # 'Load image' button — preview the input in napari without running
+        # Cellpose, so the user can sanity-check FOV / channel before
+        # committing to an inference run. Auto Segment still does its own
+        # load+seg flow, so this is purely additive.
+        self.load_img_btn = PushButton(text='👁 Load image (preview)')
+        self.load_img_btn.changed.connect(self._on_load_image_only)
+        # Auto-refresh image_choice options when sample folder changes.
+        self.sample_dir.changed.connect(self._refresh_image_choices)
 
         # User can pick which heads to run. Most samples are N + P; some
         # only have N labelling (or only P). Both default ON. The Auto
@@ -8870,6 +8935,21 @@ class BarcodeSeg(Container):
         )
         self.n_diameter = FloatSpinBox(label='N diameter (px)', min=5, max=300, step=1, value=_DEFAULT_N_DIAMETER)
         self.p_diameter = FloatSpinBox(label='P diameter (px)', min=5, max=300, step=1, value=_DEFAULT_P_DIAMETER)
+        # Cellpose channels=[main, aux] picker per head. The cellpose
+        # convention is: 0=grayscale, 1=R, 2=G, 3=B. "(auto)" lets the
+        # per-model config (or the legacy default [0,0]) decide.
+        # Only meaningful when the input is multichannel — cpsam v4
+        # mostly ignores this and segments all channels anyway.
+        self.n_channels_choice = ComboBox(
+            label='N cellpose channels',
+            choices=list(_CELLPOSE_CHANNEL_PRESETS),
+            value=_CELLPOSE_CHANNEL_AUTO_LABEL,
+        )
+        self.p_channels_choice = ComboBox(
+            label='P cellpose channels',
+            choices=list(_CELLPOSE_CHANNEL_PRESETS),
+            value=_CELLPOSE_CHANNEL_AUTO_LABEL,
+        )
         self.use_gpu = CheckBox(text='Use GPU', value=True)
         # Cellpose-GUI-style diameter ruler: a transparent ellipse in the
         # top-left so users can eyeball whether 55 px really is the nucleus
@@ -8956,6 +9036,26 @@ class BarcodeSeg(Container):
         _tt(self.p_diameter,
             'Approximate cytoplasm diameter in pixels. Typically ~2× the '
             'nucleus diameter.')
+        _tt(self.n_channels_choice,
+            'Cellpose channels=[main, aux] for the N head. '
+            '0=grayscale, 1=R, 2=G, 3=B. "(auto)" defers to the per-'
+            'model config.json or the legacy default [0,0]. v4 (cpsam) '
+            'mostly ignores this — it segments the whole multi-channel '
+            'image regardless. Mostly relevant for v2 + RGB input.')
+        _tt(self.p_channels_choice,
+            'Cellpose channels=[main, aux] for the P head. Same '
+            'conventions as N (see N tooltip).')
+        _tt(self.image_choice,
+            'Pick which TIF under <sample>/intensity/ gets fed to '
+            'cellpose. "(auto)" uses the canonical *_sum.tif. Picking '
+            'a *_ch?.tif mirrors that path into "Override TIF" — '
+            'useful when you want to segment one barcode channel on '
+            'its own.')
+        _tt(self.load_img_btn,
+            'Load the resolved input image into napari without running '
+            'cellpose. Confirms FOV / channel before committing to a '
+            'multi-second cellpose run. Auto Segment will still re-load '
+            'the same image when it kicks off.')
         _tt(self.use_gpu,
             'Uses CUDA if available; falls back to CPU automatically. '
             'GPU is ~10× faster on 2k×2k images.')
@@ -9030,15 +9130,19 @@ class BarcodeSeg(Container):
 
         _append_section_divider(self, '— 📁 Input image —')
         self.append(self.sample_dir)
+        self.append(self.image_choice)
         self.append(self.tif_override)
+        self.append(self.load_img_btn)
 
         _append_section_divider(self, '— 🧠 Models & parameters —')
         self.append(self.do_n)
         self.append(self.n_model)
         self.append(self.n_diameter)
+        self.append(self.n_channels_choice)
         self.append(self.do_p)
         self.append(self.p_model)
         self.append(self.p_diameter)
+        self.append(self.p_channels_choice)
         self.append(self.use_gpu)
         self.append(self.show_diameter_ref)
         self.append(self.refresh_models_btn)
@@ -9072,6 +9176,7 @@ class BarcodeSeg(Container):
         _add_cellpose_header(self, title='Barcode Segmentation (N & P)')
         _tighten_container(self)
         self._refresh_model_choices()
+        self._refresh_image_choices()
         # napari sometimes clobbers the dropdown contents during dock
         # realisation (the QComboBox we just populated to 100 ends up
         # visible with only the 2 constructor defaults). Schedule TWO
@@ -9082,6 +9187,8 @@ class BarcodeSeg(Container):
             from qtpy.QtCore import QTimer as _QT
             _QT.singleShot(0,   self._refresh_model_choices)
             _QT.singleShot(400, self._refresh_model_choices)
+            _QT.singleShot(0,   self._refresh_image_choices)
+            _QT.singleShot(400, self._refresh_image_choices)
         except Exception as _e:
             print(f'[BarcodeSeg] deferred refresh setup failed: {_e}')
         try:
@@ -9251,6 +9358,87 @@ class BarcodeSeg(Container):
             return None
         tifs = sorted(int_dir.glob('*_sum.tif'))
         return tifs[0] if tifs else None
+
+    # ---- Image picker dropdown + Load button -------------------------------
+    def _list_intensity_candidates(self) -> list[Path]:
+        """Return TIFs under <sample>/intensity/ usable as seg input.
+
+        Order: *_sum.tif first (canonical default), then *_ch1.tif … _ch4.tif.
+        Anything else in the folder is ignored — keeps the dropdown short.
+        """
+        sd = Path(str(self.sample_dir.value)) if self.sample_dir.value else None
+        if sd is None or not sd.is_dir():
+            return []
+        int_dir = sd / 'intensity'
+        if not int_dir.is_dir():
+            return []
+        sums = sorted(int_dir.glob('*_sum.tif'))
+        chs = sorted(int_dir.glob('*_ch*.tif'))
+        return list(sums) + list(chs)
+
+    def _refresh_image_choices(self, *_args):
+        """Rebuild the image_choice dropdown from the current sample folder."""
+        cands = self._list_intensity_candidates()
+        choices = ['(auto)'] + [p.name for p in cands]
+        try:
+            self.image_choice.choices = tuple(choices)
+            native = self.image_choice.native
+            if hasattr(native, 'clear') and hasattr(native, 'addItem'):
+                native.blockSignals(True)
+                native.clear()
+                for s in choices:
+                    native.addItem(s, s)
+                native.blockSignals(False)
+            self.image_choice.value = '(auto)'
+        except Exception as e:
+            _log.debug('image_choice refresh failed: %s', e)
+
+    def _on_image_choice_changed(self, *_args):
+        """When the user picks a specific file in the dropdown, mirror that
+        into tif_override so all downstream logic (Auto Segment, reseg)
+        uses the chosen file.  '(auto)' clears the override."""
+        choice = str(self.image_choice.value or '')
+        if not choice or choice == '(auto)':
+            self.tif_override.value = ''
+            return
+        sd = Path(str(self.sample_dir.value)) if self.sample_dir.value else None
+        if sd is None or not sd.is_dir():
+            return
+        cand = sd / 'intensity' / choice
+        if cand.is_file():
+            self.tif_override.value = str(cand)
+
+    def _on_load_image_only(self, *_args):
+        """Load the resolved image into napari without running Cellpose.
+
+        Lets the user verify FOV / channel before committing to an
+        inference run. Reuses :meth:`_setup_viewer_layers` with empty
+        mask placeholders so the labels-edit shortcuts still work, but
+        Auto Segment / Re-seg N / Re-seg P remain the way to actually
+        produce masks.
+        """
+        src = self._intensity_sum_tif()
+        if src is None:
+            show_warning(
+                "Could not find intensity/*_sum.tif — pick a Sample Folder "
+                "or use 'Override TIF'.")
+            return
+        self._current_src = src
+        try:
+            img = self._load_image_2d(src)
+        except Exception as e:
+            show_warning(f'Failed to load {src.name}: {e}')
+            return
+        self._current_img = img
+        self._current_img_rgb = self._load_fastflim_display_rgb(src)
+        H, W = (img.shape[0], img.shape[1]) if img.ndim >= 2 else (1, 1)
+        empty = np.zeros((H, W), dtype=np.int32)
+        self._setup_viewer_layers(img, empty, empty)
+        self.status_label.value = (
+            f'Loaded {src.name}  ({H}×{W}).  '
+            f'Verify the FOV looks right, then click Auto Segment.'
+        )
+        show_info(f'Loaded {src.name} — preview only, no segmentation yet.')
 
     def _load_image_2d(self, path: Path) -> np.ndarray:
         """Load the GRAY seg input for ``path`` (the intensity-sum tif).
@@ -9430,6 +9618,9 @@ class BarcodeSeg(Container):
         # Per-head inference + post-proc parameters from optional config.json.
         n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
         p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
+        # GUI channel picker overrides cfg.channels if user changed it.
+        n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
+        p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
         worker = self._seg_worker(
             n_img=n_input, p_img=p_input, src=src,
             do_n=do_n, do_p=do_p,
@@ -9438,6 +9629,7 @@ class BarcodeSeg(Container):
             use_gpu=bool(self.use_gpu.value),
             extra_roots=extra,
             n_cfg=n_cfg, p_cfg=p_cfg,
+            n_chan_override=n_chan_override, p_chan_override=p_chan_override,
         )
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_seg_done)
@@ -9447,7 +9639,8 @@ class BarcodeSeg(Container):
     @thread_worker
     def _seg_worker(self, n_img, p_img, src, do_n, do_p,
                     n_model_name, n_diameter, p_model_name, p_diameter,
-                    use_gpu, extra_roots, n_cfg=None, p_cfg=None):
+                    use_gpu, extra_roots, n_cfg=None, p_cfg=None,
+                    n_chan_override=None, p_chan_override=None):
         import time as _time
         stem = src.stem
         n_out = src.parent / f'{stem}_seg_n.npy'
@@ -9455,16 +9648,19 @@ class BarcodeSeg(Container):
 
         n_cfg = n_cfg or {}
         p_cfg = p_cfg or {}
+        # Resolution: GUI override > model config > legacy [0,0].
+        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
+        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
 
         n_mask = None
         p_mask = None
         if do_n:
-            yield ('status', 10, f'Running N model ({n_model_name}) in subprocess...')
+            yield ('status', 10, f'Running N model ({n_model_name}) in subprocess... ch={n_channels}')
             t0 = _time.time()
             n_mask = _run_infer_subprocess(
                 img=n_img, base_name=n_model_name,
                 diameter=n_diameter,
-                channels=n_cfg.get('channels') or [0, 0],
+                channels=n_channels,
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
                 cellprob_threshold=n_cfg.get('cellprob_threshold'),
                 flow_threshold=n_cfg.get('flow_threshold'),
@@ -9472,12 +9668,12 @@ class BarcodeSeg(Container):
             n_mask = _apply_postproc(n_mask, n_cfg)
             yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
         if do_p:
-            yield ('status', 55, f'Running P model ({p_model_name}) in subprocess...')
+            yield ('status', 55, f'Running P model ({p_model_name}) in subprocess... ch={p_channels}')
             t0 = _time.time()
             p_mask = _run_infer_subprocess(
                 img=p_img, base_name=p_model_name,
                 diameter=p_diameter,
-                channels=p_cfg.get('channels') or [0, 0],
+                channels=p_channels,
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
                 cellprob_threshold=p_cfg.get('cellprob_threshold'),
                 flow_threshold=p_cfg.get('flow_threshold'),
@@ -9675,11 +9871,13 @@ class BarcodeSeg(Container):
             getattr(self, '_current_img_rgb', None), extra,
             raw_path=self._current_src,
         )
+        n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
+        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
         try:
             mask = _run_infer_subprocess(
                 img=n_input, base_name=str(self.n_model.value),
                 diameter=float(self.n_diameter.value),
-                channels=n_cfg.get('channels') or [0, 0],
+                channels=n_channels,
                 use_gpu=bool(self.use_gpu.value),
                 extra_roots=extra,
                 out_path=out_path,
@@ -9711,11 +9909,13 @@ class BarcodeSeg(Container):
             getattr(self, '_current_img_rgb', None), extra,
             raw_path=self._current_src,
         )
+        p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
+        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
         try:
             mask = _run_infer_subprocess(
                 img=p_input, base_name=str(self.p_model.value),
                 diameter=float(self.p_diameter.value),
-                channels=p_cfg.get('channels') or [0, 0],
+                channels=p_channels,
                 use_gpu=bool(self.use_gpu.value),
                 extra_roots=extra,
                 out_path=out_path,
