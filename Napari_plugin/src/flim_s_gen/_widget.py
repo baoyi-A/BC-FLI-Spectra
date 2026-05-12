@@ -9150,6 +9150,11 @@ class BarcodeSeg(Container):
         self.save_btn.changed.connect(self._on_save)
         # Holder for the live Cellpose subprocess so Stop can terminate it.
         self._infer_proc_holder = {'proc': None}
+        # Reference to the current thread_worker so Stop can also tell the
+        # worker itself to bail (covers the gap between N's subprocess
+        # finishing and P's starting — at that point the proc_holder is
+        # empty so terminating the proc alone wouldn't help).
+        self._seg_worker_ref = None
 
         # Finetune section
         self.ft_epochs = SpinBox(label='Fine-tune epochs', min=1, max=2000, value=100)
@@ -9409,26 +9414,48 @@ class BarcodeSeg(Container):
 
     # ---------- Stop button ----------
     def _on_stop_seg(self, *_args):
-        """Terminate any running cellpose subprocess (auto / reseg-N / reseg-P).
+        """Terminate any running cellpose subprocess + tell the worker to quit.
 
-        Safe to click at any time. Sends SIGTERM (Windows: TerminateProcess)
-        to the child python. The worker's exception path then surfaces a
-        'subprocess was terminated' message in the status label.
+        Has to handle two phases:
+          (a) inside a subprocess call — kill the child python
+          (b) between subprocess calls (e.g. after N before P) — the proc
+              holder is empty, but the @thread_worker is still alive
+              about to launch the next subprocess. Calling worker.quit()
+              asks it to stop.
         """
+        killed_anything = False
         proc = self._infer_proc_holder.get('proc')
-        if proc is None or proc.poll() is not None:
-            show_info('No segmentation running.')
-            return
-        try:
-            proc.terminate()
+        if proc is not None and proc.poll() is None:
             try:
-                proc.wait(timeout=3.0)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3.0)
+                except Exception:
+                    proc.kill()
+                killed_anything = True
+            except Exception as e:
+                show_warning(f'Stop (subprocess) failed: {e}')
+        worker = getattr(self, '_seg_worker_ref', None)
+        if worker is not None:
+            try:
+                # napari thread_worker exposes quit()
+                worker.quit()
+                killed_anything = True
             except Exception:
-                proc.kill()
+                pass
+        if killed_anything:
             self.status_label.value = 'Segmentation stopped by user.'
+            try:
+                self.progress.value = 0
+            except Exception:
+                pass
+            self.run_btn.enabled = True
+            self.reseg_n_btn.enabled = True
+            self.reseg_p_btn.enabled = True
+            self.stop_btn.enabled = False
             show_info('Segmentation stopped.')
-        except Exception as e:
-            show_warning(f'Stop failed: {e}')
+        else:
+            show_info('No segmentation running.')
 
     # ---------- Diameter ruler ----------
     def _on_show_diameter_ref(self, checked):
@@ -9559,10 +9586,19 @@ class BarcodeSeg(Container):
                 _lf.write(f'{_dt.datetime.now().isoformat()} {msg}\n')
         except Exception:
             pass
+        # Force value sync: if the previous value (often the constructor's
+        # global default) isn't in the new choices, fall back to the first
+        # available — otherwise magicgui's getter can return a stale name
+        # that's no longer a valid local model, and Auto Segment ends up
+        # asking cellpose for a model that doesn't exist on this machine.
         if cur_n in self.n_model.choices:
             self.n_model.value = cur_n
+        elif n_choices:
+            self.n_model.value = n_choices[0]
         if cur_p in self.p_model.choices:
             self.p_model.value = cur_p
+        elif p_choices:
+            self.p_model.value = p_choices[0]
 
     def _intensity_sum_tif(self) -> Path | None:
         override = str(self.tif_override.value).strip()
@@ -9738,6 +9774,27 @@ class BarcodeSeg(Container):
             show_warning('Untick at most one of Segment N / Segment P — '
                          'both off would do nothing.')
             return
+        # Pre-flight check: refuse to submit a model the runner won't find.
+        # Without this, a stale magicgui value (e.g. the constructor's
+        # global default that the refresh shoved out of the dropdown) ends
+        # up in the subprocess and we get an opaque "model not found" deep
+        # in the cellpose stack.
+        extra_check = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        bad = []
+        if do_n and not _is_valid_model_choice(str(self.n_model.value or ''),
+                                                 extra_roots=extra_check):
+            bad.append(f'N model "{self.n_model.value}"')
+        if do_p and not _is_valid_model_choice(str(self.p_model.value or ''),
+                                                 extra_roots=extra_check):
+            bad.append(f'P model "{self.p_model.value}"')
+        if bad:
+            show_warning(
+                'Selected ' + ' and '.join(bad)
+                + ' is not installed on this machine. Pick another model '
+                  'from the dropdown (click ⟳ Refresh model list if the '
+                  'list looks stale).'
+            )
+            return
         self._current_src = src
         img = self._load_image_2d(src)
         self._current_img = img
@@ -9854,6 +9911,7 @@ class BarcodeSeg(Container):
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_seg_done)
         worker.errored.connect(self._on_seg_error)
+        self._seg_worker_ref = worker
         worker.start()
 
     @thread_worker
@@ -9979,14 +10037,20 @@ class BarcodeSeg(Container):
         self.reseg_n_btn.enabled = True
         self.reseg_p_btn.enabled = True
         self.stop_btn.enabled = False
+        self._seg_worker_ref = None
         show_info('Segmentation done.')
 
     def _on_seg_error(self, exc):
         self.status_label.value = f'ERROR: {exc}'
+        try:
+            self.progress.value = 0
+        except Exception:
+            pass
         self.run_btn.enabled = True
         self.reseg_n_btn.enabled = True
         self.reseg_p_btn.enabled = True
         self.stop_btn.enabled = False
+        self._seg_worker_ref = None
         show_warning(f'Segmentation failed: {exc}')
         traceback.print_exc()
 
