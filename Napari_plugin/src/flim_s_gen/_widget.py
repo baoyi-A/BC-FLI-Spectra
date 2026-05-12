@@ -2367,6 +2367,13 @@ class Calculate_FLIM_S(Container):
         self._process_button = PushButton(text="Process and Save to Excel")
         self._process_button.clicked.connect(self.process_and_save_to_excel)
         _style_process_button(self._process_button)
+        # Batch: enumerate every FOV stem under flim_stack/, load the
+        # corresponding ch1..4 + masks from disk, and run FLIM-S per FOV.
+        # Bypasses the manual Stack 1/2/3/4 selectors so users don't have
+        # to drag every FOV into the viewer one by one.
+        self._process_all_button = PushButton(text="▶▶ Process ALL FOVs (from disk)")
+        self._process_all_button.clicked.connect(self.process_all_fovs)
+        _style_process_button(self._process_all_button)
 
         self._progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self._status_label = Label(value='Ready')
@@ -2427,6 +2434,13 @@ class Calculate_FLIM_S(Container):
         _tt(self._process_button,
             'Fit phasor + lifetime per cell and write FLIM-S.xlsx to the '
             'Base folder.')
+        _tt(self._process_all_button,
+            'Batch: enumerate every FOV under <base>/flim_stack/, load each '
+            'one\'s ch1..4 + masks from disk, and run FLIM-S per FOV. '
+            'Bypasses the manual Stack 1/2/3/4 layer selectors — you do '
+            'not need to drag every FOV into the napari viewer. Per-FOV '
+            'Excel files land in the Base folder, named the same way as '
+            'the single-FOV path.')
 
         _append_section_divider(self, '— 📚 FLIM stacks —')
         self.extend(self._stack_selectors + [self._base_dir])
@@ -2440,7 +2454,8 @@ class Calculate_FLIM_S(Container):
                      self._tau_resolution, self._harmonics])
 
         _append_section_divider(self, '— ▶ Process —')
-        self.extend([self._process_button, self._progress, self._status_label])
+        self.extend([self._process_button, self._process_all_button,
+                      self._progress, self._status_label])
 
         _add_next_button(self, viewer)
         _tighten_container(self)
@@ -2672,6 +2687,117 @@ class Calculate_FLIM_S(Container):
         worker.returned.connect(self._on_flims_done)
         worker.errored.connect(self._on_flims_error)
         worker.start()
+
+    def process_all_fovs(self):
+        """Batch: run FLIM-S on every FOV under <base_dir>/flim_stack/.
+
+        Enumerates stems from ``<base>/flim_stack/*_ch[1-4].tif`` (union),
+        loads each FOV's stacks + masks from disk, and calls
+        ``Gen_excel_multi`` per FOV. Bypasses the manual Stack 1/2/3/4
+        layer selectors entirely so users don't have to drag every FOV
+        into the viewer. Per-FOV Excel files land alongside the existing
+        single-FOV outputs.
+        """
+        base = Path(str(self._base_dir.value)) if self._base_dir.value else None
+        if base is None or not base.is_dir():
+            notifications.show_error(f'Base Folder missing: {base}')
+            return
+        fs = base / 'flim_stack'
+        if not fs.is_dir():
+            notifications.show_error(f'No flim_stack/ subfolder under {base}')
+            return
+        # Find every FOV stem across ch1..ch4
+        ch_tifs = []
+        for ch in (1, 2, 3, 4):
+            ch_tifs += list(fs.glob(f'*_ch{ch}.tif'))
+        if not ch_tifs:
+            notifications.show_error('No *_ch[1-4].tif found in flim_stack/')
+            return
+        stems = sorted(set(p.name.rsplit('_ch', 1)[0] for p in ch_tifs))
+        params = dict(
+            basefolder=str(base),
+            mask_int_thres=self._mask_int_thres.value,
+            pixel_int_thres=self._pixel_int_thres.value,
+            peak_offset=self._peak_offset.value,
+            end_offset=self._end_offset.value,
+            tau_resolution=self._tau_resolution.value,
+            pulse_frequency=self._pulse_frequency.value,
+            harmonics=self._harmonics.value,
+        )
+        self._progress.min = 0
+        self._progress.max = 100
+        self._progress.value = 0
+        self._status_label.value = f'Batch FLIM-S: {len(stems)} FOVs ...'
+        self._process_button.enabled = False
+        self._process_all_button.enabled = False
+        worker = self._flims_all_fovs_worker(base, stems, params)
+        worker.yielded.connect(self._on_flims_yield)
+        worker.returned.connect(self._on_flims_all_done)
+        worker.errored.connect(self._on_flims_error)
+        worker.start()
+
+    @thread_worker
+    def _flims_all_fovs_worker(self, base, stems, params):
+        """Per-FOV worker: load stacks + masks from disk, call Gen_excel_multi."""
+        import time as _time
+        fs = Path(base) / 'flim_stack'
+        intensity_folder = find_intensity_folder(str(base))
+        total = len(stems)
+        ok = 0
+        for i, stem in enumerate(stems):
+            t0 = _time.time()
+            stacks = [None, None, None, None]
+            for ch in (1, 2, 3, 4):
+                tif = fs / f'{stem}_ch{ch}.tif'
+                if tif.is_file():
+                    try:
+                        stacks[ch - 1] = tifffile.imread(str(tif))
+                    except Exception as e:
+                        yield ('warn', f'{stem} ch{ch} read failed: {e}')
+            if all(s is None for s in stacks):
+                yield ('warn', f'{stem}: no ch[1-4].tif loaded, skipping.')
+                continue
+            seg_dict = {}
+            if intensity_folder is not None:
+                int_p = Path(intensity_folder)
+                for loc in ('n', 'm', 'p'):
+                    cand = int_p / f'{stem}_seg_{loc}.npy'
+                    if cand.is_file():
+                        try:
+                            seg_dict[loc] = load_cellpose_mask_from_npy(str(cand))
+                        except Exception as e:
+                            yield ('warn', f'{stem} seg_{loc} load failed: {e}')
+            if not seg_dict:
+                yield ('warn', f'{stem}: no masks found in intensity/, skipping.')
+                continue
+            yield ('status', int(i * 100 / total),
+                    f'[{i+1}/{total}] {stem} — running Gen_excel_multi...')
+            try:
+                Gen_excel_multi(
+                    stacks[0], stacks[1], stacks[2], stacks[3],
+                    params['basefolder'], seg_dict,
+                    params['mask_int_thres'], params['pixel_int_thres'],
+                    params['peak_offset'], params['end_offset'],
+                    params['tau_resolution'], params['pulse_frequency'],
+                    params['harmonics'],
+                    stem,
+                )
+                ok += 1
+                yield ('status', int((i + 1) * 100 / total),
+                        f'[{i+1}/{total}] {stem} done in {_time.time()-t0:.1f}s')
+            except Exception as e:
+                yield ('warn', f'{stem}: Gen_excel_multi failed: {e}')
+        return ok, total
+
+    def _on_flims_all_done(self, result):
+        ok, total = result
+        self._progress.value = 100
+        self._status_label.value = (
+            f'Batch FLIM-S done: {ok}/{total} FOVs processed.'
+        )
+        self._process_button.enabled = True
+        self._process_all_button.enabled = True
+        show_info(f'Batch FLIM-S done: {ok}/{total} FOVs.')
 
     @thread_worker
     def _flims_worker(self, stacks, seg_dict, params):
@@ -8539,7 +8665,9 @@ def _channel_preset_to_kwarg(label):
 #   - diameter:          float (pre-fills GUI spinbox)
 #   - cellprob_threshold/flow_threshold: passed straight to cellpose.eval
 #   - channels:          [int, int]   (cellpose v2 ch index)
-#   - post_process:      {"method": "merge_fragments", "merge_gap": int, "min_merged_px": int} or {"method": "none"}
+#   - post_process:      {"method": "merge_fragments", "merge_gap": int,
+#                         "min_merged_px": int, "erode_px": int}
+#                         or {"method": "none"}
 #   - notes:             free text shown in widget tooltip
 #
 # Lookup order (first hit wins):
@@ -8627,7 +8755,11 @@ def _apply_postproc(masks, cfg: dict, save_path: "Path | None" = None):
             from .postproc import merge_fragments
             gap = int(pp.get('merge_gap', 3))
             min_px = int(pp.get('min_merged_px', 400))
-            out = merge_fragments(masks, gap_px=gap, min_px=min_px)
+            close_holes_px = int(pp.get('close_holes_px', 0))
+            erode_px = int(pp.get('erode_px', 0))
+            out = merge_fragments(masks, gap_px=gap, min_px=min_px,
+                                   close_holes_px=close_holes_px,
+                                   erode_px=erode_px)
             if save_path is not None:
                 try:
                     _save_seg_npy(Path(save_path), out)
@@ -9136,12 +9268,25 @@ class BarcodeSeg(Container):
         except Exception:
             pass
 
-        self.run_btn = PushButton(text='Auto Segment (selected)')
+        self.run_btn = PushButton(text='Auto Segment (current FOV)')
         self.run_btn.changed.connect(self._on_run_auto)
         _style_process_button(self.run_btn)
+        # Batch: run Auto Segment on every *_sum.tif in the sample folder.
+        # Each FOV's masks land on disk; user reviews via Prev/Next.
+        self.run_all_btn = PushButton(text='▶▶ Auto Segment ALL FOVs')
+        self.run_all_btn.changed.connect(self._on_run_all_fovs)
+        _style_process_button(self.run_all_btn)
         self.stop_btn = PushButton(text='⏹ Stop')
         self.stop_btn.changed.connect(self._on_stop_seg)
         self.stop_btn.enabled = False  # only enabled while a seg is running
+        # FOV navigation — used both stand-alone and after a batch run.
+        self.prev_fov_btn = PushButton(text='← Prev FOV')
+        self.prev_fov_btn.changed.connect(self._on_prev_fov)
+        self.next_fov_btn = PushButton(text='Next FOV →')
+        self.next_fov_btn.changed.connect(self._on_next_fov)
+        # Cursor into _all_sum_tifs() — Prev/Next advance / wrap. Updated
+        # also by Load image / Run-all-done.
+        self._current_fov_idx = 0
         self.reseg_n_btn = PushButton(text='Re-seg N (current image)')
         self.reseg_n_btn.changed.connect(self._on_reseg_n)
         self.reseg_p_btn = PushButton(text='Re-seg P (current image)')
@@ -9219,6 +9364,19 @@ class BarcodeSeg(Container):
             'cellpose. Confirms FOV / channel before committing to a '
             'multi-second cellpose run. Auto Segment will still re-load '
             'the same image when it kicks off.')
+        _tt(self.run_all_btn,
+            'Batch: run Auto Segment on EVERY intensity/*_sum.tif in the '
+            'sample folder. Each FOV writes its own *_seg_n.npy / '
+            '*_seg_p.npy. After the batch finishes, use ← Prev / Next → '
+            'to flip through the results and manually edit any that need '
+            'cleanup. Re-runnable — overwrites prior masks.')
+        _tt(self.prev_fov_btn,
+            'Switch to the previous FOV in the sample folder. Loads the '
+            'image + any existing *_seg_n/p.npy masks for review/edit. '
+            'Wraps around at the start.')
+        _tt(self.next_fov_btn,
+            'Switch to the next FOV (wrap-around). After "Auto Segment '
+            'ALL FOVs" this is how you walk through the batch results.')
         _tt(self.use_gpu,
             'Uses CUDA if available; falls back to CPU automatically. '
             'GPU is ~10× faster on 2k×2k images.')
@@ -9325,7 +9483,18 @@ class BarcodeSeg(Container):
 
         _append_section_divider(self, '— ▶ Segment & edit —')
         self.append(self.run_btn)
+        self.append(self.run_all_btn)
         self.append(self.stop_btn)
+        # Prev / Next side-by-side so they live on one row.
+        _fov_nav_row = Container(
+            layout='horizontal',
+            widgets=[self.prev_fov_btn, self.next_fov_btn],
+        )
+        try:
+            _fov_nav_row.margins = (0, 0, 0, 0)
+        except Exception:
+            pass
+        self.append(_fov_nav_row)
         self.append(self.reseg_n_btn)
         self.append(self.reseg_p_btn)
         self.append(self.save_btn)
@@ -9599,19 +9768,260 @@ class BarcodeSeg(Container):
             self.p_model.value = cur_p
         elif p_choices:
             self.p_model.value = p_choices[0]
+        # Explicitly persist the post-refresh model values. magicgui can
+        # swallow .changed on a programmatic write when the native combo
+        # already shows the target value (e.g. force-sync to the first
+        # choice that the native widget defaulted to after clear+addItem),
+        # so the persisted-pick handler never fires and the state file
+        # holds a stale name from a previous session. This guarantees the
+        # file matches what's actually selected.
+        try:
+            if self.n_model.value:
+                _save_persisted_model_pick('n', str(self.n_model.value))
+            if self.p_model.value:
+                _save_persisted_model_pick('p', str(self.p_model.value))
+        except Exception:
+            pass
 
     def _intensity_sum_tif(self) -> Path | None:
         override = str(self.tif_override.value).strip()
         if override and Path(override).is_file():
             return Path(override)
-        sd = Path(str(self.sample_dir.value))
-        if not sd.is_dir():
+        # FOV nav cursor takes priority over "first file" default.
+        tifs = self._all_sum_tifs()
+        if not tifs:
             return None
+        if 0 <= self._current_fov_idx < len(tifs):
+            return tifs[self._current_fov_idx]
+        return tifs[0]
+
+    def _all_sum_tifs(self) -> list[Path]:
+        """Return every ``intensity/*_sum.tif`` in the sample folder, sorted.
+        Drives the Prev/Next FOV nav + Run-all-FOVs batch loop."""
+        sd = Path(str(self.sample_dir.value)) if self.sample_dir.value else None
+        if sd is None or not sd.is_dir():
+            return []
         int_dir = sd / 'intensity'
         if not int_dir.is_dir():
-            return None
-        tifs = sorted(int_dir.glob('*_sum.tif'))
-        return tifs[0] if tifs else None
+            return []
+        return sorted(int_dir.glob('*_sum.tif'))
+
+    def _load_fov_into_viewer(self, src: Path):
+        """Shared helper used by Prev/Next, Load image, and after Run-all.
+        Loads ``src`` + any *_seg_{n,p}.npy that already exist alongside, sets
+        ``_current_src/_current_img/_current_img_rgb``, and re-paints the
+        viewer's image + mask layers."""
+        if src is None or not src.is_file():
+            show_warning(f'FOV file missing: {src}')
+            return
+        self._current_src = src
+        try:
+            img = self._load_image_2d(src)
+        except Exception as e:
+            show_warning(f'Failed to load {src.name}: {e}')
+            return
+        self._current_img = img
+        self._current_img_rgb = self._load_fastflim_display_rgb(src)
+        H, W = (img.shape[0], img.shape[1]) if img.ndim >= 2 else (1, 1)
+        n_path = src.parent / f'{src.stem}_seg_n.npy'
+        p_path = src.parent / f'{src.stem}_seg_p.npy'
+        try:
+            n_mask = (_load_mask_npy_any(n_path) if n_path.is_file()
+                      else np.zeros((H, W), dtype=np.int32))
+        except Exception:
+            n_mask = np.zeros((H, W), dtype=np.int32)
+        try:
+            p_mask = (_load_mask_npy_any(p_path) if p_path.is_file()
+                      else np.zeros((H, W), dtype=np.int32))
+        except Exception:
+            p_mask = np.zeros((H, W), dtype=np.int32)
+        self._setup_viewer_layers(img, n_mask, p_mask)
+        tifs = self._all_sum_tifs()
+        try:
+            idx = tifs.index(src) + 1
+            total = len(tifs)
+        except ValueError:
+            idx, total = (1, 1)
+        existing_tag = ''
+        if n_path.is_file() or p_path.is_file():
+            existing_tag = '  (mask on disk loaded)'
+        self.status_label.value = (
+            f'FOV {idx}/{total}: {src.name}{existing_tag}'
+        )
+
+    def _on_load_image_only(self, *_args):
+        """Backwards-compatible alias: load current FOV (or first) without
+        running cellpose. The dispatch through _intensity_sum_tif respects
+        the Prev/Next cursor + tif_override."""
+        src = self._intensity_sum_tif()
+        if src is None:
+            show_warning(
+                "Could not find intensity/*_sum.tif — pick a Sample Folder "
+                "or use 'Override TIF'.")
+            return
+        self._load_fov_into_viewer(src)
+
+    def _on_prev_fov(self, *_args):
+        tifs = self._all_sum_tifs()
+        if not tifs:
+            show_info('No FOVs in this sample folder.')
+            return
+        self._current_fov_idx = (self._current_fov_idx - 1) % len(tifs)
+        # Clear any manual tif_override so the cursor wins.
+        try:
+            self.tif_override.value = ''
+        except Exception:
+            pass
+        self._load_fov_into_viewer(tifs[self._current_fov_idx])
+
+    def _on_next_fov(self, *_args):
+        tifs = self._all_sum_tifs()
+        if not tifs:
+            show_info('No FOVs in this sample folder.')
+            return
+        self._current_fov_idx = (self._current_fov_idx + 1) % len(tifs)
+        try:
+            self.tif_override.value = ''
+        except Exception:
+            pass
+        self._load_fov_into_viewer(tifs[self._current_fov_idx])
+
+    def _on_run_all_fovs(self, *_args):
+        """Batch: run Auto Segment on every FOV in the sample folder.
+
+        Each FOV's *_seg_{n,p}.npy files get written to disk (with
+        post-proc applied where the model config requests it). After the
+        worker finishes, the user can use Prev/Next FOV to review.
+        """
+        tifs = self._all_sum_tifs()
+        if not tifs:
+            show_warning('No intensity/*_sum.tif found in this sample folder.')
+            return
+        do_n = bool(self.do_n.value)
+        do_p = bool(self.do_p.value)
+        if not (do_n or do_p):
+            show_warning('Both Segment N and Segment P are off — nothing to do.')
+            return
+        # Pre-flight model validity (same as single-FOV path).
+        extra_check = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        bad = []
+        if do_n and not _is_valid_model_choice(str(self.n_model.value or ''),
+                                                 extra_roots=extra_check):
+            bad.append(f'N model "{self.n_model.value}"')
+        if do_p and not _is_valid_model_choice(str(self.p_model.value or ''),
+                                                 extra_roots=extra_check):
+            bad.append(f'P model "{self.p_model.value}"')
+        if bad:
+            show_warning(
+                'Selected ' + ' and '.join(bad)
+                + ' not installed locally — pick another model.')
+            return
+        extra = [str(self.sample_dir.value)] if self.sample_dir.value else []
+        n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
+        p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
+        n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
+        p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
+        self.run_btn.enabled = False
+        self.reseg_n_btn.enabled = False
+        self.reseg_p_btn.enabled = False
+        self.run_all_btn.enabled = False
+        self.stop_btn.enabled = True
+        self.progress.value = 0
+        worker = self._all_fovs_worker(
+            tifs=tifs, do_n=do_n, do_p=do_p,
+            n_model_name=str(self.n_model.value),
+            n_diameter=float(self.n_diameter.value),
+            p_model_name=str(self.p_model.value),
+            p_diameter=float(self.p_diameter.value),
+            use_gpu=bool(self.use_gpu.value),
+            extra_roots=extra,
+            n_cfg=n_cfg, p_cfg=p_cfg,
+            n_chan_override=n_chan_override, p_chan_override=p_chan_override,
+            proc_holder=self._infer_proc_holder,
+        )
+        worker.yielded.connect(self._on_seg_yield)
+        worker.returned.connect(self._on_run_all_done)
+        worker.errored.connect(self._on_seg_error)
+        self._seg_worker_ref = worker
+        worker.start()
+
+    @thread_worker
+    def _all_fovs_worker(self, tifs, do_n, do_p,
+                          n_model_name, n_diameter, p_model_name, p_diameter,
+                          use_gpu, extra_roots, n_cfg, p_cfg,
+                          n_chan_override, p_chan_override, proc_holder):
+        """Run every FOV serially. Writes *_seg_n.npy / *_seg_p.npy per FOV
+        and yields progress so the GUI shows X / N done. Reuses the
+        single-FOV helper paths so post-proc + save-back stay consistent."""
+        import time as _time
+        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
+        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
+        total = len(tifs)
+        per_fov = 100 / max(total, 1)
+        for i, src in enumerate(tifs):
+            base = src.stem
+            n_out = src.parent / f'{base}_seg_n.npy'
+            p_out = src.parent / f'{base}_seg_p.npy'
+            try:
+                img = self._load_image_2d(src)
+            except Exception as e:
+                yield ('warn', f'FOV {i+1}/{total} load failed: {e}')
+                continue
+            rgb = self._load_fastflim_display_rgb(src)
+            n_input = self._cellpose_input_for(
+                n_model_name, img, rgb, extra_roots, raw_path=src,
+            )
+            p_input = self._cellpose_input_for(
+                p_model_name, img, rgb, extra_roots, raw_path=src,
+            )
+            t0 = _time.time()
+            if do_n:
+                yield ('status', int(i * per_fov),
+                        f'FOV {i+1}/{total}: N model on {base} ...')
+                n_mask = _run_infer_subprocess(
+                    img=n_input, base_name=n_model_name,
+                    diameter=n_diameter, channels=n_channels,
+                    use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
+                    cellprob_threshold=n_cfg.get('cellprob_threshold'),
+                    flow_threshold=n_cfg.get('flow_threshold'),
+                    proc_holder=proc_holder,
+                )
+                _apply_postproc(n_mask, n_cfg, save_path=n_out)
+            if do_p:
+                yield ('status', int(i * per_fov + per_fov * 0.5),
+                        f'FOV {i+1}/{total}: P model on {base} ...')
+                p_mask = _run_infer_subprocess(
+                    img=p_input, base_name=p_model_name,
+                    diameter=p_diameter, channels=p_channels,
+                    use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
+                    cellprob_threshold=p_cfg.get('cellprob_threshold'),
+                    flow_threshold=p_cfg.get('flow_threshold'),
+                    proc_holder=proc_holder,
+                )
+                _apply_postproc(p_mask, p_cfg, save_path=p_out)
+            yield ('status', int((i + 1) * per_fov),
+                    f'FOV {i+1}/{total}: done in {_time.time()-t0:.1f}s.')
+        return total
+
+    def _on_run_all_done(self, total):
+        self.progress.value = 100
+        self.status_label.value = (
+            f'Batch done: {total} FOV(s) segmented. '
+            f'Use ← Prev / Next → to review each one.'
+        )
+        self.run_btn.enabled = True
+        self.reseg_n_btn.enabled = True
+        self.reseg_p_btn.enabled = True
+        self.run_all_btn.enabled = True
+        self.stop_btn.enabled = False
+        self._seg_worker_ref = None
+        # Load the first FOV into the viewer so the user can immediately
+        # start reviewing.
+        tifs = self._all_sum_tifs()
+        if tifs:
+            self._current_fov_idx = 0
+            self._load_fov_into_viewer(tifs[0])
+        show_info(f'Batch done: {total} FOV(s) segmented.')
 
     # ---- Image picker dropdown + Load button -------------------------------
     def _list_intensity_candidates(self) -> list[Path]:
@@ -9661,38 +10071,6 @@ class BarcodeSeg(Container):
         cand = sd / 'intensity' / choice
         if cand.is_file():
             self.tif_override.value = str(cand)
-
-    def _on_load_image_only(self, *_args):
-        """Load the resolved image into napari without running Cellpose.
-
-        Lets the user verify FOV / channel before committing to an
-        inference run. Reuses :meth:`_setup_viewer_layers` with empty
-        mask placeholders so the labels-edit shortcuts still work, but
-        Auto Segment / Re-seg N / Re-seg P remain the way to actually
-        produce masks.
-        """
-        src = self._intensity_sum_tif()
-        if src is None:
-            show_warning(
-                "Could not find intensity/*_sum.tif — pick a Sample Folder "
-                "or use 'Override TIF'.")
-            return
-        self._current_src = src
-        try:
-            img = self._load_image_2d(src)
-        except Exception as e:
-            show_warning(f'Failed to load {src.name}: {e}')
-            return
-        self._current_img = img
-        self._current_img_rgb = self._load_fastflim_display_rgb(src)
-        H, W = (img.shape[0], img.shape[1]) if img.ndim >= 2 else (1, 1)
-        empty = np.zeros((H, W), dtype=np.int32)
-        self._setup_viewer_layers(img, empty, empty)
-        self.status_label.value = (
-            f'Loaded {src.name}  ({H}×{W}).  '
-            f'Verify the FOV looks right, then click Auto Segment.'
-        )
-        show_info(f'Loaded {src.name} — preview only, no segmentation yet.')
 
     def _load_image_2d(self, path: Path) -> np.ndarray:
         """Load the GRAY seg input for ``path`` (the intensity-sum tif).

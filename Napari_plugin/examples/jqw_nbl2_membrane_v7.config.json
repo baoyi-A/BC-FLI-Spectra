@@ -7,7 +7,9 @@
   "post_process": {
     "method": "merge_fragments",
     "merge_gap": 3,
-    "min_merged_px": 400
+    "min_merged_px": 400,
+    "close_holes_px": 0,
+    "erode_px": 0
   },
   "notes": "JQW NBL2 cell-membrane model (cellpose-SAM finetune v7). Trained on raw uint16 intensity-sum TIFs (NOT the FastFLIM render). Cellprob heavily negative because membrane signal is sparse; merge_fragments closes thin gaps and filters small spurious CCs.\n\nDeploy: copy this file as <model_dir>/config.json (one level above models/<model_name>). Plugin auto-discovers it and pre-fills the N or P diameter spinbox + threads cellprob/flow + post-proc through the cellpose subprocess."
 }
