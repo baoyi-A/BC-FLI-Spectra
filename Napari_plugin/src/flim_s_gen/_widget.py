@@ -1641,12 +1641,10 @@ class PTUReader(Container):
                     continue
                 first_fov = not self._fastflim_cache
                 self._push_fastflim_layer(f'{p.stem}_FastFLIM', tau, inten)
-                if first_fov and self._auto_cycle_idx < 0:
-                    # First-Process default: land on the (80, 40) preset
-                    # — aggressive enough to suppress the blue background
-                    # tail without crushing genuine signal contrast.
+                if first_fov and self._auto_cycle_idx_all < 0:
                     self._auto_cycle_idx = 3
-                    self._on_auto_contrast()
+                    self._auto_cycle_idx_all = 3
+                    self._on_auto_contrast(scope='all')
                 # Persist the seg input grayscale if it isn't already on
                 # disk. This is the bit-identical input Cellpose was
                 # trained on, so BarcodeSeg can skip the slow flim_stack
@@ -8784,15 +8782,39 @@ def _run_one_postproc_step(masks, step: dict):
     if method == 'split_at_kinks':
         try:
             from .postproc import split_at_kinks
-            return split_at_kinks(
-                masks,
-                kink_angle_deg=float(step.get('kink_angle_deg', 60.0)),
-                kink_window=int(step.get('kink_window', 8)),
-                min_segment_px=int(step.get('min_segment_px', 100)),
+            kw = dict(
+                epsilon=float(step.get('epsilon', 8.0)),
                 cut_width=int(step.get('cut_width', 1)),
             )
+            if 'min_skel_len' in step:
+                kw['min_skel_len'] = int(step['min_skel_len'])
+            if 'min_piece_area' in step:
+                kw['min_piece_area'] = int(step['min_piece_area'])
+            # Back-compat for older configs.
+            if 'min_segment_px' in step:
+                kw['min_segment_px'] = int(step['min_segment_px'])
+            if 'kink_angle_deg' in step:
+                kw['kink_angle_deg'] = float(step['kink_angle_deg'])
+            if 'kink_window' in step:
+                kw['kink_window'] = int(step['kink_window'])
+            return split_at_kinks(masks, **kw)
         except Exception as e:
             _log.warning('split_at_kinks failed (%s) — returning prev masks', e)
+            return masks
+    if method == 'membrane_pipeline':
+        try:
+            from .postproc import membrane_pipeline
+            kw = {}
+            for k in ('merge_gap', 'min_merged_px', 'min_skel_len',
+                      'min_piece_area', 'close_holes_px', 'erode_px',
+                      'min_final_px'):
+                if k in step:
+                    kw[k] = int(step[k])
+            if 'epsilon' in step:
+                kw['epsilon'] = float(step['epsilon'])
+            return membrane_pipeline(masks, **kw)
+        except Exception as e:
+            _log.warning('membrane_pipeline failed (%s) — returning prev masks', e)
             return masks
     _log.warning('unknown post_process method %r — returning prev masks', method)
     return masks
@@ -9329,6 +9351,16 @@ class BarcodeSeg(Container):
         self.erode_px = SpinBox(
             label='Erode mask (px)', min=0, max=20, step=1, value=0,
         )
+        # Drop labels whose total area is below this many pixels. 0 = off.
+        # Default 200 = small mistaken fragments get culled; legitimate
+        # cells survive. Auto-populates from config.json
+        # (post_process.min_merged_px) if the picked model has one.
+        # Show-diameter-circle option also draws a small reference for
+        # this area so the user can see how big "200 px" actually is.
+        self.min_area_px = SpinBox(
+            label='Filter < area (px)', min=0, max=1000000, step=50, value=200,
+        )
+        self.min_area_px.changed.connect(self._on_diameter_changed)
         self.reapply_postproc_btn = PushButton(text='♻ Re-apply')
         self.reapply_postproc_btn.changed.connect(self._on_reapply_postproc)
         # Undo: close + erode are destructive (the previous raw masks are
@@ -9495,6 +9527,13 @@ class BarcodeSeg(Container):
             'Restore the masks captured before the last ♻ Re-apply. '
             'Shift+S is bound to the same action. Works once — a second '
             'Undo without an intervening Re-apply is a no-op.')
+        _tt(self.min_area_px,
+            'Drop labels whose total area is below this many pixels '
+            '(applies during ♻ Re-apply and during Auto Segment when '
+            'the model has merge_fragments post-proc). 0 = off. '
+            'Default 200 = clear specks while keeping cells. When the '
+            'Show diameter circle toggle is on, a cyan ring shows how '
+            'big a "min-area" cell would look at this setting.')
         _tt(self.use_gpu,
             'Uses CUDA if available; falls back to CPU automatically. '
             'GPU is ~10× faster on 2k×2k images.')
@@ -9607,11 +9646,13 @@ class BarcodeSeg(Container):
         # Re-seg N / Re-seg P share one row (matches the do_n / do_p layout
         # logic — both heads at the same vertical level).
         self.append(_hrow(self.reseg_n_btn, self.reseg_p_btn))
-        # Post-proc knobs + Re-apply / Undo on a small section. close/erode
-        # are narrow spinboxes so they fit together; Re-apply + Undo share
-        # a row (Undo is bound to Shift+S as well).
+        # Post-proc knobs + Re-apply / Undo on a small section.
+        # close/erode share one row, min_area on its own row (with the
+        # preview-circle ruler showing what "X px area" looks like).
+        # Re-apply + Undo share a row (Undo is bound to Shift+S).
         _append_section_divider(self, '— 🧹 Post-process —')
         self.append(_hrow(self.close_holes_px, self.erode_px))
+        self.append(self.min_area_px)
         self.append(_hrow(self.reapply_postproc_btn, self.undo_postproc_btn))
         self.append(self.save_btn)
 
@@ -9693,15 +9734,29 @@ class BarcodeSeg(Container):
                 # model's config.post_process. We don't know which head
                 # the user cares about more, so the last config wins (P
                 # config overwrites N config if both have post-proc).
-                pp = cfg.get('post_process') or {}
-                if pp.get('method') == 'merge_fragments':
-                    try:
-                        if pp.get('close_holes_px') is not None:
-                            self.close_holes_px.value = int(pp['close_holes_px'])
-                        if pp.get('erode_px') is not None:
-                            self.erode_px.value = int(pp['erode_px'])
-                    except Exception:
-                        pass
+                # Pre-fill post-proc spinboxes from the merge_fragments
+                # step. Handle both dict-form and list-form post_process
+                # (the latter is used when the config chains multiple
+                # steps, e.g. merge_fragments -> split_at_kinks).
+                pp_any = cfg.get('post_process')
+                if isinstance(pp_any, list):
+                    pp = next((s for s in pp_any
+                               if isinstance(s, dict)
+                               and (s.get('method') or '').lower() == 'merge_fragments'),
+                              {})
+                elif isinstance(pp_any, dict):
+                    pp = pp_any if (pp_any.get('method') or '').lower() == 'merge_fragments' else {}
+                else:
+                    pp = {}
+                try:
+                    if pp.get('close_holes_px') is not None:
+                        self.close_holes_px.value = int(pp['close_holes_px'])
+                    if pp.get('erode_px') is not None:
+                        self.erode_px.value = int(pp['erode_px'])
+                    if pp.get('min_merged_px') is not None:
+                        self.min_area_px.value = int(pp['min_merged_px'])
+                except Exception:
+                    pass
                 summary = _summarise_model_config(cfg)
                 cfg_lines.append(f'{tag}: {summary}')
             bits.append(f'{tag}={ver}/{form}{cfg_tag}{warn}')
@@ -9757,15 +9812,17 @@ class BarcodeSeg(Container):
 
     # ---------- Post-proc Re-apply ----------
     def _cfg_with_gui_postproc(self, cfg: dict | None) -> dict:
-        """Inject the close/erode spinbox values into a model's config so
-        GUI overrides win at inference time. Handles both dict-form and
-        list-form ``post_process``: finds (or adds) the merge_fragments
-        step, sets close_holes_px / erode_px on it, leaves any sibling
-        steps (e.g. split_at_kinks) alone."""
+        """Inject the close/erode/min_area spinbox values into a model's
+        config so GUI overrides win at inference time. Handles both
+        dict-form and list-form ``post_process``: finds (or adds) the
+        merge_fragments step, sets close_holes_px / erode_px /
+        min_merged_px on it, leaves any sibling steps (e.g.
+        split_at_kinks) alone."""
         out = dict(cfg) if cfg else {}
         cl = int(self.close_holes_px.value)
         er = int(self.erode_px.value)
-        if cl <= 0 and er <= 0:
+        ma = int(self.min_area_px.value)
+        if cl <= 0 and er <= 0 and ma <= 0:
             return out  # no GUI override; legacy / config-only behaviour
         pp = out.get('post_process')
         if pp is None:
@@ -9774,21 +9831,23 @@ class BarcodeSeg(Container):
             steps = [dict(s) if isinstance(s, dict) else {} for s in pp]
         else:
             steps = [dict(pp)]
-        # Locate a merge_fragments step or add a fresh one (gap=0 / min=1
-        # so we don't accidentally drop existing labels — we just want
-        # the close + erode side-effects).
+        # Locate a merge_fragments step or add a fresh one (gap=0 default
+        # so we don't accidentally close gaps unless the user wants it).
         mf = None
         for s in steps:
             if (s.get('method') or '').lower() == 'merge_fragments':
                 mf = s
                 break
         if mf is None:
-            mf = {'method': 'merge_fragments', 'merge_gap': 0, 'min_merged_px': 1}
+            mf = {'method': 'merge_fragments', 'merge_gap': 0,
+                  'min_merged_px': max(ma, 1)}
             steps.append(mf)
         if cl > 0:
             mf['close_holes_px'] = cl
         if er > 0:
             mf['erode_px'] = er
+        if ma > 0:
+            mf['min_merged_px'] = ma
         out['post_process'] = steps
         return out
 
@@ -9803,8 +9862,9 @@ class BarcodeSeg(Container):
         """
         cl = int(self.close_holes_px.value)
         er = int(self.erode_px.value)
-        if cl <= 0 and er <= 0:
-            show_info('Close-holes and Erode are both 0 — nothing to do.')
+        ma = int(self.min_area_px.value)
+        if cl <= 0 and er <= 0 and ma <= 0:
+            show_info('Close-holes / Erode / Filter all 0 — nothing to do.')
             return
         from .postproc import merge_fragments as _mf
         any_done = False
@@ -9824,9 +9884,10 @@ class BarcodeSeg(Container):
             # Save backup BEFORE we mutate.
             self._postproc_backup[layer_name] = (cur.copy(), suffix)
             try:
-                # gap_px=0 + min_px=1 so we don't drop existing labels,
-                # only apply the close + erode steps.
-                new_mask = _mf(cur, gap_px=0, min_px=1,
+                # gap_px=0 = skip the close-gaps step (we're working on
+                # existing labels). min_px=ma drops sub-threshold labels.
+                # close_holes / erode applied if non-zero.
+                new_mask = _mf(cur, gap_px=0, min_px=max(ma, 1),
                                 close_holes_px=cl, erode_px=er)
             except Exception as e:
                 show_warning(f'{layer_name} re-apply failed: {e}')
@@ -9851,8 +9912,8 @@ class BarcodeSeg(Container):
             any_done = True
         if any_done:
             self.status_label.value = (
-                f'Re-applied post-proc: close_holes={cl}, erode={er}.  '
-                f'Shift+S or ↶ Undo to revert.'
+                f'Re-applied post-proc: close_holes={cl}, erode={er}, '
+                f'min_area={ma}.  Shift+S or ↶ Undo to revert.'
             )
             show_info('Post-proc re-applied. Shift+S to undo.')
         else:
@@ -9920,6 +9981,17 @@ class BarcodeSeg(Container):
             circles.append((self.n_diameter.value, 'N', '#FF3333'))
         if self.do_p.value:
             circles.append((self.p_diameter.value, 'P', '#FFD700'))
+        # Min-area preview: render a cyan circle whose AREA equals
+        # min_area_px, so users can eyeball whether their cutoff is
+        # reasonable for this FOV. diameter = 2 * sqrt(area / pi).
+        try:
+            ma = int(self.min_area_px.value)
+        except Exception:
+            ma = 0
+        if ma > 0:
+            import math as _m
+            d_ma = 2.0 * (_m.sqrt(ma / _m.pi))
+            circles.append((d_ma, f'min_area={ma}px', '#00CED1'))
         if circles:
             _draw_diameter_circles(self.viewer, circles)
             # Reset camera so the circles are guaranteed in view — users
@@ -9930,7 +10002,8 @@ class BarcodeSeg(Container):
             except Exception:
                 pass
             show_info(
-                'Diameter ref shown: red=N, gold=P. Top-left corner.'
+                'Diameter ref shown: red=N, gold=P, cyan=min_area. '
+                'Top-left corner.'
             )
         else:
             _remove_diameter_circles(self.viewer)
