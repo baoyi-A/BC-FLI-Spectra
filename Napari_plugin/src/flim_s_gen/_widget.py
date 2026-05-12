@@ -250,7 +250,7 @@ def _clear_all_viewer_layers(viewer):
 
 def _run_infer_subprocess(
     *, img, base_name, diameter, channels, use_gpu, extra_roots, out_path,
-    cellprob_threshold=None, flow_threshold=None,
+    cellprob_threshold=None, flow_threshold=None, proc_holder=None,
 ):
     """Run Cellpose inference in a child Python. Returns a uint16 mask ndarray.
 
@@ -262,6 +262,12 @@ def _run_infer_subprocess(
     ``None`` (default) and the runner falls back to cellpose's own
     defaults (0.0 / 0.4) — that's the legacy behaviour. Models with a
     sibling ``config.json`` pass explicit values for both.
+
+    ``proc_holder`` (optional dict) is populated with the live ``Popen``
+    handle under the key ``'proc'`` while the child runs. The caller can
+    inspect that key from another thread / the GUI to ``.terminate()``
+    the child (used by the BarcodeSeg Stop button). Cleared back to
+    ``None`` when the child exits.
     """
     import pickle, subprocess, sys, tempfile, os as _os, numpy as _np
 
@@ -305,16 +311,36 @@ def _run_infer_subprocess(
         pickle.dump(cfg, f)
 
     runner = Path(__file__).resolve().parent / '_finetune_runner.py'
-    proc = subprocess.run(
+    # Use Popen instead of subprocess.run so the GUI can terminate the
+    # child mid-flight via the proc_holder hook.
+    proc = subprocess.Popen(
         [str(py_path), '-u', str(runner), cfg_path],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    if proc_holder is not None:
+        try:
+            proc_holder['proc'] = proc
+        except Exception:
+            pass
     try:
-        _os.remove(cfg_path)
-    except Exception:
-        pass
+        stdout, stderr = proc.communicate()
+    finally:
+        if proc_holder is not None:
+            try:
+                proc_holder['proc'] = None
+            except Exception:
+                pass
+        try:
+            _os.remove(cfg_path)
+        except Exception:
+            pass
 
-    out = (proc.stdout or '') + '\n' + (proc.stderr or '')
+    # User-cancelled via .terminate() / .kill() — propagate as a
+    # recognisable exception so the caller can show a friendly status.
+    if proc.returncode is not None and proc.returncode < 0:
+        raise RuntimeError(f'cellpose subprocess was terminated (signal {proc.returncode})')
+
+    out = (stdout or '') + '\n' + (stderr or '')
     for line in out.splitlines()[::-1]:
         s = line.strip()
         if s.startswith('RESULT:'):
@@ -324,6 +350,7 @@ def _run_infer_subprocess(
             return _np.load(str(saved))
         if s.startswith('ERROR:'):
             raise RuntimeError(s[len('ERROR:'):].strip())
+    # Fall through: nothing parseable. Surface the tail of output.
     raise RuntimeError(f'infer subprocess ended without RESULT/ERROR '
                        f'(exit={proc.returncode}); tail: {out[-500:]}')
 
@@ -1047,6 +1074,16 @@ class PTUReader(Container):
         self.clahe_tile = SpinBox(
             label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
         )
+        # Manual re-save button. The initial Process pass persists the
+        # FastFLIM RGB PNG + grayscale seg-input TIF using whatever
+        # contrast was active at that moment, but subsequent slider /
+        # CLAHE / autocontrast tweaks only update the in-memory render
+        # layer — the on-disk cache is stale until this button is hit.
+        # BarcodeSeg's _load_fastflim_display_rgb reads exactly that PNG
+        # when picking the display background, so re-saving here is the
+        # supported way to push your final-tuned look into the next step.
+        self.resave_render_btn = PushButton(text='💾 Save current render')
+        self.resave_render_btn.clicked.connect(self._on_resave_render)
         # Auto-contrast buttons. The original button cycles both lifetime
         # and intensity together (legacy behaviour). The two scoped
         # buttons let users tune τ-range and brightness clip independently
@@ -1196,6 +1233,7 @@ class PTUReader(Container):
         except Exception:
             pass
         self.append(_auto_scoped_row)
+        self.append(self.resave_render_btn)
         self.append(self.brightness_gamma)
         self.append(self.brightness_floor)
         self.append(self.use_clahe)
@@ -1463,6 +1501,46 @@ class PTUReader(Container):
             show_info(msg)
         except Exception:
             pass
+
+    def _on_resave_render(self, *_args):
+        """Re-write the FastFLIM RGB PNG + grayscale seg-input TIF to disk
+        using the CURRENT control values.
+
+        Pulls from the in-memory ``_fastflim_cache`` (populated by Process
+        / re-render-existing) and re-runs ``_render_fastflim_rgb`` /
+        ``_render_barcode_seg_grayscale`` with the latest spinbox states.
+        Output paths match what Process originally wrote, so BarcodeSeg
+        will pick up the new render automatically.
+        """
+        from PIL import Image as _PILImage
+        cache = getattr(self, '_fastflim_cache', None) or {}
+        if not cache:
+            show_info('No FastFLIM in memory yet — click Process / Re-render first.')
+            return
+        out_dir = Path(str(self.output_dir.value)) if self.output_dir.value else None
+        if out_dir is None or not out_dir.is_dir():
+            show_warning(f'Output folder is missing: {out_dir}')
+            return
+        saved = []
+        errors = []
+        for layer_name, pair in cache.items():
+            try:
+                bare = layer_name.replace('_FastFLIM', '')
+                rgb = self._render_fastflim_rgb(pair['tau'], pair['inten'])
+                _PILImage.fromarray(rgb).save(
+                    str(out_dir / f'{bare}_fastflim_rgb.png'))
+                seg_lum = _render_barcode_seg_grayscale(pair['tau'], pair['inten'])
+                tifffile.imwrite(
+                    str(out_dir / f'{bare}_seg_input.tif'), seg_lum)
+                saved.append(bare)
+            except Exception as e:
+                errors.append(f'{layer_name}: {e}')
+        if saved:
+            msg = f'Re-saved render for {len(saved)} FOV(s): ' + ', '.join(saved)
+            self.status_label.value = msg
+            show_info(msg)
+        if errors:
+            show_warning('Re-save errors: ' + '; '.join(errors))
 
     def _redraw_all_fastflim(self, *_args):
         """Re-render every cached FastFLIM layer using the current control values.
@@ -8265,6 +8343,25 @@ except Exception:
     pass
 
 
+def _get_persisted_model_pick(slot: str) -> "str | None":
+    """Return the last-saved model name for ``slot`` ('n' or 'p'), or None."""
+    try:
+        st = _load_persisted_state()
+        return st.get(f'last_{slot}_model')
+    except Exception:
+        return None
+
+
+def _save_persisted_model_pick(slot: str, name: str) -> None:
+    """Update ~/.bc_flim_spectra_state.json with the user's latest model pick."""
+    try:
+        st = _load_persisted_state()
+        st[f'last_{slot}_model'] = str(name) if name else None
+        _save_persisted_state(st)
+    except Exception:
+        pass
+
+
 # ---- Diameter reference circle --------------------------------------------
 # Cellpose GUI shows a small red circle in the canvas corner so the user
 # can eyeball how many pixels their target diameter is. We do the same with
@@ -8274,11 +8371,12 @@ _DIAMETER_REF_LAYER = '_cellpose_diameter_ref'
 
 
 def _current_image_shape(viewer):
-    """Find an (H, W) for the topmost Image / Labels layer, else ``None``."""
-    try:
-        from napari.layers import Image as _NImage, Labels as _NLabels  # noqa
-    except Exception:
-        return None
+    """Find an (H, W) for the topmost Image / Labels layer, else ``None``.
+
+    Handles RGB layers (HxWx3) — was previously taking ``shape[-2:]`` which
+    on an RGB image returned (W, 3) and drew the diameter circle inside a
+    3-pixel-tall strip (i.e. invisible).
+    """
     candidates = []
     for lay in viewer.layers:
         try:
@@ -8293,7 +8391,10 @@ def _current_image_shape(viewer):
             continue
         if len(shape) < 2:
             continue
-        candidates.append(shape[-2:])
+        # For any 2D-or-higher image / labels layer, the first two axes are
+        # (H, W). Even for napari RGB layers (data is HxWx3 with .rgb=True),
+        # the spatial extent is shape[:2].
+        candidates.append(shape[:2])
     return candidates[-1] if candidates else None
 
 
@@ -8986,12 +9087,17 @@ class BarcodeSeg(Container):
         self.run_btn = PushButton(text='Auto Segment (selected)')
         self.run_btn.changed.connect(self._on_run_auto)
         _style_process_button(self.run_btn)
+        self.stop_btn = PushButton(text='⏹ Stop')
+        self.stop_btn.changed.connect(self._on_stop_seg)
+        self.stop_btn.enabled = False  # only enabled while a seg is running
         self.reseg_n_btn = PushButton(text='Re-seg N (current image)')
         self.reseg_n_btn.changed.connect(self._on_reseg_n)
         self.reseg_p_btn = PushButton(text='Re-seg P (current image)')
         self.reseg_p_btn.changed.connect(self._on_reseg_p)
         self.save_btn = PushButton(text='Save masks')
         self.save_btn.changed.connect(self._on_save)
+        # Holder for the live Cellpose subprocess so Stop can terminate it.
+        self._infer_proc_holder = {'proc': None}
 
         # Finetune section
         self.ft_epochs = SpinBox(label='Fine-tune epochs', min=1, max=2000, value=100)
@@ -9148,15 +9254,21 @@ class BarcodeSeg(Container):
         self.append(self.refresh_models_btn)
         self.append(self.env_status_label)
         # Wire model dropdown changes to a channel/version hint so the
-        # user immediately sees "v4 → RGB" or "v2 → grayscale".
+        # user immediately sees "v4 → RGB" or "v2 → grayscale". Also
+        # persist the pick so the next napari session restores it.
         try:
             self.n_model.changed.connect(self._on_model_pick_show_hint)
             self.p_model.changed.connect(self._on_model_pick_show_hint)
+            self.n_model.changed.connect(
+                lambda v: _save_persisted_model_pick('n', v))
+            self.p_model.changed.connect(
+                lambda v: _save_persisted_model_pick('p', v))
         except Exception:
             pass
 
         _append_section_divider(self, '— ▶ Segment & edit —')
         self.append(self.run_btn)
+        self.append(self.stop_btn)
         self.append(self.reseg_n_btn)
         self.append(self.reseg_p_btn)
         self.append(self.save_btn)
@@ -9243,6 +9355,29 @@ class BarcodeSeg(Container):
             msg += '\n' + '\n'.join(cfg_lines)
         self.status_label.value = msg
 
+    # ---------- Stop button ----------
+    def _on_stop_seg(self, *_args):
+        """Terminate any running cellpose subprocess (auto / reseg-N / reseg-P).
+
+        Safe to click at any time. Sends SIGTERM (Windows: TerminateProcess)
+        to the child python. The worker's exception path then surfaces a
+        'subprocess was terminated' message in the status label.
+        """
+        proc = self._infer_proc_holder.get('proc')
+        if proc is None or proc.poll() is not None:
+            show_info('No segmentation running.')
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3.0)
+            except Exception:
+                proc.kill()
+            self.status_label.value = 'Segmentation stopped by user.'
+            show_info('Segmentation stopped.')
+        except Exception as e:
+            show_warning(f'Stop failed: {e}')
+
     # ---------- Diameter ruler ----------
     def _on_show_diameter_ref(self, checked):
         if checked:
@@ -9255,6 +9390,14 @@ class BarcodeSeg(Container):
             self._refresh_diameter_ref()
 
     def _refresh_diameter_ref(self):
+        # Need an image layer to anchor the circle to; warn if missing.
+        if _current_image_shape(self.viewer) is None:
+            show_info('Diameter circle: load an image first (click "👁 Load image" or run Auto Segment).')
+            try:
+                self.show_diameter_ref.value = False
+            except Exception:
+                pass
+            return
         circles = []
         if self.do_n.value:
             circles.append((self.n_diameter.value, 'N', '#FF3333'))
@@ -9289,31 +9432,44 @@ class BarcodeSeg(Container):
 
         Always wired to ``self.sample_dir.changed`` so switching sample
         folder auto-refreshes.
+
+        The last-used model (per slot, persisted in
+        ~/.bc_flim_spectra_state.json) is promoted to the top of the
+        dropdown when present, so re-opening napari resumes with the
+        user's prior pick instead of the global default.
         """
         sd = self.sample_dir.value
         sample_dirs = [sd] if sd else []
         n_ranked = _list_all_custom_models(sample_dirs, target_hint='n')
         p_ranked = _list_all_custom_models(sample_dirs, target_hint='p')
 
-        # Preserve the current selection if still available.
-        cur_n = str(self.n_model.value) if self.n_model.value else _DEFAULT_N_MODEL
-        cur_p = str(self.p_model.value) if self.p_model.value else _DEFAULT_P_MODEL
+        # Preserve the current selection if still available; otherwise fall
+        # back to the persisted last-used pick, then the global default.
+        last_n = _get_persisted_model_pick('n')
+        last_p = _get_persisted_model_pick('p')
+        cur_n = str(self.n_model.value) if self.n_model.value else (last_n or _DEFAULT_N_MODEL)
+        cur_p = str(self.p_model.value) if self.p_model.value else (last_p or _DEFAULT_P_MODEL)
 
-        def _with_defaults(ranked: list[str], default: str, builtins: list[str]) -> list[str]:
+        def _with_defaults(ranked: list[str], default: str, builtins: list[str],
+                            last_used: "str | None") -> list[str]:
             out: list[str] = []
             seen: set[str] = set()
-            # Default only appears if it actually exists locally (or is a
-            # builtin). On a fresh install where the default hasn't been
-            # downloaded the first ranked model leads the dropdown instead.
-            head = [default] if _is_valid_model_choice(default) else []
+            # Top priority: last-used model (so re-opening resumes the
+            # user's prior pick). Then the global default if it exists
+            # locally. Then the ranked custom models, then the builtins.
+            head = []
+            if last_used and _is_valid_model_choice(last_used):
+                head.append(last_used)
+            if default and default != last_used and _is_valid_model_choice(default):
+                head.append(default)
             for n in head + ranked + builtins:
                 if n and n not in seen:
                     out.append(n)
                     seen.add(n)
             return out
 
-        n_choices = tuple(_with_defaults(n_ranked, _DEFAULT_N_MODEL, ['nuclei']))
-        p_choices = tuple(_with_defaults(p_ranked, _DEFAULT_P_MODEL, ['cyto2']))
+        n_choices = tuple(_with_defaults(n_ranked, _DEFAULT_N_MODEL, ['nuclei'], last_n))
+        p_choices = tuple(_with_defaults(p_ranked, _DEFAULT_P_MODEL, ['cyto2'], last_p))
         self.n_model.choices = n_choices
         self.p_model.choices = p_choices
         # Belt-and-braces refresh: rebuild the underlying QComboBox items
@@ -9630,7 +9786,9 @@ class BarcodeSeg(Container):
             extra_roots=extra,
             n_cfg=n_cfg, p_cfg=p_cfg,
             n_chan_override=n_chan_override, p_chan_override=p_chan_override,
+            proc_holder=self._infer_proc_holder,
         )
+        self.stop_btn.enabled = True
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_seg_done)
         worker.errored.connect(self._on_seg_error)
@@ -9640,7 +9798,8 @@ class BarcodeSeg(Container):
     def _seg_worker(self, n_img, p_img, src, do_n, do_p,
                     n_model_name, n_diameter, p_model_name, p_diameter,
                     use_gpu, extra_roots, n_cfg=None, p_cfg=None,
-                    n_chan_override=None, p_chan_override=None):
+                    n_chan_override=None, p_chan_override=None,
+                    proc_holder=None):
         import time as _time
         stem = src.stem
         n_out = src.parent / f'{stem}_seg_n.npy'
@@ -9664,6 +9823,7 @@ class BarcodeSeg(Container):
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=n_out,
                 cellprob_threshold=n_cfg.get('cellprob_threshold'),
                 flow_threshold=n_cfg.get('flow_threshold'),
+                proc_holder=proc_holder,
             )
             n_mask = _apply_postproc(n_mask, n_cfg)
             yield ('status', 50, f'N: {int(n_mask.max())} cells in {_time.time()-t0:.1f}s.')
@@ -9677,6 +9837,7 @@ class BarcodeSeg(Container):
                 use_gpu=use_gpu, extra_roots=extra_roots, out_path=p_out,
                 cellprob_threshold=p_cfg.get('cellprob_threshold'),
                 flow_threshold=p_cfg.get('flow_threshold'),
+                proc_holder=proc_holder,
             )
             p_mask = _apply_postproc(p_mask, p_cfg)
             yield ('status', 95, f'P: {int(p_mask.max())} cells in {_time.time()-t0:.1f}s.')
@@ -9755,6 +9916,7 @@ class BarcodeSeg(Container):
         self.run_btn.enabled = True
         self.reseg_n_btn.enabled = True
         self.reseg_p_btn.enabled = True
+        self.stop_btn.enabled = False
         show_info('Segmentation done.')
 
     def _on_seg_error(self, exc):
@@ -9762,6 +9924,7 @@ class BarcodeSeg(Container):
         self.run_btn.enabled = True
         self.reseg_n_btn.enabled = True
         self.reseg_p_btn.enabled = True
+        self.stop_btn.enabled = False
         show_warning(f'Segmentation failed: {exc}')
         traceback.print_exc()
 
@@ -9873,6 +10036,7 @@ class BarcodeSeg(Container):
         )
         n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
         n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
+        self.stop_btn.enabled = True
         try:
             mask = _run_infer_subprocess(
                 img=n_input, base_name=str(self.n_model.value),
@@ -9883,10 +10047,14 @@ class BarcodeSeg(Container):
                 out_path=out_path,
                 cellprob_threshold=n_cfg.get('cellprob_threshold'),
                 flow_threshold=n_cfg.get('flow_threshold'),
+                proc_holder=self._infer_proc_holder,
             )
         except Exception as e:
+            self.stop_btn.enabled = False
             show_warning(f'Re-seg N failed: {e}')
             return
+        finally:
+            self.stop_btn.enabled = False
         mask = _apply_postproc(mask, n_cfg)
         if 'mask_n_fill' in self.viewer.layers:
             try:
@@ -9911,6 +10079,7 @@ class BarcodeSeg(Container):
         )
         p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
         p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
+        self.stop_btn.enabled = True
         try:
             mask = _run_infer_subprocess(
                 img=p_input, base_name=str(self.p_model.value),
@@ -9921,10 +10090,14 @@ class BarcodeSeg(Container):
                 out_path=out_path,
                 cellprob_threshold=p_cfg.get('cellprob_threshold'),
                 flow_threshold=p_cfg.get('flow_threshold'),
+                proc_holder=self._infer_proc_holder,
             )
         except Exception as e:
+            self.stop_btn.enabled = False
             show_warning(f'Re-seg P failed: {e}')
             return
+        finally:
+            self.stop_btn.enabled = False
         mask = _apply_postproc(mask, p_cfg)
         if 'mask_p_fill' in self.viewer.layers:
             try:
