@@ -1,17 +1,21 @@
 """Post-processing helpers for Cellpose segmentation output.
 
-Houses two membrane-segmentation post-proc steps:
+Houses:
 
-* ``merge_fragments`` — morphological close + min-area filter. Used when a
+* ``merge_fragments`` — morphological close + min-area filter, plus
+  optional interior-hole closing and per-label erosion. Used when a
   finetuned model produces heavily over-segmented predictions (e.g. the
-  JQW NBL2 cell-membrane model) so neighbouring fragments belonging to the
-  same membrane curve get one label.
+  JQW NBL2 cell-membrane model) so neighbouring fragments belonging to
+  the same membrane curve get one label.
 
-* ``split_at_kinks`` — split a label wherever its skeleton bends by more
-  than a threshold angle. Counterpart to ``merge_fragments``: it undoes
-  over-merging where the closing step accidentally fused two different
-  membranes into one label by walking the centerline and cutting at
-  geometric kinks.
+* ``split_at_kinks`` — counterpart to ``merge_fragments``: split a label
+  wherever its skeleton has a Y/T/X junction (default — branch-only),
+  optionally also at Douglas-Peucker geometric corners (set ``epsilon``
+  smaller to enable).
+
+* ``membrane_pipeline`` — convenience one-call entry that runs the full
+  membrane post-proc chain (merge → split → close holes → erode → final
+  min-area filter) with sane defaults tuned for the JQW NBL2 model.
 
 The widget calls these via the per-model ``config.json``. Default
 behaviour is a no-op so legacy models keep working.
@@ -28,8 +32,9 @@ def merge_fragments(
     min_px: int = 400,
     close_holes_px: int = 0,
     erode_px: int = 0,
+    dilate_px: int = 0,
 ) -> np.ndarray:
-    """Close gaps, drop small components, optionally close holes / shrink.
+    """Close gaps, drop small components, optionally close holes / shrink / grow.
 
     Algorithm (in order):
       1. Threshold the mask to a boolean foreground (any non-zero label).
@@ -46,6 +51,10 @@ def merge_fragments(
          ring off the outline) — useful when the predicted membrane is
          too thick and the user wants to thin the masks before
          downstream feature extraction.
+      8. Optionally dilate every label by ``dilate_px`` pixels — grows
+         each cell outward, but only into background pixels. Adjacent
+         labels never merge. Useful to restore a smoother boundary
+         after over-erosion or to extend a thin membrane mask outward.
 
     Parameters
     ----------
@@ -59,19 +68,22 @@ def merge_fragments(
     close_holes_px : int
         Per-cell hole filling cap. For each label, holes (background
         regions fully enclosed by that label) with area <= this many
-        pixels are filled in. ``0`` (default) = no filling. Useful when
-        the model traces the cell as a ring and you want a solid disc.
+        pixels are filled in. ``0`` (default) = no filling.
     erode_px : int
-        Per-cell erosion radius applied last. ``0`` (default) = no
-        erosion. Pixels within this many pixels of any non-foreground
-        boundary are demoted to background. Adjacent labels are treated
-        as separate regions so the eroded boundary follows each cell.
+        Per-cell erosion radius. ``0`` (default) = no erosion. Pixels
+        within ``erode_px`` of any non-foreground boundary are demoted
+        to background. Adjacent labels stay separate.
+    dilate_px : int
+        Per-cell dilation radius applied AFTER erode. ``0`` (default) =
+        no dilation. Each label grows outward by this many pixels, but
+        only into pixels that are currently background — labels never
+        eat into their neighbours.
 
     Returns
     -------
     ndarray, int32
-        Merged & filtered mask, labels repacked to 1..N. close_holes and
-        erode operate per-label and preserve IDs.
+        Merged & filtered mask, labels repacked to 1..N. close_holes,
+        erode and dilate operate per-label and preserve IDs.
     """
     from scipy import ndimage as _ndi
 
@@ -91,30 +103,42 @@ def merge_fragments(
         # close enough to a disk for this radius range and ~10x cheaper.
         struct = np.ones((2 * gap_px + 1, 2 * gap_px + 1), dtype=bool)
         closed = _ndi.binary_closing(fg, structure=struct)
+        # Re-label only when we changed connectivity (closing can merge
+        # previously-separate labels). Otherwise we'd destroy any label
+        # structure created by an earlier step (e.g. split_at_kinks).
+        labels, _n = _ndi.label(closed)
+        if _n == 0:
+            return np.zeros_like(a, dtype=np.int32)
+        sizes = np.bincount(labels.ravel())
+        keep = sizes >= int(min_px)
+        keep[0] = False
+        if not keep.any():
+            return np.zeros_like(a, dtype=np.int32)
+        new_labels = np.zeros_like(sizes, dtype=np.int32)
+        new_idx = 0
+        for old in range(1, sizes.shape[0]):
+            if keep[old]:
+                new_idx += 1
+                new_labels[old] = new_idx
+        out = new_labels[labels].astype(np.int32, copy=False)
     else:
-        closed = fg
-
-    labels, _n = _ndi.label(closed)
-    if _n == 0:
-        return np.zeros_like(a, dtype=np.int32)
-
-    # Drop small components.
-    sizes = np.bincount(labels.ravel())
-    keep = sizes >= int(min_px)
-    keep[0] = False  # background
-
-    if not keep.any():
-        return np.zeros_like(a, dtype=np.int32)
-
-    # Build a lookup that maps old label → new packed label (or 0).
-    new_labels = np.zeros_like(sizes, dtype=np.int32)
-    new_idx = 0
-    for old in range(1, sizes.shape[0]):
-        if keep[old]:
-            new_idx += 1
-            new_labels[old] = new_idx
-
-    out = new_labels[labels].astype(np.int32, copy=False)
+        # gap_px=0 path: preserve the caller's existing labels (don't re-CC).
+        # Only apply the min_px filter per-label.
+        out = a.astype(np.int32, copy=True)
+        if min_px > 0:
+            uniq = np.unique(out)
+            for lbl in uniq:
+                if lbl == 0:
+                    continue
+                m = (out == lbl)
+                if m.sum() < min_px:
+                    out[m] = 0
+            # Repack 1..N.
+            uniq2 = np.unique(out); uniq2 = uniq2[uniq2 > 0]
+            remap = np.zeros(int(out.max()) + 1, dtype=np.int32)
+            for i, old in enumerate(uniq2, start=1):
+                remap[old] = i
+            out = remap[out]
 
     if close_holes_px and close_holes_px > 0:
         # Per-label hole filling. For each cell, find background regions
@@ -154,6 +178,26 @@ def merge_fragments(
             dist = _ndi.distance_transform_edt(region)
             eroded[dist > erode_px] = lbl
         out = eroded
+
+    if dilate_px and dilate_px > 0:
+        # Per-label dilation, but only into pixels that are CURRENTLY
+        # background. If two labels are adjacent, neither overruns the
+        # other — dilation just fills the surrounding empty space. We
+        # use distance_transform on the inverse-of-label-bg-mask to find
+        # the nearest label per background pixel; pixels within
+        # dilate_px of any label get that label's id.
+        bg = out == 0
+        if bg.any():
+            # Distance from each bg pixel to the nearest non-bg pixel,
+            # plus the indices of that nearest pixel.
+            dist, inds = _ndi.distance_transform_edt(
+                bg, return_indices=True,
+            )
+            assign = dist <= dilate_px
+            if assign.any():
+                grown = out.copy()
+                grown[assign] = out[tuple(inds[:, assign])]
+                out = grown
 
     return out
 
@@ -284,113 +328,137 @@ def _walk_skeleton_segments(skel_bool):
     return segments
 
 
-def _find_kink_indices(path, window=8, angle_deg=60.0, min_segment_len=0):
-    """Return a sorted list of indices into ``path`` where the curve bends
-    by more than ``angle_deg`` (measured as the turning angle between the
-    incoming and outgoing tangents averaged over ``window`` pixels).
+def _find_corners_dp(path, epsilon=8.0, min_segment_len=0):
+    """Find geometrically significant corner indices along ``path`` using
+    Douglas-Peucker polyline simplification.
 
-    A candidate cut at index ``i`` is rejected if it would create a tail
-    shorter than ``min_segment_len`` on either side of the cut, considering
-    the cuts already accepted.
+    DP recursively replaces a polyline by the chord between endpoints
+    whenever every internal point lies within ``epsilon`` pixels of that
+    chord. Internal points that DP keeps are by definition the geometric
+    corners — points the polyline cannot be approximated past without
+    exceeding the tolerance. This is the standard "find the corners of
+    a polygon" algorithm in computational geometry.
+
+    Parameters
+    ----------
+    path : (N, 2) int ndarray
+        Ordered list of skeleton pixel positions.
+    epsilon : float
+        DP tolerance in pixels. Smaller → more corners detected.
+        For typical NBL2 membrane skeletons (median length 176 px),
+        ε = 5–15 gives reasonable behaviour.
+    min_segment_len : int
+        Reject a candidate corner if it would leave a tail shorter than
+        this many skeleton pixels on either side.
+
+    Returns
+    -------
+    list of int
+        Sorted indices in ``path`` where corners were found (excluding
+        the two endpoints).
     """
     n = len(path)
-    if n < 2 * window + 2:
+    if n < 4:
         return []
-    cos_thr = float(np.cos(np.deg2rad(angle_deg)))
-    candidates = []
-    for i in range(window, n - window):
-        v_back = path[i] - path[i - window]
-        v_fwd  = path[i + window] - path[i]
-        nb = float(np.linalg.norm(v_back))
-        nf = float(np.linalg.norm(v_fwd))
-        if nb < 1.0 or nf < 1.0:
-            continue
-        cos_a = float(np.dot(v_back, v_fwd)) / (nb * nf)
-        if cos_a < cos_thr:
-            # turning angle = acos(cos_a). Larger = sharper.
-            sharpness = 1.0 - cos_a  # for NMS sort
-            candidates.append((i, sharpness))
-    if not candidates:
+    try:
+        import cv2
+    except ImportError:
+        # No OpenCV — fall back to "no corners". Caller will keep label whole.
+        return []
+    pts = path.astype(np.int32).reshape(-1, 1, 2)
+    simp = cv2.approxPolyDP(pts, float(epsilon), False).reshape(-1, 2)
+    if len(simp) < 3:
         return []
 
-    # Non-max suppression by `window` distance — keep the sharpest in each
-    # neighbourhood.
-    candidates.sort(key=lambda t: -t[1])
-    accepted_pos = []
-    for i, _ in candidates:
-        if all(abs(i - j) >= window for j in accepted_pos):
-            accepted_pos.append(i)
-    accepted_pos.sort()
+    # Map every simplified vertex back to its index in `path`.
+    # DP preserves order, so we walk both in lockstep.
+    indices = []
+    si = 0
+    for i in range(n):
+        if si >= len(simp):
+            break
+        if path[i][0] == simp[si][0] and path[i][1] == simp[si][1]:
+            indices.append(i)
+            si += 1
+    # Drop the two endpoints (indices[0] and indices[-1]).
+    corners = indices[1:-1] if len(indices) >= 2 else []
 
-    # Enforce min_segment_len on the segments between cuts (and the two tails).
-    # Walk the accepted cuts left to right; drop a cut if it leaves a tail
-    # shorter than min_segment_len when paired with its left neighbour OR
-    # the start of the path.
-    if min_segment_len > 0:
+    # Min-tail check.
+    if min_segment_len > 0 and corners:
         kept = []
-        prev_pos = 0
-        for i in accepted_pos:
-            if i - prev_pos < min_segment_len:
-                continue  # would leave a tiny segment before this cut
+        prev = 0
+        for i in corners:
+            if i - prev < min_segment_len:
+                continue
             kept.append(i)
-            prev_pos = i
-        # Final tail check: if last cut leaves <min_segment_len to the end,
-        # drop it.
+            prev = i
         while kept and (n - 1) - kept[-1] < min_segment_len:
             kept.pop()
-        return kept
-    return accepted_pos
+        corners = kept
+    return corners
 
 
 def split_at_kinks(
     masks: np.ndarray,
     *,
-    kink_angle_deg: float = 60.0,
-    kink_window: int = 8,
-    min_segment_px: int = 100,
+    epsilon: float = 8.0,
+    min_skel_len: int = 45,
+    min_piece_area: int = 500,
     cut_width: int = 1,
+    # Legacy aliases (old tangent-window API) — accepted for back-compat.
+    # If supplied, they're translated into roughly-equivalent ``epsilon``
+    # behaviour (smaller window / sharper angle ≈ smaller epsilon).
+    kink_angle_deg: float | None = None,
+    kink_window: int | None = None,
+    min_segment_px: int | None = None,
 ) -> np.ndarray:
-    """Split each label of ``masks`` at sharp bends along its centerline.
+    """Split each label of ``masks`` at geometric corners along its centerline.
 
     Algorithm per label:
       1. Skeletonize the label into a 1-pixel-wide centerline.
-      2. Break the skeleton into branch-free segments. Branches by
-         themselves are already "natural" cut points.
-      3. Inside each segment, walk along the path with a ``kink_window``
-         look-ahead / look-behind, and flag pixels where the tangent turns
-         by more than ``kink_angle_deg``.
+      2. Always cut at branch points (skeleton pixels with >=3 neighbours).
+         A Y/T/X-junction is by definition the right place to split.
+      3. In each branch-free skeleton chain, run Douglas-Peucker polyline
+         simplification with tolerance ``epsilon``. The vertices DP keeps
+         (other than the two chain endpoints) are the geometric corners
+         — points the polyline cannot be approximated past without
+         exceeding the tolerance. Cut at each corner.
       4. Reject cuts whose resulting tail would be shorter than
-         ``min_segment_px`` pixels (along the skeleton — roughly = physical
-         length since skel is 1-px wide).
-      5. Erase a ``cut_width``-pixel-wide notch in the skeleton at each
-         accepted cut so the connected components separate.
-      6. Re-label the cut skeleton. Each surviving sub-skeleton becomes a
-         new label.
-      7. For every original-region pixel, assign it to the sub-skeleton
-         whose centerline is nearest (Voronoi via ``distance_transform_edt``
-         with ``return_indices=True``). This regrows full-thickness masks
-         from the cut skeletons.
-      8. Drop sub-pieces smaller than ``min_segment_px`` (their area in
-         the regrown mask, not just the skeleton).
+         ``min_skel_len`` pixels.
+      5. Erase a ``cut_width``-pixel-wide notch at each accepted cut.
+      6. Connected-component label the cut skeleton. Each surviving
+         sub-skeleton becomes a new label.
+      7. Voronoi-regrow each sub-skeleton to the full-thickness mask by
+         assigning every original-region pixel to its nearest sub-skel
+         (via ``distance_transform_edt`` with ``return_indices=True``).
+      8. Drop sub-pieces with area < ``min_piece_area`` and merge their
+         pixels into the nearest surviving neighbour.
 
     Parameters
     ----------
     masks : ndarray
         Cellpose-style integer label image (0 = background).
-    kink_angle_deg : float
-        Cut where the centerline turns by more than this many degrees.
-        60° is a reasonable starting value for membrane curves.
-    kink_window : int
-        Half-window used to estimate the tangent direction. Bigger window
-        = smoother, fewer false cuts on jittery skeletons.
-    min_segment_px : int
-        Minimum length (skeleton step 5) AND minimum area (step 8). A cut
-        is skipped if it would leave a piece shorter than this, and any
-        regrown sub-piece smaller than this many pixels is dropped.
+    epsilon : float
+        Douglas-Peucker tolerance in pixels. The polyline is simplified
+        so every original point lies within ``epsilon`` of the simplified
+        line. Internal vertices of the simplification are the corners.
+        Larger ε → fewer, sharper corners. Suggested range for NBL2
+        membrane skeletons (median length 176 px): ε = 5–20.
+    min_skel_len : int
+        Minimum skeleton length (in pixels) to allow a cut on either side
+        of it. NBL2 GT 1%-percentile skel length is 45 px.
+    min_piece_area : int
+        Minimum pixel area for a sub-piece (after Voronoi regrowth) to
+        survive. Smaller pieces are folded into the nearest neighbour.
+        NBL2 GT 1%-percentile area is 377 px.
     cut_width : int
         Number of consecutive skeleton pixels to erase at each cut point
-        (1 is usually enough for 4-connected skeletons; bump to 2-3 if
-        you observe diagonal "leaks" reconnecting cut ends).
+        (1 is usually enough for 4-connected skeletons).
+    kink_angle_deg, kink_window, min_segment_px : legacy
+        Accepted for backwards compatibility with the old tangent-window
+        API. If supplied, ``min_segment_px`` falls back into the two
+        explicit min thresholds. ``kink_angle_deg`` / ``kink_window`` are
+        ignored by the new DP-based algorithm.
 
     Returns
     -------
@@ -412,8 +480,19 @@ def split_at_kinks(
     if a.ndim != 2 or a.max() == 0:
         return a.astype(np.int32, copy=False)
 
+    # Resolve the param aliases. Explicit values win; min_segment_px is a
+    # legacy fallback so existing configs keep working.
+    if min_segment_px is not None:
+        if min_skel_len == 45:      # still default => override
+            min_skel_len = int(min_segment_px)
+        if min_piece_area == 500:   # still default => override
+            min_piece_area = int(min_segment_px)
+
     out = np.zeros_like(a, dtype=np.int32)
     next_lbl = 0
+
+    # 8-connectivity kernel for skeleton-pixel degree (count of skel neighbours).
+    _DEG_KERNEL = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
 
     for lbl in range(1, int(a.max()) + 1):
         region = a == lbl
@@ -421,7 +500,7 @@ def split_at_kinks(
         if area == 0:
             continue
         # Skip splitting on labels that are already too small to subdivide.
-        if area < 2 * min_segment_px:
+        if area < 2 * min_piece_area:
             next_lbl += 1
             out[region] = next_lbl
             continue
@@ -432,12 +511,27 @@ def split_at_kinks(
             out[region] = next_lbl
             continue
 
+        # === Always cut at skeleton branch points (degree >= 3). ===
+        # User observation: at a Y/T/X-junction the natural split is the
+        # junction pixel itself, not somewhere 8 px down each arm. So we
+        # remove branch pixels from cut_skel BEFORE walking segments —
+        # this leaves the arms as independent branch-free chains for the
+        # subsequent kink detection.
         cut_skel = skel.copy()
-        segments = _walk_skeleton_segments(skel)
+        deg = _ndi.convolve(skel.astype(np.uint8), _DEG_KERNEL,
+                            mode='constant', cval=0) * skel
+        branch_mask = (deg >= 3) & skel
+        if branch_mask.any():
+            # Erase branch pixels AND their immediate 8-neighbours that are
+            # also branch pixels (densely packed junctions) so the cut is
+            # clean (no 8-connectivity leak across the junction).
+            cut_skel = cut_skel & ~branch_mask
+
+        # Re-walk on the branch-free skeleton.
+        segments = _walk_skeleton_segments(cut_skel)
         for seg in segments:
-            cuts = _find_kink_indices(
-                seg, window=kink_window, angle_deg=kink_angle_deg,
-                min_segment_len=min_segment_px,
+            cuts = _find_corners_dp(
+                seg, epsilon=epsilon, min_segment_len=min_skel_len,
             )
             for ci in cuts:
                 for k in range(max(0, ci - (cut_width // 2)),
@@ -445,7 +539,10 @@ def split_at_kinks(
                     y, x = int(seg[k][0]), int(seg[k][1])
                     cut_skel[y, x] = False
 
-        sub_labels, n_sub = _ndi.label(cut_skel)
+        # 8-connectivity for skeleton CC — skeletons are 8-connected (include
+        # diagonal neighbours). The default 4-connectivity would shatter a
+        # diagonal chain into a fragment per pixel.
+        sub_labels, n_sub = _ndi.label(cut_skel, structure=np.ones((3, 3), dtype=np.uint8))
         if n_sub == 0:
             # All skeleton was cut away — keep original as one piece.
             next_lbl += 1
@@ -473,7 +570,7 @@ def split_at_kinks(
         for sub in range(1, n_sub + 1):
             piece = region & (nearest == sub)
             piece_area = int(piece.sum())
-            if piece_area < min_segment_px:
+            if piece_area < min_piece_area:
                 # Too small — fold it into the largest neighbour sub later.
                 continue
             next_lbl += 1
@@ -504,4 +601,96 @@ def split_at_kinks(
         for i, old in enumerate(uniq, start=1):
             remap[old] = i
         out = remap[out]
+    return out.astype(np.int32, copy=False)
+
+
+# ---------------------------------------------------------------------------
+# membrane_pipeline — fixed-flow entry combining the four operations above
+# ---------------------------------------------------------------------------
+
+
+def membrane_pipeline(
+    masks: np.ndarray,
+    *,
+    merge_gap: int = 3,
+    min_merged_px: int = 400,
+    epsilon: float = 10000.0,
+    min_skel_len: int = 45,
+    min_piece_area: int = 500,
+    close_holes_px: int = 400,
+    erode_px: int = 7,
+    min_final_px: int = 200,
+) -> np.ndarray:
+    """Run the full membrane-segmentation post-proc chain in one call.
+
+    Stages (applied in order):
+      1. merge_fragments(gap=``merge_gap``, min=``min_merged_px``)
+         Bridge nearby cellpose fragments via morphological closing;
+         drop pieces smaller than ``min_merged_px``.
+      2. split_at_kinks(epsilon=``epsilon``, min_skel_len=``min_skel_len``,
+                         min_piece_area=``min_piece_area``)
+         Cut at skeleton Y/T/X junctions (branch-only when
+         ``epsilon`` is large; lower ``epsilon`` to also cut at DP corners).
+      3. close pinprick interior holes <= ``close_holes_px`` per-label.
+      4. Erode each label by ``erode_px`` pixels (thins thick membrane
+         predictions toward a centerline of ~5-8 px).
+      5. Drop labels whose final area is < ``min_final_px``. Erosion can
+         leave tiny ghosts that this step removes.
+
+    All defaults are tuned for the JQW NBL2 cell-membrane model:
+      * Raw cellpose predicts membranes ~21 px thick with many 1-pixel
+        gaps between fragments belonging to the same curve.
+      * GT skeleton-length 1st percentile is 45 px; GT area 1st percentile
+        is 377 px → ``min_skel_len=45``, ``min_piece_area=500``.
+      * close_holes_px=400 = line-width-squared, fills pin-hole noise but
+        keeps real cell interiors (those are >>500 px).
+      * erode_px=7 brings the 21 px median line down to ~6-7 px.
+      * After erosion, any label that shrank below 200 px is presumed
+        spurious and dropped.
+
+    Parameters
+    ----------
+    masks : ndarray
+        Raw cellpose integer label image (0 = background).
+    Other args : as in ``merge_fragments`` and ``split_at_kinks``.
+
+    Returns
+    -------
+    ndarray, int32
+        Final post-processed labels, packed 1..N.
+    """
+    if masks is None:
+        return masks
+    a = np.asarray(masks)
+    if a.ndim != 2 or a.max() == 0:
+        return a.astype(np.int32, copy=False)
+
+    # 1. merge
+    out = merge_fragments(a, gap_px=merge_gap, min_px=min_merged_px)
+    # 2. split
+    out = split_at_kinks(out, epsilon=epsilon,
+                          min_skel_len=min_skel_len,
+                          min_piece_area=min_piece_area)
+    # 3+4. close holes & erode (gap=0/min=0 path preserves labels)
+    out = merge_fragments(out, gap_px=0, min_px=0,
+                          close_holes_px=close_holes_px,
+                          erode_px=erode_px)
+    # 5. final per-label area filter
+    if min_final_px and min_final_px > 0 and out.max() > 0:
+        sizes = np.bincount(out.ravel())
+        drop = np.zeros_like(sizes, dtype=bool)
+        for lbl in range(1, sizes.size):
+            if 0 < sizes[lbl] < min_final_px:
+                drop[lbl] = True
+        if drop.any():
+            out = out.copy()
+            for lbl in np.where(drop)[0]:
+                out[out == lbl] = 0
+            # repack
+            uniq = np.unique(out); uniq = uniq[uniq > 0]
+            if uniq.size:
+                remap = np.zeros(int(out.max()) + 1, dtype=np.int32)
+                for i, old in enumerate(uniq, start=1):
+                    remap[old] = i
+                out = remap[out].astype(np.int32, copy=False)
     return out.astype(np.int32, copy=False)
