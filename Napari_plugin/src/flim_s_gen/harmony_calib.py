@@ -107,6 +107,21 @@ def _zscore(X: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     return (X - mu) / (sd + eps)
 
 
+def list_reference_classes(
+    ref_csv_path: str,
+    ref_label_col: str = 'NLabelDisplay',
+) -> "pd.Series":
+    """Return a Series mapping reference class name -> row count.
+
+    Used by the class-selection dialog so users can see which barcodes
+    are present + how many rows back each one. Drops NaN labels.
+    """
+    df = pd.read_csv(ref_csv_path, usecols=[ref_label_col])
+    return (
+        df[ref_label_col].dropna().astype(str).value_counts().sort_index()
+    )
+
+
 def calibrate_and_classify(
     query_df: pd.DataFrame,
     *,
@@ -119,6 +134,7 @@ def calibrate_and_classify(
     max_iter_harmony: int = 30,
     knn_k: int = 15,
     seed: int = 0,
+    ref_class_filter=None,
 ) -> pd.Series:
     """Calibrate query cells onto a labelled reference, return predicted labels.
 
@@ -152,6 +168,12 @@ def calibrate_and_classify(
         k for the post-harmony kNN classifier on the corrected reference.
     seed : int
         RNG seed for the subsample step (kept stable across re-runs).
+    ref_class_filter : iterable of str, optional
+        Restrict the reference to these label values BEFORE subsampling.
+        Used when the user knows their mix contains a subset of barcode
+        classes — feeding the full 14-class reference into a 3-mix
+        query would let unrelated reference classes attract some query
+        cells. Default ``None`` keeps all classes.
 
     Returns
     -------
@@ -187,6 +209,21 @@ def calibrate_and_classify(
     # Drop ref rows without labels OR missing 5D feature values.
     ref_df = ref_df.dropna(subset=[ref_label_col] + list(FEATURE_COLS)).copy()
     ref_df[ref_label_col] = ref_df[ref_label_col].astype(str)
+    # Apply optional class filter BEFORE subsampling so each kept class
+    # gets the full per_class quota out of its actual pool.
+    if ref_class_filter is not None:
+        wanted = set(str(c) for c in ref_class_filter)
+        ref_df = ref_df[ref_df[ref_label_col].isin(wanted)].copy()
+        if ref_df.empty:
+            raise ValueError(
+                f"No reference rows match the requested classes "
+                f"{sorted(wanted)}. Available: "
+                f"{sorted(ref_df[ref_label_col].unique().tolist())[:20]}"
+            )
+        _log.info(
+            'harmony ref after class filter: %s rows, kept classes %s',
+            len(ref_df), sorted(wanted),
+        )
     ref_df = subsample_per_class(
         ref_df, label_col=ref_label_col, per_class=per_class, seed=seed,
     )

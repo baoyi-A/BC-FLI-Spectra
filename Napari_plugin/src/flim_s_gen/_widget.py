@@ -3299,9 +3299,11 @@ class SeededKMeans(Container):
             'safe ceiling.')
         _tt(self.harmony_run_btn,
             'Run the full Harmony pipeline on the currently-loaded FLIM-S '
-            'rows (load with "Read and Plot" first), then write predicted '
-            'labels into clustered.xlsx. Requires harmonypy + scikit-learn '
-            '(pip install harmonypy scikit-learn).')
+            'rows (load with "Read and Plot" first). A popup first asks '
+            'which barcode classes are present in your mix so the '
+            'reference can be trimmed to those (avoids cross-talk from '
+            'absent classes). Predicted labels then land in clustered.xlsx. '
+            'Requires harmonypy + scikit-learn (pip install harmonypy scikit-learn).')
 
         _append_section_divider(self,'— ▶ Run & save —')
         # Buttons row
@@ -4208,6 +4210,78 @@ class SeededKMeans(Container):
         return self._load_existing_clustered_max(folder)
 
     # ---------- OPTIONAL Harmony calibration handler ----------
+    def _ask_harmony_classes(self, ref_counts):
+        """Popup a checklist of reference barcode classes (with cell counts).
+
+        ``ref_counts`` is a pandas Series of label_name -> row_count.
+        User unchecks classes that AREN'T in their query mix. Returns
+        the selected class names as a list of str, or ``None`` if the
+        user cancelled. Selection is remembered for the lifetime of
+        this widget so re-opening pre-checks the same set.
+        """
+        from qtpy.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
+            QPushButton, QScrollArea, QWidget, QDialogButtonBox,
+        )
+        prior = getattr(self, '_harmony_class_selection', None)
+        dlg = QDialog(self.native)
+        dlg.setWindowTitle('Harmony · pick barcodes present in your mix')
+        layout = QVBoxLayout(dlg)
+        info = QLabel(
+            '<b>Tick the barcode classes that are PRESENT in your query mix.</b><br>'
+            'Unticked classes are removed from the reference before Harmony '
+            'runs — keeps unrelated reference classes from attracting your '
+            'query cells. Defaults to every class in the reference.'
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(2)
+        checkboxes = {}
+        for cls, cnt in ref_counts.items():
+            cb = QCheckBox(f'{cls}    ({cnt} ref cells)')
+            # If user already picked once this session, restore that
+            # selection; otherwise default everything to checked.
+            if prior is not None:
+                cb.setChecked(str(cls) in prior)
+            else:
+                cb.setChecked(True)
+            inner_layout.addWidget(cb)
+            checkboxes[str(cls)] = cb
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(min(360, 36 + 24 * len(checkboxes)))
+        layout.addWidget(scroll)
+
+        # Select-all / Clear-all helpers.
+        helper_row = QHBoxLayout()
+        sel_all = QPushButton('Select all')
+        sel_all.clicked.connect(lambda: [cb.setChecked(True) for cb in checkboxes.values()])
+        helper_row.addWidget(sel_all)
+        clr_all = QPushButton('Clear all')
+        clr_all.clicked.connect(lambda: [cb.setChecked(False) for cb in checkboxes.values()])
+        helper_row.addWidget(clr_all)
+        layout.addLayout(helper_row)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel,
+        )
+        btns.button(QDialogButtonBox.Ok).setText('Calibrate with selected')
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        selected = [cls for cls, cb in checkboxes.items() if cb.isChecked()]
+        # Stash for the next dialog open.
+        self._harmony_class_selection = set(selected)
+        return selected
+
     def _on_harmony_run(self, *_args):
         """Calibrate query cells onto a labelled reference (default A549)
         and write predicted barcode labels into clustered.xlsx without
@@ -4228,6 +4302,7 @@ class SeededKMeans(Container):
         try:
             from .harmony_calib import (
                 calibrate_and_classify, harmony_available, FEATURE_COLS,
+                list_reference_classes,
             )
         except Exception as e:
             self._notify(f"Harmony module import failed: {e}")
@@ -4250,6 +4325,28 @@ class SeededKMeans(Container):
                 f"{missing}. Re-run Calculate FLIM-S?"
             )
             return
+        # Class-selection dialog: which barcodes are in the query mix.
+        # Defaults to "everything in the reference" — user unticks any
+        # class that ISN'T in the mix, so the reference can't push query
+        # cells into a class that physically doesn't exist in the sample.
+        # 'persisted_classes' is restored from session state and acts as
+        # the default checked set on the next dialog open.
+        try:
+            ref_counts = list_reference_classes(
+                ref_csv, ref_label_col=str(self.harmony_label_col.value),
+            )
+        except Exception as e:
+            self._notify(f"Couldn't read reference label column: {e}")
+            return
+        if len(ref_counts) == 0:
+            self._notify("Reference has no labels.")
+            return
+        selected = self._ask_harmony_classes(ref_counts)
+        if selected is None:
+            return  # user cancelled
+        if len(selected) == 0:
+            self._notify("No classes selected — aborting calibration.")
+            return
         try:
             self.save_status.value = (
                 f'Running Harmony calibration → ref={Path(ref_csv).name} '
@@ -4267,6 +4364,7 @@ class SeededKMeans(Container):
                 nclust=int(self.harmony_nclust.value),
                 max_iter_harmony=int(self.harmony_max_iter.value),
                 knn_k=int(self.harmony_knn_k.value),
+                ref_class_filter=selected,
             )
         except Exception as e:
             import traceback
