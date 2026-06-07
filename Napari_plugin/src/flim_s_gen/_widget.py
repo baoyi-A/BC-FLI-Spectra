@@ -2086,16 +2086,42 @@ def Gen_excel_multi(
                 'FOV': fov
             })
 
-    data_df = pd.DataFrame(all_rows)
+    new_df = pd.DataFrame(all_rows)
 
+    # Merge with existing FLIM-S.xlsx (if any) so batch processing
+    # accumulates per-FOV rows instead of overwriting on every call.
+    # Re-running a single FOV replaces just that FOV's prior rows; new
+    # FOVs append. This relies on the 'FOV' column we already write per
+    # row, so historical single-FOV files without a FOV column fall back
+    # to the legacy "overwrite" path.
+    existing_df = None
     if os.path.exists(save_path):
-        print('Excel file already exists, will overwrite the data.')
-        notifications.show_info('Excel file already exists, will overwrite the data.')
+        try:
+            existing_df = pd.read_excel(save_path)
+        except Exception as e:
+            print(f'[FLIM-S] failed to read existing {save_path}: {e} — overwriting.')
+            notifications.show_warning(
+                f'Existing FLIM-S.xlsx unreadable ({e}); overwriting it.')
+            existing_df = None
+    if (existing_df is not None
+            and 'FOV' in existing_df.columns
+            and 'FOV' in new_df.columns):
+        kept = existing_df[existing_df['FOV'] != fov]
+        combined_df = pd.concat([kept, new_df], ignore_index=True)
+        n_kept = len(kept)
+        n_new = len(new_df)
+        notifications.show_info(
+            f'FLIM-S.xlsx: {n_kept} prior rows kept, {n_new} new rows for FOV "{fov}" '
+            f'appended (total {n_kept + n_new}).')
+    else:
+        combined_df = new_df
 
-    data_df.to_excel(save_path, index=False)
-    print(f'Excel file saved at {save_path}')
-    notifications.show_info(f'Excel file saved at {save_path}')
-    return data_df
+    combined_df.to_excel(save_path, index=False)
+    print(f'Excel file saved at {save_path} ({len(combined_df)} rows total)')
+    notifications.show_info(
+        f'Excel saved: {save_path} ({len(combined_df)} rows, '
+        f'{combined_df["FOV"].nunique() if "FOV" in combined_df.columns else "?"} FOVs)')
+    return combined_df
 
 if TYPE_CHECKING:
     import napari
@@ -2780,10 +2806,21 @@ class Calculate_FLIM_S(Container):
             if intensity_folder is not None:
                 int_p = Path(intensity_folder)
                 for loc in ('n', 'm', 'p'):
-                    cand = int_p / f'{stem}_seg_{loc}.npy'
-                    if cand.is_file():
+                    # BarcodeSeg saves masks with the intensity-sum stem
+                    # (which ends in `_sum`), so a flim_stack/<stem>_ch1.tif-
+                    # derived `stem` (no `_sum`) needs the `_sum_` variant
+                    # too. Try the no-_sum form first (the legacy default),
+                    # then fall back to `_sum_seg_*`.
+                    cands = [
+                        int_p / f'{stem}_seg_{loc}.npy',
+                        int_p / f'{stem}_sum_seg_{loc}.npy',
+                    ]
+                    for cand in cands:
+                        if not cand.is_file():
+                            continue
                         try:
                             seg_dict[loc] = load_cellpose_mask_from_npy(str(cand))
+                            break
                         except Exception as e:
                             yield ('warn', f'{stem} seg_{loc} load failed: {e}')
             if not seg_dict:
@@ -3176,6 +3213,95 @@ class SeededKMeans(Container):
         # overlay in load_and_plot when present.
         self._distribution_regions: dict = {}
 
+        # ---------- OPTIONAL: Harmony calibration to a labelled reference ----
+        # Default workflow is unchanged — manual seeds + Seeded K-Means.
+        # When the user opts into Harmony, we skip the seed-placing step,
+        # align query cells onto a labelled reference (A549 14-class by
+        # default), and write predicted barcode labels straight into
+        # clustered.xlsx. All Harmony knobs are exposed below so users
+        # can tune theta/nclust without editing code.
+        _append_section_divider(self,
+            '— 🎯 Harmony calibration (OPTIONAL · skips manual seeds) —')
+        self.harmony_enable = CheckBox(
+            text='Use Harmony calibration instead of manual seeds', value=False,
+        )
+        # Reference CSV — defaults to A549 14-class spec path; users
+        # override with whatever copy sits on their machine.
+        self.harmony_ref_csv = FileEdit(
+            label='Reference CSV', mode='r', filter='*.csv',
+            value=r'/dfs/share/liubeiLab/WBY/BC-FLIM/results/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
+        )
+        # Label column — A549 uses NLabelDisplay (NOT NLabel); other
+        # references vary, so we expose this rather than hard-coding it.
+        self.harmony_label_col = ComboBox(
+            label='Ref label column',
+            choices=['NLabelDisplay', 'NLabel', 'CorrectedBarcode'],
+            value='NLabelDisplay',
+        )
+        self.harmony_per_class = SpinBox(
+            label='Subsample / class', min=50, max=5000, step=50, value=300,
+        )
+        self.harmony_theta = FloatSpinBox(
+            label='Harmony theta', min=0.5, max=20.0, step=0.5, value=4.0,
+        )
+        self.harmony_nclust = SpinBox(
+            label='Harmony nclust', min=5, max=200, step=5, value=20,
+        )
+        self.harmony_knn_k = SpinBox(
+            label='kNN k', min=3, max=51, step=2, value=15,
+        )
+        self.harmony_max_iter = SpinBox(
+            label='Harmony max iter', min=5, max=100, step=5, value=30,
+        )
+        self.harmony_run_btn = PushButton(
+            text='🎯 Calibrate & Auto-classify (Harmony)',
+        )
+        self.harmony_run_btn.clicked.connect(self._on_harmony_run)
+        _style_process_button(self.harmony_run_btn)
+
+        self.append(self.harmony_enable)
+        self.append(self.harmony_ref_csv)
+        self.append(_hrow(self.harmony_label_col, self.harmony_per_class))
+        self.append(_hrow(self.harmony_theta, self.harmony_nclust))
+        self.append(_hrow(self.harmony_knn_k, self.harmony_max_iter))
+        self.append(self.harmony_run_btn)
+        _tt(self.harmony_enable,
+            'When ticked, the ▶ Run K-Means button is bypassed: clicking '
+            '🎯 Calibrate & Auto-classify aligns query cells onto the '
+            'reference and writes predicted barcode labels straight into '
+            'clustered.xlsx. Default OFF — the legacy seeded-KMeans flow '
+            'is unchanged.')
+        _tt(self.harmony_ref_csv,
+            'Per-cell labelled reference. Default is the A549 14-class '
+            'lasso CSV (label column NLabelDisplay). Pick a different '
+            'reference + matching label column for HEK / MDA / SKOV3 '
+            '(see the SPEC notes for which column each one uses).')
+        _tt(self.harmony_label_col,
+            'Which column on the reference holds the barcode label. '
+            'A549 → NLabelDisplay (NOT NLabel — NLabel has stale numbers). '
+            'HEK / MDA → NLabel. SKOV3 → CorrectedBarcode.')
+        _tt(self.harmony_per_class,
+            'Cap reference rows per class. 300 is plenty for kNN; larger '
+            'values just make Harmony slower without improving accuracy.')
+        _tt(self.harmony_theta,
+            'Harmony integration strength. Spec default 4. Higher pushes '
+            'the two batches harder onto each other (risk of over-merging '
+            'rare classes); lower preserves residual batch effect.')
+        _tt(self.harmony_nclust,
+            'Number of Harmony soft clusters. Spec default 20. The '
+            'harmonypy default 100 collapses rare classes like N16 to 0 '
+            'cells — do not raise without checking class preservation.')
+        _tt(self.harmony_knn_k,
+            'k for the kNN classifier that maps corrected query cells to '
+            'reference labels. 15 is a stable spec default.')
+        _tt(self.harmony_max_iter,
+            'Harmony max iterations. Typically converges in ~4; 30 is a '
+            'safe ceiling.')
+        _tt(self.harmony_run_btn,
+            'Run the full Harmony pipeline on the currently-loaded FLIM-S '
+            'rows (load with "Read and Plot" first), then write predicted '
+            'labels into clustered.xlsx. Requires harmonypy + scikit-learn '
+            '(pip install harmonypy scikit-learn).')
 
         _append_section_divider(self,'— ▶ Run & save —')
         # Buttons row
@@ -4080,6 +4206,102 @@ class SeededKMeans(Container):
         This allows '补全'：先跑N再跑M，会自动往后延。
         """
         return self._load_existing_clustered_max(folder)
+
+    # ---------- OPTIONAL Harmony calibration handler ----------
+    def _on_harmony_run(self, *_args):
+        """Calibrate query cells onto a labelled reference (default A549)
+        and write predicted barcode labels into clustered.xlsx without
+        running K-Means.
+
+        Default flow is NOT this — users have to explicitly tick
+        ``harmony_enable`` and click the calibrate button.
+        """
+        if self.df_test is None or len(self.df_test) == 0:
+            self._notify("No test data loaded. Click 'Read and Plot' first.")
+            return
+        if not bool(self.harmony_enable.value):
+            self._notify(
+                "Tick 'Use Harmony calibration' first to confirm — this "
+                "OVERWRITES clustered.xlsx labels with the kNN predictions."
+            )
+            return
+        try:
+            from .harmony_calib import (
+                calibrate_and_classify, harmony_available, FEATURE_COLS,
+            )
+        except Exception as e:
+            self._notify(f"Harmony module import failed: {e}")
+            return
+        if not harmony_available():
+            self._notify(
+                "Harmony needs 'harmonypy' + 'scikit-learn'. Install with:\n"
+                "  pip install harmonypy scikit-learn"
+            )
+            return
+        ref_csv = str(self.harmony_ref_csv.value).strip()
+        if not ref_csv or not Path(ref_csv).is_file():
+            self._notify(f"Reference CSV not found: {ref_csv}")
+            return
+        # Make sure the test df has the expected 5D columns.
+        missing = [c for c in FEATURE_COLS if c not in self.df_test.columns]
+        if missing:
+            self._notify(
+                f"Loaded FLIM-S is missing columns required by Harmony: "
+                f"{missing}. Re-run Calculate FLIM-S?"
+            )
+            return
+        try:
+            self.save_status.value = (
+                f'Running Harmony calibration → ref={Path(ref_csv).name} '
+                f'(theta={self.harmony_theta.value}, '
+                f'nclust={self.harmony_nclust.value}) — typically ~10s...'
+            )
+            from qtpy.QtWidgets import QApplication as _QA
+            _QA.processEvents()
+            preds = calibrate_and_classify(
+                self.df_test,
+                ref_csv_path=ref_csv,
+                ref_label_col=str(self.harmony_label_col.value),
+                per_class=int(self.harmony_per_class.value),
+                theta=float(self.harmony_theta.value),
+                nclust=int(self.harmony_nclust.value),
+                max_iter_harmony=int(self.harmony_max_iter.value),
+                knn_k=int(self.harmony_knn_k.value),
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._notify(f"Harmony failed: {e}")
+            return
+
+        # Write back to df_test + clustered.xlsx alongside Sample Folder.
+        self.df_test = self.df_test.copy()
+        self.df_test['cluster_tag'] = preds.astype(str)
+        # Convert text tags back to integer cluster_local: 'N5' -> 5, 'N16' -> 16,
+        # '' / 'Outlier' -> 0. The Seeded K-Means writer uses cluster_local
+        # downstream, so keep its semantics.
+        import re as _re
+        def _tag_to_local(t):
+            if not t or t == 'Outlier':
+                return 0
+            m = _re.search(r'(\d+)', str(t))
+            return int(m.group(1)) if m else 0
+        self.df_test['cluster_local'] = self.df_test['cluster_tag'].map(_tag_to_local)
+        # cluster_global mirrors cluster_local on a single-loc run.
+        self.df_test['cluster_global'] = self.df_test['cluster_local']
+        # Persist.
+        try:
+            sample_folder = Path(str(self.sample_folder.value))
+            out_path = sample_folder / 'clustered.xlsx'
+            self.df_test.to_excel(out_path, index=False)
+            assigned = int((self.df_test['cluster_local'] > 0).sum())
+            self.save_status.value = (
+                f'Harmony done. {assigned}/{len(self.df_test)} cells labelled. '
+                f'Wrote {out_path.name}.'
+            )
+            self._notify(f'Harmony OK — {assigned} cells classified.')
+        except Exception as e:
+            self._notify(f'Wrote labels in memory but Excel save failed: {e}')
 
     def run_kmeans(self):
         if self.df_test is None or len(self.df_test) == 0:
@@ -9143,13 +9365,21 @@ def _list_sample_finetuned_models(sample_dir: Path) -> list[str]:
     return out
 
 
-def _list_all_custom_models(sample_dirs=(), target_hint: str = "") -> list[str]:
+def _list_all_custom_models(sample_dirs=(), target_hint: str = "",
+                              curated_only: bool = False) -> list[str]:
     """Return custom Cellpose model names discovered in all known locations.
 
     Scans:
-      * Each ``<sample_dir>/_finetune/<name>/models/<name>``
+      * Each ``<sample_dir>/_finetune/<name>/models/<name>``  (curated)
       * The shared ``_BARCODE_MODEL_ROOT/_cellpose_finetune_*/<name>/models/<name>``
-      * ``~/.cellpose/models/*`` (cache — anything not in the builtin set)
+        (curated)
+      * ``~/.cellpose/models/*`` (cache — anything not in the builtin set),
+        unless ``curated_only=True``
+
+    The ``curated_only`` form is used to gate the "last-used" auto-promote
+    in the dropdown: a name persisted from a prior session is only restored
+    to the top of the list when it's a curated finetune, not a stray weight
+    that happens to be sitting in the cellpose cache.
 
     Ordering (so the most relevant model is always on top of the dropdown):
       1. Models whose name matches ``target_hint`` (e.g. "n" for the N
@@ -9214,14 +9444,23 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "") -> list[str]:
                 continue
             _consider(mdir / "models" / mdir.name, mdir.name)
 
-    try:
-        cache_root = Path.home() / ".cellpose" / "models"
-        if cache_root.is_dir():
-            for p in cache_root.iterdir():
-                if p.is_file() and _looks_like_model_weight(p):
-                    _consider(p, p.name)
-    except Exception:
-        pass
+    # Cache scan: ~/.cellpose/models/ may hold lab-shared v2 weights
+    # (a007, BS-2405-1k, CP_<date>, 4_NTOM_U2OS_2k_*, …) that aren't in a
+    # _cellpose_finetune_* tree but are legitimately part of the model
+    # menu. Keep them visible. The gate that prevents personal-cache
+    # residue (NTOM_2K from a different machine) from auto-promoting to
+    # the top of the dropdown is the `curated_only=True` call site —
+    # `_refresh_model_choices` queries this separately and only honours
+    # `last_used` when it appears in that curated subset.
+    if not curated_only:
+        try:
+            cache_root = Path.home() / ".cellpose" / "models"
+            if cache_root.is_dir():
+                for p in cache_root.iterdir():
+                    if p.is_file() and _looks_like_model_weight(p):
+                        _consider(p, p.name)
+        except Exception:
+            pass
 
     # Sort: hit desc, then mtime desc, then name for stability.
     ordered = sorted(
@@ -9374,12 +9613,14 @@ class BarcodeSeg(Container):
         # Undo: close + erode are destructive (the previous raw masks are
         # gone after Re-apply), so we keep a one-shot backup of the masks
         # taken right before each Re-apply press. Undo restores it both
-        # in the viewer and on disk. Bound to Shift+S too.
+        # in the viewer and on disk. Bound to Shift+Z (mnemonic: Z = undo).
+        # Shift+S is reserved for the Save-masks shortcut below.
         self.undo_postproc_btn = PushButton(text='↶ Undo post-proc')
         self.undo_postproc_btn.changed.connect(self._on_undo_postproc)
         self._postproc_backup: dict = {}
         try:
-            self.viewer.bind_key('Shift-S', lambda v: self._on_undo_postproc())
+            self.viewer.bind_key('Shift-Z', lambda v: self._on_undo_postproc())
+            self.viewer.bind_key('Shift-S', lambda v: self._on_save())
         except Exception:
             pass
 
@@ -9520,17 +9761,17 @@ class BarcodeSeg(Container):
             'Per-cell hole filling cap (pixels). Fills background holes '
             'fully enclosed by a label when the hole is smaller than '
             'this. 0 = off. Auto-populated from the selected model\'s '
-            'config.json if present. Destructive — undo with ↶ or Shift+S.')
+            'config.json if present. Destructive — undo with ↶ or Shift+Z.')
         _tt(self.erode_px,
             'Per-cell erosion radius (pixels). Peels one ring off each '
             'label\'s outline — useful when the model traces a too-thick '
-            'membrane. 0 = off. Destructive — undo with ↶ or Shift+S.')
+            'membrane. 0 = off. Destructive — undo with ↶ or Shift+Z.')
         _tt(self.dilate_px,
             'Per-cell dilation radius (pixels). Opposite of erode — '
             'grows each label outward by this many pixels, but only into '
             'background. Adjacent labels never merge. Default 2 = '
             'restore a thin halo after erode, or smooth the boundary. '
-            '0 = off. Destructive — undo with ↶ or Shift+S.')
+            '0 = off. Destructive — undo with ↶ or Shift+Z.')
         _tt(self.reapply_postproc_btn,
             'Re-run close-holes + erode on the masks currently in the '
             'viewer using the spinbox values above. No cellpose run, '
@@ -9539,7 +9780,7 @@ class BarcodeSeg(Container):
             'state BEFORE this press is backed up for one Undo.')
         _tt(self.undo_postproc_btn,
             'Restore the masks captured before the last ♻ Re-apply. '
-            'Shift+S is bound to the same action. Works once — a second '
+            'Shift+Z is bound to the same action. Works once — a second '
             'Undo without an intervening Re-apply is a no-op.')
         _tt(self.min_area_px,
             'Drop labels whose total area is below this many pixels '
@@ -9565,7 +9806,9 @@ class BarcodeSeg(Container):
         _tt(self.save_btn,
             'Re-saves the mask layers to disk AFTER your manual edits. '
             'Auto-Segment already saved the raw output, so this is only '
-            'needed if you drew / deleted cells in the viewer.')
+            'needed if you drew / deleted cells in the viewer. '
+            'Shortcut: Shift+S. Status bar shows the resolved file path + '
+            'mtime so you can verify the write landed.')
         _tt(self.ft_epochs,
             'Fine-tune epochs. 50–200 is typical for small mask '
             'corrections. More = more adaptation, but also overfitting '
@@ -9584,6 +9827,16 @@ class BarcodeSeg(Container):
 
         self.progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self.status_label = Label(value='Ready')
+        # Word-wrap the status label — otherwise long save / batch messages
+        # (which now include filenames + mtimes) hard-stretch the dock
+        # horizontally as wide as the longest line.
+        try:
+            self.status_label.native.setWordWrap(True)
+            self.status_label.native.setMinimumWidth(0)
+            from qtpy.QtWidgets import QSizePolicy as _QSP
+            self.status_label.native.setSizePolicy(_QSP.Ignored, _QSP.Preferred)
+        except Exception:
+            pass
 
         self.tips_label = Label(
             value=(
@@ -9599,9 +9852,10 @@ class BarcodeSeg(Container):
                 '<b>Ctrl+Z</b> undo · <b>Space</b> (hold) pan/zoom<br>'
                 '• <b>Z / X</b> toggle N / P visibility · '
                 '<b>Ctrl+click</b> delete label · <b>S</b> cycle contrast<br>'
+                '• <b>Shift+S</b> save masks · <b>Shift+Z</b> undo post-proc<br>'
                 '• <b>Auto-save</b>: Auto Segment / Re-seg write '
                 '<code>*_seg_n.npy</code> / <code>*_seg_p.npy</code> on disk. '
-                'Click <b>Save masks</b> after manual edits.'
+                'Click <b>Save masks</b> (or <b>Shift+S</b>) after manual edits.'
             ),
         )
         try:
@@ -9934,9 +10188,9 @@ class BarcodeSeg(Container):
         if any_done:
             self.status_label.value = (
                 f'Re-applied post-proc: close_holes={cl}, erode={er}, '
-                f'dilate={di}, min_area={ma}.  Shift+S or ↶ Undo to revert.'
+                f'dilate={di}, min_area={ma}.  Shift+Z or ↶ Undo to revert.'
             )
-            show_info('Post-proc re-applied. Shift+S to undo.')
+            show_info('Post-proc re-applied. Shift+Z to undo.')
         else:
             self._postproc_backup = {}  # nothing to undo
             show_info('No masks loaded to re-apply on.')
@@ -9944,7 +10198,7 @@ class BarcodeSeg(Container):
     def _on_undo_postproc(self, *_args):
         """Restore the masks captured before the last Re-apply press.
         Writes back to both the viewer and disk, then drops the backup —
-        a second Shift+S press is a no-op until you Re-apply again."""
+        a second Shift+Z press is a no-op until you Re-apply again."""
         if not self._postproc_backup:
             show_info('Nothing to undo (no Re-apply was performed).')
             return
@@ -10063,6 +10317,15 @@ class BarcodeSeg(Container):
         sample_dirs = [sd] if sd else []
         n_ranked = _list_all_custom_models(sample_dirs, target_hint='n')
         p_ranked = _list_all_custom_models(sample_dirs, target_hint='p')
+        # Separate curated-only set (no ~/.cellpose/models cache) — used
+        # to gate which `last_used` / `default` names get auto-promoted
+        # to the top of the dropdown. Cache models stay selectable but
+        # don't take over the slot just because they were the previous
+        # pick on this user's account.
+        n_curated_set = set(
+            _list_all_custom_models(sample_dirs, target_hint='n', curated_only=True))
+        p_curated_set = set(
+            _list_all_custom_models(sample_dirs, target_hint='p', curated_only=True))
 
         # Preserve the current selection if still available; otherwise fall
         # back to the persisted last-used pick, then the global default.
@@ -10072,16 +10335,22 @@ class BarcodeSeg(Container):
         cur_p = str(self.p_model.value) if self.p_model.value else (last_p or _DEFAULT_P_MODEL)
 
         def _with_defaults(ranked: list[str], default: str, builtins: list[str],
-                            last_used: "str | None") -> list[str]:
+                            last_used: "str | None",
+                            curated_set: "set[str]") -> list[str]:
             out: list[str] = []
             seen: set[str] = set()
-            # Top priority: last-used model (so re-opening resumes the
-            # user's prior pick). Then the global default if it exists
-            # locally. Then the ranked custom models, then the builtins.
+            # Top priority: last-used model — BUT only if it's a curated
+            # finetune (in sample_dir/_finetune or _BARCODE_MODEL_ROOT).
+            # Cache-only names (e.g. NTOM_2K copied over from a personal
+            # machine) are still selectable from the dropdown but won't
+            # auto-promote here. Same gate applies to the global default.
             head = []
-            if last_used and _is_valid_model_choice(last_used):
+            if (last_used and last_used in curated_set
+                    and _is_valid_model_choice(last_used)):
                 head.append(last_used)
-            if default and default != last_used and _is_valid_model_choice(default):
+            if (default and default != last_used
+                    and default in curated_set
+                    and _is_valid_model_choice(default)):
                 head.append(default)
             for n in head + ranked + builtins:
                 if n and n not in seen:
@@ -10089,8 +10358,10 @@ class BarcodeSeg(Container):
                     seen.add(n)
             return out
 
-        n_choices = tuple(_with_defaults(n_ranked, _DEFAULT_N_MODEL, ['nuclei'], last_n))
-        p_choices = tuple(_with_defaults(p_ranked, _DEFAULT_P_MODEL, ['cyto2'], last_p))
+        n_choices = tuple(_with_defaults(
+            n_ranked, _DEFAULT_N_MODEL, ['nuclei'], last_n, n_curated_set))
+        p_choices = tuple(_with_defaults(
+            p_ranked, _DEFAULT_P_MODEL, ['cyto2'], last_p, p_curated_set))
         self.n_model.choices = n_choices
         self.p_model.choices = p_choices
         # Belt-and-braces refresh: rebuild the underlying QComboBox items
@@ -10107,15 +10378,19 @@ class BarcodeSeg(Container):
                         native.addItem(s, s)
                     native.blockSignals(False)
             except Exception as e:
-                print(f'[BarcodeSeg] dropdown refresh fallback failed: {e}')
-        msg = (f'[BarcodeSeg] dropdowns refreshed: N={len(n_choices)} '
-               f'P={len(p_choices)} options.')
-        print(msg)
+                _log.warning('[BarcodeSeg] dropdown refresh fallback failed: %s', e)
+        # File-only diag log (no stdout — a Windows console in QuickEdit
+        # Select mode blocks WriteConsoleW indefinitely and freezes the Qt
+        # main thread mid-refresh).
         try:
             import datetime as _dt
             with open(r'C:/Users/admin/AppData/Local/Temp/bcflim_diag.log', 'a',
                       encoding='utf-8') as _lf:
-                _lf.write(f'{_dt.datetime.now().isoformat()} {msg}\n')
+                _lf.write(
+                    f'{_dt.datetime.now().isoformat()} '
+                    f'[BarcodeSeg] dropdowns refreshed: '
+                    f'N={len(n_choices)} P={len(p_choices)} options.\n'
+                )
         except Exception:
             pass
         # Force value sync: if the previous value (often the constructor's
@@ -10317,14 +10592,30 @@ class BarcodeSeg(Container):
                           n_chan_override, p_chan_override, proc_holder):
         """Run every FOV serially. Writes *_seg_n.npy / *_seg_p.npy per FOV
         and yields progress so the GUI shows X / N done. Reuses the
-        single-FOV helper paths so post-proc + save-back stay consistent."""
+        single-FOV helper paths so post-proc + save-back stay consistent.
+
+        Status messages carry an ETA estimated from the rolling average of
+        already-completed FOVs, and N-done is emitted as its own line
+        before P starts so per-head timing isn't lost when the next phase
+        overwrites the label.
+        """
         import time as _time
         n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
         p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
         total = len(tifs)
         per_fov = 100 / max(total, 1)
+        batch_start = _time.time()
+        fov_times: list[float] = []
+
+        def _fmt_t(t):
+            return f'{t/60:.1f}m' if t >= 60 else f'{t:.0f}s'
+
+        def _eta_str(avg_s, remaining):
+            return 'done' if remaining <= 0 or avg_s <= 0 else _fmt_t(avg_s * remaining)
+
         for i, src in enumerate(tifs):
             base = src.stem
+            base_short = (base[:32] + '…') if len(base) > 33 else base
             n_out = src.parent / f'{base}_seg_n.npy'
             p_out = src.parent / f'{base}_seg_p.npy'
             try:
@@ -10339,10 +10630,16 @@ class BarcodeSeg(Container):
             p_input = self._cellpose_input_for(
                 p_model_name, img, rgb, extra_roots, raw_path=src,
             )
+
+            avg = (sum(fov_times) / len(fov_times)) if fov_times else 0.0
+            eta = _eta_str(avg, total - i)
+            elapsed = _fmt_t(_time.time() - batch_start)
+            head = f'[{i+1}/{total}] {base_short}'
+
             t0 = _time.time()
             if do_n:
                 yield ('status', int(i * per_fov),
-                        f'FOV {i+1}/{total}: N model on {base} ...')
+                        f'{head}  N推理中…  (elapsed {elapsed}, ETA {eta})')
                 n_mask = _run_infer_subprocess(
                     img=n_input, base_name=n_model_name,
                     diameter=n_diameter, channels=n_channels,
@@ -10352,9 +10649,18 @@ class BarcodeSeg(Container):
                     proc_holder=proc_holder,
                 )
                 _apply_postproc(n_mask, n_cfg, save_path=n_out)
+                n_time = _time.time() - t0
+                if do_p:
+                    yield ('status', int(i * per_fov + per_fov * 0.5),
+                            f'{head}  N {n_time:.0f}s done, P推理中…  '
+                            f'(elapsed {_fmt_t(_time.time()-batch_start)}, '
+                            f'ETA {eta})')
+            elif do_p:
+                yield ('status', int(i * per_fov),
+                        f'{head}  P推理中…  (elapsed {elapsed}, ETA {eta})')
+
             if do_p:
-                yield ('status', int(i * per_fov + per_fov * 0.5),
-                        f'FOV {i+1}/{total}: P model on {base} ...')
+                p_start = _time.time()
                 p_mask = _run_infer_subprocess(
                     img=p_input, base_name=p_model_name,
                     diameter=p_diameter, channels=p_channels,
@@ -10364,8 +10670,14 @@ class BarcodeSeg(Container):
                     proc_holder=proc_holder,
                 )
                 _apply_postproc(p_mask, p_cfg, save_path=p_out)
+
+            fov_time = _time.time() - t0
+            fov_times.append(fov_time)
+            avg2 = sum(fov_times) / len(fov_times)
+            eta2 = _eta_str(avg2, total - (i + 1))
             yield ('status', int((i + 1) * per_fov),
-                    f'FOV {i+1}/{total}: done in {_time.time()-t0:.1f}s.')
+                    f'[{i+1}/{total}] done in {fov_time:.0f}s  '
+                    f'| avg {avg2:.0f}s  ETA {eta2}')
         return total
 
     def _on_run_all_done(self, total):
@@ -10869,10 +11181,16 @@ class BarcodeSeg(Container):
         self.viewer.add_image(img, name='sum', colormap='gray',
                               visible=not rgb_added)
 
-        # Also keep the RAW intensity sum from disk loaded but hidden, in
-        # case the user wants to peek at the original photon counts. We
-        # only load it when the foreground colour layer is present.
-        if rgb_added and self._current_src is not None and self._current_src.is_file():
+        # Previously also added a hidden ``sum_intensity_raw`` image (the
+        # raw photon-count TIF) for users who wanted to inspect the
+        # unscaled intensity. Removed by default — it duplicated the data
+        # in memory + cost a disk read per FOV swap, and the same info is
+        # one drag-drop away when actually needed. Opt back in by setting
+        # ``BCFLIM_SHOW_RAW_SUM=1`` before launching napari.
+        if (_os_init.environ.get('BCFLIM_SHOW_RAW_SUM') == '1'
+                and rgb_added
+                and self._current_src is not None
+                and self._current_src.is_file()):
             try:
                 raw = np.asarray(tifffile.imread(str(self._current_src)), dtype=np.float32)
                 if raw.ndim > 2:
@@ -10880,11 +11198,17 @@ class BarcodeSeg(Container):
                 self.viewer.add_image(raw, name='sum_intensity_raw',
                                        colormap='gray', visible=False)
             except Exception as e:
-                print(f'[BarcodeSeg] raw sum load skipped: {e}')
+                _log.debug('raw sum load skipped: %s', e)
 
-        ln = self.viewer.add_labels(n_mask.astype(np.int32), name='mask_n_fill')
+        # Use uint16 (not int32) for the mask layer dtype. 16-bit cuts
+        # GPU upload bandwidth in half on every paintbrush stroke, which
+        # matters on bandwidth-bound boxes (single DDR4 stick / iGPU
+        # workstations). 65k labels per FOV is well above what any biology
+        # workflow needs, so we lose no headroom. This also matches the
+        # on-disk *_seg_*.npy dtype the BarcodeSeg save path writes.
+        ln = self.viewer.add_labels(n_mask.astype(np.uint16), name='mask_n_fill')
         ln.mouse_drag_callbacks.append(self._ctrl_click_delete)
-        lp = self.viewer.add_labels(p_mask.astype(np.int32), name='mask_p_fill')
+        lp = self.viewer.add_labels(p_mask.astype(np.uint16), name='mask_p_fill')
         lp.mouse_drag_callbacks.append(self._ctrl_click_delete)
         if 'draw_points' not in self.viewer.layers:
             self.viewer.add_points(
@@ -10983,17 +11307,82 @@ class BarcodeSeg(Container):
         show_info(f'[P] re-seg: {int(mask.max())} cells')
 
     def _on_save(self):
+        """Persist whichever mask layer is currently in the viewer to the
+        canonical ``<stem>_seg_{n,p}.npy`` next to the source TIF.
+
+        Hardened against the silent-failure mode where the layer the user
+        edited isn't literally named ``mask_n_fill``/``mask_p_fill`` (e.g.
+        napari may suffix a duplicate to ``mask_n_fill [1]``, or the user
+        may have created an empty ``Labels`` layer named something else).
+        We look up by exact name first, then fall back to substring match.
+        Only emits a "saved" toast if at least one file was actually
+        written, and the status label shows the resolved paths + post-write
+        mtime so the user can verify on disk.
+        """
         if self._current_src is None:
-            show_warning('No source TIF loaded.')
+            show_warning('No source TIF loaded — open a sample folder first.')
             return
+        import time as _time
+
+        def _find_layer(target_substr: str):
+            # exact name wins
+            exact = f'mask_{target_substr}_fill'
+            if exact in self.viewer.layers:
+                return self.viewer.layers[exact]
+            # otherwise: first Labels layer whose name contains the substr
+            from napari.layers import Labels as _Labels
+            for lyr in self.viewer.layers:
+                if (isinstance(lyr, _Labels)
+                        and target_substr in lyr.name.lower()):
+                    return lyr
+            return None
+
         stem = self._current_src.stem
-        if 'mask_n_fill' in self.viewer.layers:
-            arr = np.asarray(self.viewer.layers['mask_n_fill'].data).astype(np.uint16)
-            np.save(str(self._current_src.parent / f'{stem}_seg_n.npy'), arr)
-        if 'mask_p_fill' in self.viewer.layers:
-            arr = np.asarray(self.viewer.layers['mask_p_fill'].data).astype(np.uint16)
-            np.save(str(self._current_src.parent / f'{stem}_seg_p.npy'), arr)
-        show_info('Saved N and P masks.')
+        saved = []
+        skipped = []
+        for tag in ('n', 'p'):
+            lyr = _find_layer(tag)
+            if lyr is None:
+                skipped.append(tag.upper())
+                continue
+            try:
+                arr = np.asarray(lyr.data).astype(np.uint16)
+            except Exception as e:
+                show_warning(f'Could not coerce mask_{tag} to uint16: {e}')
+                skipped.append(tag.upper())
+                continue
+            out = self._current_src.parent / f'{stem}_seg_{tag}.npy'
+            try:
+                np.save(str(out), arr)
+            except Exception as e:
+                show_warning(f'Save failed for {out.name}: {e}')
+                skipped.append(tag.upper())
+                continue
+            mtime = _time.strftime(
+                '%H:%M:%S', _time.localtime(out.stat().st_mtime))
+            n_lbl = int(arr.max()) if arr.size else 0
+            # Compact status — long absolute paths previously hard-stretched
+            # the dock width. Keep just `<tag>: <N> labels @ <hh:mm:ss>`.
+            saved.append(f'{tag.upper()}: {n_lbl} labels @ {mtime}')
+
+        if not saved:
+            msg = f'Save no-op: no N/P mask layer found ({", ".join(skipped)} missing).'
+            self.status_label.value = msg
+            show_warning(msg)
+            return
+        # Status line stays short; full filenames go to napari's info toast
+        # (which auto-wraps) so the user can still verify the exact path.
+        self.status_label.value = 'Saved ' + ' · '.join(saved)
+        # Toast includes the actual on-disk filename so the user can compare
+        # to what's on disk if mtime didn't seem to update.
+        try:
+            shown = ', '.join(
+                (self._current_src.parent / f'{stem}_seg_{t.lower()[0]}.npy').name
+                for t in (s.split(':')[0] for s in saved)
+            )
+            show_info(f'Saved {shown}')
+        except Exception:
+            show_info('Saved ' + ' · '.join(saved))
 
     def _on_finetune(self, target: str):
         """Fine-tune the selected N or P model on the currently edited mask (single-image training)."""

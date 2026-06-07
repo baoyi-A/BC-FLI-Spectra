@@ -24,6 +24,7 @@ dependencies = [
   "numpy>=1.23",
   "scipy>=1.12",
   "scikit-image>=0.20",
+  "scikit-learn>=1.2",
   "pandas>=2.0,<2.2",
   "opencv-python>=4.10",
   "tifffile>=2021.7",
@@ -34,7 +35,12 @@ dependencies = [
   "tqdm>=4.66",
   "magicgui>=0.8",
   "matplotlib>=3.7",
+  # Optional — only needed for SeededKMeans → Harmony calibration.
+  "harmonypy>=0.0.9 ; extra == 'harmony'",
 ]
+
+[project.optional-dependencies]
+harmony = ["harmonypy>=0.0.9", "scikit-learn>=1.2"]
 
 [project.urls]
 Homepage = "https://github.com/baoyi-A/BC-FLI-Spectra"
