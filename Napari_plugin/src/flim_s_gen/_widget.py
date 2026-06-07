@@ -3225,11 +3225,21 @@ class SeededKMeans(Container):
         self.harmony_enable = CheckBox(
             text='Use Harmony calibration instead of manual seeds', value=False,
         )
-        # Reference CSV — defaults to A549 14-class spec path; users
-        # override with whatever copy sits on their machine.
+        # Reference CSV — auto-resolve: prefer a local copy of the spec's
+        # A549 14-class lasso (lab desktop has one at this path), fall
+        # back to the server path so the field is never empty. Users can
+        # override with any CSV that has the expected label column.
+        _harmony_ref_candidates = [
+            r'D:/PKU_STUDY/DeepLearining/BC-FLIM/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
+            r'/dfs/share/liubeiLab/WBY/BC-FLIM/results/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
+        ]
+        _harmony_ref_default = next(
+            (p for p in _harmony_ref_candidates if Path(p).is_file()),
+            _harmony_ref_candidates[0],
+        )
         self.harmony_ref_csv = FileEdit(
             label='Reference CSV', mode='r', filter='*.csv',
-            value=r'/dfs/share/liubeiLab/WBY/BC-FLIM/results/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
+            value=_harmony_ref_default,
         )
         # Label column — A549 uses NLabelDisplay (NOT NLabel); other
         # references vary, so we expose this rather than hard-coding it.
