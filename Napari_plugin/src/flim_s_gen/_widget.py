@@ -8997,6 +8997,47 @@ _CELLPOSE_CHANNEL_PRESETS = (
 )
 
 
+# ---- Input kind picker presets ----
+# Per-head GUI override for which form of the input image cellpose sees.
+# Default '(auto)' falls back to the model's config.json input_kind, then
+# to the v4-RGB / v2-gray heuristic. Letting the user force the form lets
+# them e.g. feed RGB to a v2 model that was trained on a colour render.
+_INPUT_KIND_AUTO_LABEL = '(auto from model)'
+_INPUT_KIND_PRESETS = (
+    _INPUT_KIND_AUTO_LABEL,
+    'Grayscale render',
+    'RGB render (3-channel)',
+    'Intensity sum (raw uint16)',
+)
+
+
+def _input_kind_preset_to_cfg(label):
+    """Map a preset label back to a ``config.input_kind`` string, or
+    ``None`` to fall through to model/version defaults."""
+    if not label or label == _INPUT_KIND_AUTO_LABEL:
+        return None
+    s = str(label)
+    if s.startswith('Grayscale'):
+        return 'barcode_seg_grayscale'
+    if s.startswith('RGB'):
+        return 'barcode_seg_rgb'
+    if s.startswith('Intensity'):
+        return 'intensity_sum'
+    return None
+
+
+def _input_kind_cfg_to_preset(cfg_value):
+    """Inverse of ``_input_kind_preset_to_cfg`` — pick the preset label
+    that matches a config.json ``input_kind`` value."""
+    if cfg_value == 'barcode_seg_grayscale':
+        return 'Grayscale render'
+    if cfg_value == 'barcode_seg_rgb':
+        return 'RGB render (3-channel)'
+    if cfg_value == 'intensity_sum':
+        return 'Intensity sum (raw uint16)'
+    return _INPUT_KIND_AUTO_LABEL
+
+
 def _channel_preset_to_kwarg(label):
     """Parse a preset string back to [main, aux] ints, or ``None`` for auto."""
     if not label or label == _CELLPOSE_CHANNEL_AUTO_LABEL:
@@ -9679,6 +9720,20 @@ class BarcodeSeg(Container):
             choices=list(_CELLPOSE_CHANNEL_PRESETS),
             value=_CELLPOSE_CHANNEL_AUTO_LABEL,
         )
+        # Input-kind picker per head — overrides the v4→RGB / v2→gray
+        # heuristic and any config.json setting. Lets the user feed an
+        # RGB render to a v2 model that was trained on colour input
+        # (e.g. an older a007-style model on the FastFLIM render).
+        self.n_input_kind = ComboBox(
+            label='N input kind',
+            choices=list(_INPUT_KIND_PRESETS),
+            value=_INPUT_KIND_AUTO_LABEL,
+        )
+        self.p_input_kind = ComboBox(
+            label='P input kind',
+            choices=list(_INPUT_KIND_PRESETS),
+            value=_INPUT_KIND_AUTO_LABEL,
+        )
         self.use_gpu = CheckBox(text='Use GPU', value=True)
         # Cellpose-GUI-style diameter ruler: a transparent ellipse in the
         # top-left so users can eyeball whether 55 px really is the nucleus
@@ -9841,6 +9896,17 @@ class BarcodeSeg(Container):
         _tt(self.p_channels_choice,
             'Cellpose channels=[main, aux] for the P head. Same '
             'conventions as N (see N tooltip).')
+        _tt(self.n_input_kind,
+            'Which form of the input image is fed to the N model. '
+            '"(auto from model)" = use the model\'s config.json if it '
+            'declares input_kind, else the v4→RGB / v2→grayscale '
+            'heuristic. Override here when, e.g., you want to force a '
+            'v2 model trained on a colour render to receive the RGB '
+            'render directly. "Intensity sum" bypasses τ-rendering '
+            'entirely (raw uint16 *_sum.tif).')
+        _tt(self.p_input_kind,
+            'Which form of the input image is fed to the P model. '
+            'Same options as N (see N tooltip).')
         _tt(self.image_choice,
             'Pick which TIF under <sample>/intensity/ gets fed to '
             'cellpose. "(auto)" uses the canonical *_sum.tif. Picking '
@@ -9993,8 +10059,10 @@ class BarcodeSeg(Container):
         self.append(_hrow(self.do_n, self.do_p))
         self.append(self.n_model)
         self.append(_hrow(self.n_diameter, self.n_channels_choice))
+        self.append(self.n_input_kind)
         self.append(self.p_model)
         self.append(_hrow(self.p_diameter, self.p_channels_choice))
+        self.append(self.p_input_kind)
         # Three small toggles / refresh button live on one row instead of
         # eating three full-height rows.
         self.append(_hrow(self.use_gpu, self.show_diameter_ref,
@@ -10080,9 +10148,9 @@ class BarcodeSeg(Container):
         bits = []
         cfg_lines = []
         cfg_seen = False
-        for tag, combo, diam_widget in (
-            ('N', self.n_model, self.n_diameter),
-            ('P', self.p_model, self.p_diameter),
+        for tag, combo, diam_widget, kind_widget in (
+            ('N', self.n_model, self.n_diameter, self.n_input_kind),
+            ('P', self.p_model, self.p_diameter, self.p_input_kind),
         ):
             name = str(combo.value or '')
             if not name:
@@ -10104,6 +10172,14 @@ class BarcodeSeg(Container):
                 if cfg.get('diameter') is not None:
                     try:
                         diam_widget.value = float(cfg['diameter'])
+                    except Exception:
+                        pass
+                # Pre-populate the input-kind picker from config.input_kind.
+                cfg_kind = cfg.get('input_kind')
+                if cfg_kind:
+                    preset = _input_kind_cfg_to_preset(cfg_kind)
+                    try:
+                        kind_widget.value = preset
                     except Exception:
                         pass
                 # Pre-populate the shared close/erode spinboxes from this
@@ -10466,10 +10542,20 @@ class BarcodeSeg(Container):
                     seen.add(n)
             return out
 
+        # Builtins surfaced at the BOTTOM of each dropdown. cpsam first
+        # (the only v4 builtin and the recommended starting point for
+        # CellposeSAM), then v2's MODEL_NAMES. Both heads see the same
+        # full list so users can experiment freely without editing code.
+        _n_builtins = ['nuclei', 'cpsam', 'cyto3', 'cyto2', 'cyto', 'tissuenet',
+                        'livecell', 'general', 'CP', 'CPx',
+                        'TN1', 'TN2', 'TN3', 'LC1', 'LC2', 'LC3', 'LC4']
+        _p_builtins = ['cyto2', 'cpsam', 'cyto3', 'cyto', 'nuclei', 'tissuenet',
+                        'livecell', 'general', 'CP', 'CPx',
+                        'TN1', 'TN2', 'TN3', 'LC1', 'LC2', 'LC3', 'LC4']
         n_choices = tuple(_with_defaults(
-            n_ranked, _DEFAULT_N_MODEL, ['nuclei'], last_n, n_curated_set))
+            n_ranked, _DEFAULT_N_MODEL, _n_builtins, last_n, n_curated_set))
         p_choices = tuple(_with_defaults(
-            p_ranked, _DEFAULT_P_MODEL, ['cyto2'], last_p, p_curated_set))
+            p_ranked, _DEFAULT_P_MODEL, _p_builtins, last_p, p_curated_set))
         self.n_model.choices = n_choices
         self.p_model.choices = p_choices
         # Belt-and-braces refresh: rebuild the underlying QComboBox items
@@ -10734,9 +10820,11 @@ class BarcodeSeg(Container):
             rgb = self._load_fastflim_display_rgb(src)
             n_input = self._cellpose_input_for(
                 n_model_name, img, rgb, extra_roots, raw_path=src,
+                gui_kind_override=_input_kind_preset_to_cfg(self.n_input_kind.value),
             )
             p_input = self._cellpose_input_for(
                 p_model_name, img, rgb, extra_roots, raw_path=src,
+                gui_kind_override=_input_kind_preset_to_cfg(self.p_input_kind.value),
             )
 
             avg = (sum(fov_times) / len(fov_times)) if fov_times else 0.0
@@ -10881,20 +10969,24 @@ class BarcodeSeg(Container):
         return np.asarray(img, dtype=np.float32)
 
     def _cellpose_input_for(self, model_name, gray, rgb, extra_roots=(),
-                              raw_path=None):
+                              raw_path=None, gui_kind_override=None):
         """Pick the right input form for ``model_name``.
 
         Routing rules (first applicable wins):
-          1. Model has a ``config.json`` declaring ``input_kind`` →
-             honour it.  ``intensity_sum`` re-reads the raw uint16
+          1. GUI per-head ``Input kind`` picker if user set it away from
+             "(auto)" — highest priority, lets the user feed RGB to a v2
+             model whose config.json wasn't updated, etc.
+          2. Model has a ``config.json`` declaring ``input_kind`` →
+             honour it. ``intensity_sum`` re-reads the raw uint16
              sum.tif (``raw_path``), bypassing all τ rendering.
-          2. v4 (CellposeSAM) + RGB available → RGB (3-channel render).
-          3. Otherwise grayscale (luminance render).
+          3. v4 (CellposeSAM) + RGB available → RGB (3-channel render).
+          4. Otherwise grayscale (luminance render).
 
         Falls back to gray whenever the requested form is unavailable.
         """
         cfg = _load_model_config(model_name, extra_roots=extra_roots) or {}
-        kind = cfg.get('input_kind')
+        # GUI override beats config.
+        kind = gui_kind_override or cfg.get('input_kind')
         if kind == 'intensity_sum' and raw_path is not None:
             try:
                 raw = tifffile.imread(str(raw_path))
@@ -10910,7 +11002,7 @@ class BarcodeSeg(Container):
             return rgb
         if kind == 'barcode_seg_grayscale':
             return gray
-        # Legacy path — no config or config didn't recognise the kind.
+        # Legacy path — no override / config didn't recognise the kind.
         if _is_v4_model(model_name, extra_roots=extra_roots) and rgb is not None:
             return rgb
         return gray
@@ -11045,14 +11137,15 @@ class BarcodeSeg(Container):
         self.reseg_n_btn.enabled = False
         self.reseg_p_btn.enabled = False
 
-        # Per-head input: v4 → RGB if available, v2 → grayscale. Models
-        # with a config.json may override this to e.g. raw intensity_sum.
+        # Per-head input: GUI override > config.json > v4-RGB/v2-gray heuristic.
+        n_kind = _input_kind_preset_to_cfg(self.n_input_kind.value)
+        p_kind = _input_kind_preset_to_cfg(self.p_input_kind.value)
         n_input = self._cellpose_input_for(self.n_model.value, img,
                                             self._current_img_rgb, extra,
-                                            raw_path=src)
+                                            raw_path=src, gui_kind_override=n_kind)
         p_input = self._cellpose_input_for(self.p_model.value, img,
                                             self._current_img_rgb, extra,
-                                            raw_path=src)
+                                            raw_path=src, gui_kind_override=p_kind)
         # Per-head inference + post-proc parameters from optional config.json.
         n_cfg = _load_model_config(self.n_model.value, extra_roots=extra) or {}
         p_cfg = _load_model_config(self.p_model.value, extra_roots=extra) or {}
@@ -11338,6 +11431,7 @@ class BarcodeSeg(Container):
             self.n_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
             raw_path=self._current_src,
+            gui_kind_override=_input_kind_preset_to_cfg(self.n_input_kind.value),
         )
         n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
         n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
@@ -11382,6 +11476,7 @@ class BarcodeSeg(Container):
             self.p_model.value, self._current_img,
             getattr(self, '_current_img_rgb', None), extra,
             raw_path=self._current_src,
+            gui_kind_override=_input_kind_preset_to_cfg(self.p_input_kind.value),
         )
         p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
         p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
