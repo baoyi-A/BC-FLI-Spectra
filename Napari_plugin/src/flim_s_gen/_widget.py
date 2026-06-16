@@ -291,7 +291,9 @@ def _run_infer_subprocess(
         img=img,
         base_name=base_name,
         diameter=float(diameter) if diameter and diameter > 0 else 0,
-        channels=list(channels),
+        # channels=None means: skip the kwarg entirely → v4 cpsam fed RGB
+        # uses all 3 via channel_axis=-1, v2 falls back to [0, 0].
+        channels=list(channels) if channels is not None else None,
         use_gpu=bool(use_gpu),
         cellpose_src=cellpose_src,
         extra_roots=[str(r) for r in (extra_roots or [])],
@@ -3091,9 +3093,22 @@ class SeededKMeans(Container):
         row.append(self.loc_choice)
         self.append(row)
 
+        # --- Per-FOV mode: each FOV in FLIM-S gets its own K-Means run ---
+        # Default OFF = legacy pooled behaviour (one fit across all FOVs).
+        # When ON, clicking Run K-Means popups a FOV checklist (default all
+        # selected) and the method runs separately per chosen FOV. Useful
+        # when FOVs have systematically different distributions and pooled
+        # clustering muddles class boundaries.
+        from magicgui.widgets import CheckBox as _CheckBox  # local import
+        row = Container(layout='horizontal')
+        self.kmeans_per_fov = _CheckBox(
+            text='Per-FOV K-Means (popup picks which FOVs)', value=False,
+        )
+        row.append(self.kmeans_per_fov)
+        self.append(row)
+
         # --- Outlier detection (marks bad cells as cluster 0 before K-Means) ---
         row = Container(layout='horizontal')
-        from magicgui.widgets import CheckBox as _CheckBox
         self.outlier_enable = _CheckBox(text='Auto-detect outliers -> class 0', value=True)
         row.append(self.outlier_enable)
         self.append(row)
@@ -3181,6 +3196,15 @@ class SeededKMeans(Container):
             'Flag per-class outliers (Isolation Forest) and reassign '
             'them to class 0 (unassigned). Helps weed out dim or '
             'defocused cells without re-editing masks.')
+        _tt(self.kmeans_per_fov,
+            'When ticked, Run K-Means pops a checklist asking which '
+            'FOVs to cluster, then runs the chosen Method SEPARATELY '
+            'per ticked FOV. Each FOV gets its own 1..K labels in '
+            'cluster_local. Seed K-Means is not allowed here (seeds '
+            'are global) — pick K-Means++ / MiniBatchKMeans++ / '
+            'GaussianMixture / Spectral.\n'
+            'Leave UNticked (default) to keep the legacy pooled '
+            'behaviour — one fit across all FOVs.')
         _tt(self.outlier_contam,
             'Fraction of points per class flagged as outliers. 0.05–0.15 '
             'is typical. Higher = more aggressive weeding.')
@@ -4411,10 +4435,77 @@ class SeededKMeans(Container):
         except Exception as e:
             self._notify(f'Wrote labels in memory but Excel save failed: {e}')
 
+    # ---------- OPTIONAL per-FOV K-Means dispatcher ----------
+    def _ask_kmeans_fovs(self, fovs):
+        """Checklist popup: which FOVs to include in per-FOV K-Means.
+
+        ``fovs`` is a list of FOV name strings (from the FLIM-S FOV
+        column). Returns the selected subset, or ``None`` on cancel.
+        Selection is cached for this widget instance so re-opening the
+        dialog pre-checks the same set.
+        """
+        from qtpy.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
+            QPushButton, QScrollArea, QWidget, QDialogButtonBox,
+        )
+        prior = getattr(self, '_kmeans_fov_selection', None)
+        dlg = QDialog(self.native)
+        dlg.setWindowTitle('Per-FOV K-Means · pick which FOVs to cluster')
+        layout = QVBoxLayout(dlg)
+        info = QLabel(
+            '<b>Tick the FOVs to cluster individually.</b><br>'
+            'Each ticked FOV gets its OWN K-Means run on its rows of '
+            'FLIM-S.xlsx. Defaults to every FOV in the loaded data.'
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(2)
+        checkboxes = {}
+        for fov in fovs:
+            cb = QCheckBox(str(fov))
+            if prior is not None:
+                cb.setChecked(str(fov) in prior)
+            else:
+                cb.setChecked(True)
+            inner_layout.addWidget(cb)
+            checkboxes[str(fov)] = cb
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(min(360, 36 + 24 * len(checkboxes)))
+        layout.addWidget(scroll)
+        helper_row = QHBoxLayout()
+        sel_all = QPushButton('Select all')
+        sel_all.clicked.connect(
+            lambda: [cb.setChecked(True) for cb in checkboxes.values()])
+        helper_row.addWidget(sel_all)
+        clr_all = QPushButton('Clear all')
+        clr_all.clicked.connect(
+            lambda: [cb.setChecked(False) for cb in checkboxes.values()])
+        helper_row.addWidget(clr_all)
+        layout.addLayout(helper_row)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText('Run K-Means per FOV')
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        selected = [fov for fov, cb in checkboxes.items() if cb.isChecked()]
+        self._kmeans_fov_selection = set(selected)
+        return selected
+
     def run_kmeans(self):
         if self.df_test is None or len(self.df_test) == 0:
             self._notify("No test data loaded.")
             return
+
+        # Per-FOV mode short-circuits the rest of this method.
+        if getattr(self, 'kmeans_per_fov', None) and bool(self.kmeans_per_fov.value):
+            return self._run_kmeans_per_fov()
 
         locs_to_run = self._get_loc_run_list()
         if not locs_to_run:
@@ -5194,6 +5285,120 @@ class SeededKMeans(Container):
             offset += kmax
 
         return out
+
+    def _run_kmeans_per_fov(self):
+        """Per-FOV K-Means: each ticked FOV gets its own fit, results
+        written into ``cluster_local`` / ``cluster_tag`` indexed by FOV.
+
+        Seed-based K-Means is rejected here because seeds are placed on
+        the global scatter and may not exist in every FOV subset; the
+        user picks an unsupervised method (K-Means++, MiniBatchKMeans++,
+        GaussianMixture, Spectral) for this path. Localization filter
+        ('AUTO' / 'ALL' / 'N' / 'M' / 'P') is applied INSIDE each FOV
+        loop so per-FOV runs respect the same loc semantics.
+        """
+        if 'FOV' not in self.df_test.columns:
+            self._notify(
+                "FLIM-S table has no 'FOV' column — per-FOV mode needs it.")
+            return
+        method = str(self.method.value)
+        if method == 'KMeans (seeds)':
+            self._notify(
+                "Per-FOV mode + KMeans(seeds) doesn't compose — seeds live "
+                "on the global plot and may not exist in every FOV subset. "
+                "Switch the Method to K-Means++ / MiniBatchKMeans++ / "
+                "GaussianMixture / Spectral for per-FOV runs."
+            )
+            return
+        fovs = sorted(
+            f for f in self.df_test['FOV'].dropna().astype(str).unique()
+            if f
+        )
+        if not fovs:
+            self._notify('No FOVs found in FLIM-S table.')
+            return
+        selected = self._ask_kmeans_fovs(fovs)
+        if selected is None:
+            return  # cancelled
+        if not selected:
+            self._notify('No FOVs selected — aborting per-FOV K-Means.')
+            return
+
+        # Force fresh scaler so the global df_scaled reflects current weights.
+        if hasattr(self, 'scaler'):
+            try:
+                del self.scaler
+            except Exception:
+                self.scaler = None
+        self.df_scaled = None
+        if not self._ensure_scaled_ready():
+            return
+        K = int(self.n_clusters.value)
+        if 'cluster_local' not in self.df_test.columns:
+            self.df_test['cluster_local'] = 0
+        if 'Localization' not in self.df_test.columns:
+            self.df_test['Localization'] = ''
+        loc_choice = (str(self.loc_choice.value).upper()
+                       if getattr(self, 'loc_choice', None) else 'AUTO')
+
+        from sklearn.cluster import KMeans as _KMeans
+        n_done = 0
+        for fov in selected:
+            sel = (self.df_test['FOV'].astype(str) == fov)
+            if loc_choice not in ('AUTO', 'ALL'):
+                sel = sel & (self.df_test['Localization'].astype(str).str.upper() == loc_choice)
+            idx_global = np.where(sel.to_numpy())[0]
+            if len(idx_global) < K:
+                self._notify(
+                    f'FOV={fov}: only {len(idx_global)} rows (< K={K}), skipping.')
+                continue
+            Xs_sub = self.df_scaled[idx_global, :]
+            try:
+                if method == 'KMeans++':
+                    km = _KMeans(n_clusters=K, init='k-means++', n_init=10, random_state=0)
+                    labels0 = km.fit_predict(Xs_sub)
+                elif method == 'MiniBatchKMeans++':
+                    from sklearn.cluster import MiniBatchKMeans
+                    km = MiniBatchKMeans(
+                        n_clusters=K, init='k-means++', n_init=10,
+                        batch_size=min(256, max(32, len(Xs_sub) // 4)),
+                        random_state=0,
+                    )
+                    labels0 = km.fit_predict(Xs_sub)
+                elif method == 'GaussianMixture':
+                    from sklearn.mixture import GaussianMixture
+                    gmm = GaussianMixture(
+                        n_components=K, covariance_type='full',
+                        n_init=3, random_state=0,
+                    )
+                    labels0 = gmm.fit_predict(Xs_sub)
+                elif method == 'Spectral':
+                    from sklearn.cluster import SpectralClustering
+                    sp = SpectralClustering(
+                        n_clusters=K, assign_labels='discretize',
+                        random_state=0,
+                    )
+                    labels0 = sp.fit_predict(Xs_sub)
+                else:
+                    self._notify(f'Unsupported method for per-FOV: {method}')
+                    return
+            except Exception as e:
+                self._notify(f'FOV={fov} K-Means failed: {e}')
+                continue
+            # 1..K labels per FOV (0 reserved for outliers/unassigned).
+            self.df_test.loc[self.df_test.index[idx_global], 'cluster_local'] = labels0 + 1
+            n_done += 1
+
+        # Mirror into the global cache used by save_results.
+        try:
+            self.df_test_all = self.df_test.copy()
+        except Exception:
+            pass
+
+        self._notify(
+            f'Per-FOV K-Means ({method}) done on {n_done}/{len(selected)} '
+            f'FOVs. Click Save Results to write clustered.xlsx.'
+        )
 
     def save_results(self):
         # IMPORTANT: save should use the global/full table, not self.df_test (current loc subset)
@@ -8985,8 +9190,10 @@ def _is_valid_model_choice(name: str, extra_roots=()) -> bool:
 # v4 (cpsam) mostly ignores this and segments the whole image regardless;
 # matters more for v2 models fed multi-channel input.
 _CELLPOSE_CHANNEL_AUTO_LABEL = '(auto / from config)'
+_CELLPOSE_CHANNEL_RGB3_LABEL = 'RGB all 3 channels (v4 cpsam native)'
 _CELLPOSE_CHANNEL_PRESETS = (
     _CELLPOSE_CHANNEL_AUTO_LABEL,
+    _CELLPOSE_CHANNEL_RGB3_LABEL,
     'grayscale [0,0]',
     'R only [1,0]',
     'G only [2,0]',
@@ -9038,15 +9245,42 @@ def _input_kind_cfg_to_preset(cfg_value):
     return _INPUT_KIND_AUTO_LABEL
 
 
+_CHANNELS_SKIP_SENTINEL = '__skip_channels__'  # distinct from None (= auto)
+
+
 def _channel_preset_to_kwarg(label):
-    """Parse a preset string back to [main, aux] ints, or ``None`` for auto."""
+    """Parse a preset string into the value the call site should use:
+
+    - ``None``                        : "(auto)" — fall through to
+                                         model config / legacy default.
+    - ``_CHANNELS_SKIP_SENTINEL``     : "RGB all 3" — explicitly skip
+                                         the channels= kwarg so v4 cpsam
+                                         picks up channel_axis=-1 and
+                                         uses every channel.
+    - ``[main, aux]``                 : explicit v2 channel choice.
+    """
     if not label or label == _CELLPOSE_CHANNEL_AUTO_LABEL:
         return None
+    if label == _CELLPOSE_CHANNEL_RGB3_LABEL:
+        return _CHANNELS_SKIP_SENTINEL
     import re as _re
     m = _re.search(r'\[(\d+),\s*(\d+)\]', str(label))
     if not m:
         return None
     return [int(m.group(1)), int(m.group(2))]
+
+
+def _resolve_channels(gui_override, cfg_channels):
+    """Combine a GUI override + config.channels into the final value
+    passed to ``_run_infer_subprocess``. Returns ``None`` when the user
+    explicitly asked to skip the kwarg, otherwise the [main, aux] list."""
+    if gui_override == _CHANNELS_SKIP_SENTINEL:
+        return None  # runner will skip channels= kwarg
+    if isinstance(gui_override, list):
+        return gui_override
+    if isinstance(cfg_channels, list):
+        return cfg_channels
+    return [0, 0]
 
 
 # ---- Per-model config -----------------------------------------------------
@@ -9888,14 +10122,20 @@ class BarcodeSeg(Container):
             'Approximate cytoplasm diameter in pixels. Typically ~2× the '
             'nucleus diameter.')
         _tt(self.n_channels_choice,
-            'Cellpose channels=[main, aux] for the N head. '
-            '0=grayscale, 1=R, 2=G, 3=B. "(auto)" defers to the per-'
-            'model config.json or the legacy default [0,0]. v4 (cpsam) '
-            'mostly ignores this — it segments the whole multi-channel '
-            'image regardless. Mostly relevant for v2 + RGB input.')
+            'Cellpose channels for the N head.\n'
+            '• v2 cellpose: channels=[main, aux] picks at most 2 of the '
+            'RGB channels (0=gray, 1=R, 2=G, 3=B). "R + B aux [1,3]" '
+            'means main = R, aux = B; that\'s the cap — v2 cannot use '
+            'all 3 RGB channels.\n'
+            '• v4 cpsam: "RGB all 3 channels" feeds full HxWx3 with '
+            'channel_axis=-1, model uses every channel. Other presets '
+            'are mostly ignored on v4 because cpsam handles channels '
+            'internally.\n'
+            '"(auto)" defers to the model\'s config.json or the legacy '
+            'default [0,0].')
         _tt(self.p_channels_choice,
-            'Cellpose channels=[main, aux] for the P head. Same '
-            'conventions as N (see N tooltip).')
+            'Cellpose channels for the P head. Same conventions as '
+            'N — see N tooltip for the v2 vs v4 difference.')
         _tt(self.n_input_kind,
             'Which form of the input image is fed to the N model. '
             '"(auto from model)" = use the model\'s config.json if it '
@@ -10794,8 +11034,8 @@ class BarcodeSeg(Container):
         overwrites the label.
         """
         import time as _time
-        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
-        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
+        n_channels = _resolve_channels(n_chan_override, n_cfg.get('channels'))
+        p_channels = _resolve_channels(p_chan_override, p_cfg.get('channels'))
         total = len(tifs)
         per_fov = 100 / max(total, 1)
         batch_start = _time.time()
@@ -11187,8 +11427,8 @@ class BarcodeSeg(Container):
         n_cfg = n_cfg or {}
         p_cfg = p_cfg or {}
         # Resolution: GUI override > model config > legacy [0,0].
-        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
-        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
+        n_channels = _resolve_channels(n_chan_override, n_cfg.get('channels'))
+        p_channels = _resolve_channels(p_chan_override, p_cfg.get('channels'))
 
         n_mask = None
         p_mask = None
@@ -11434,7 +11674,7 @@ class BarcodeSeg(Container):
             gui_kind_override=_input_kind_preset_to_cfg(self.n_input_kind.value),
         )
         n_chan_override = _channel_preset_to_kwarg(self.n_channels_choice.value)
-        n_channels = n_chan_override or n_cfg.get('channels') or [0, 0]
+        n_channels = _resolve_channels(n_chan_override, n_cfg.get('channels'))
         self.stop_btn.enabled = True
         try:
             mask = _run_infer_subprocess(
@@ -11479,7 +11719,7 @@ class BarcodeSeg(Container):
             gui_kind_override=_input_kind_preset_to_cfg(self.p_input_kind.value),
         )
         p_chan_override = _channel_preset_to_kwarg(self.p_channels_choice.value)
-        p_channels = p_chan_override or p_cfg.get('channels') or [0, 0]
+        p_channels = _resolve_channels(p_chan_override, p_cfg.get('channels'))
         self.stop_btn.enabled = True
         try:
             mask = _run_infer_subprocess(

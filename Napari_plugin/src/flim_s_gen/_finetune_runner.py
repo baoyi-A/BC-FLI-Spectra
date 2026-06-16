@@ -136,7 +136,7 @@ def _run_v2(cfg) -> int:
     if op == "infer":
         eval_kw = dict(
             diameter=float(cfg.get("diameter", 0) or None),
-            channels=cfg.get("channels", [0, 0]),
+            channels=cfg.get("channels") or [0, 0],
         )
         if "cellprob_threshold" in cfg and cfg["cellprob_threshold"] is not None:
             eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
@@ -223,6 +223,12 @@ def _run_v4(cfg) -> int:
             eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
         if "flow_threshold" in cfg and cfg["flow_threshold"] is not None:
             eval_kw["flow_threshold"] = float(cfg["flow_threshold"])
+        # Pass channels only when the caller explicitly set them. None /
+        # absence means "let cpsam use every channel" (default) — that's
+        # the path the "RGB all 3 channels" GUI preset takes.
+        ch = cfg.get("channels")
+        if ch is not None:
+            eval_kw["channels"] = list(ch)
         out = base_model.eval(img, **eval_kw)
         masks = out[0] if isinstance(out, (tuple, list)) else out
         if isinstance(masks, list):
