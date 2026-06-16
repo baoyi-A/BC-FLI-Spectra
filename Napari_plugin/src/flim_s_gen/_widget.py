@@ -5139,6 +5139,102 @@ class SeededKMeans(Container):
             except Exception as e:
                 self._notify(f"Failed to draw/save text labels for FOV {fov}: {e}")
 
+            # Push the classification result into napari so the user can
+            # eyeball which cells belong to which class right after Save
+            # Results. We add:
+            #   - the FastFLIM RGB render (if cached on disk) as the
+            #     background image, so cell positions are visible
+            #   - the colour+text PNG of the classification as an Image
+            #     layer (RGB) sitting on top — each class has its own
+            #     hue and the tag (e.g. N1, P7) is drawn inside the cell
+            # Layers are named ``cls_<fov>`` and replace any prior copy
+            # so re-running Save Results doesn't pile duplicates.
+            try:
+                self._add_classification_to_viewer(
+                    fov_name=str(fov),
+                    intensity_dir=int_folder,
+                    color_text_rgb=mask_color_text,
+                    cls_mask=mask_global,
+                )
+            except Exception as e:
+                self._notify(f"Couldn't add classification layer for FOV {fov}: {e}")
+
+    def _add_classification_to_viewer(self, *, fov_name, intensity_dir,
+                                       color_text_rgb, cls_mask):
+        """Add (or replace) the classification overlay in napari so the
+        user can compare against cell positions immediately after Save
+        Results. Falls back to grayscale sum.tif background when no
+        FastFLIM render is available on disk."""
+        import os as _os
+        from pathlib import Path as _Path
+        # 1) background image — prefer the FastFLIM RGB render PNG
+        bg_loaded_name = None
+        for cand in (
+            _Path(intensity_dir).parent / f'{fov_name}_fastflim_rgb.png',
+            _Path(intensity_dir) / f'{fov_name}_sum.tif',
+        ):
+            if cand.is_file():
+                lyr_name = f'cls_bg_{fov_name}'
+                try:
+                    if lyr_name in self.viewer.layers:
+                        del self.viewer.layers[lyr_name]
+                except Exception:
+                    pass
+                try:
+                    if cand.suffix.lower() == '.png':
+                        from PIL import Image as _PIL
+                        bg = np.asarray(_PIL.open(str(cand)))
+                        self.viewer.add_image(bg, name=lyr_name, rgb=True,
+                                                blending='translucent')
+                    else:
+                        bg = tiff.imread(str(cand))
+                        self.viewer.add_image(bg, name=lyr_name,
+                                                colormap='gray',
+                                                blending='additive')
+                    bg_loaded_name = lyr_name
+                    break
+                except Exception:
+                    continue
+        # 2) overlay: the colour+text RGB. Looks the same as the saved
+        # *-cls-color-text.tif but lives in memory so toggling visibility
+        # is instant.
+        if color_text_rgb is not None:
+            lyr_name = f'cls_overlay_{fov_name}'
+            try:
+                if lyr_name in self.viewer.layers:
+                    del self.viewer.layers[lyr_name]
+            except Exception:
+                pass
+            try:
+                self.viewer.add_image(
+                    color_text_rgb, name=lyr_name, rgb=True,
+                    blending='translucent', opacity=0.7,
+                )
+            except Exception:
+                pass
+        # 3) also expose the raw class-id mask as a Labels layer so the
+        # user can hover for the class number / use napari label tools.
+        if cls_mask is not None:
+            lyr_name = f'cls_labels_{fov_name}'
+            try:
+                if lyr_name in self.viewer.layers:
+                    del self.viewer.layers[lyr_name]
+            except Exception:
+                pass
+            try:
+                self.viewer.add_labels(
+                    cls_mask.astype(np.int32), name=lyr_name,
+                    opacity=0.5,
+                )
+            except Exception:
+                pass
+        if bg_loaded_name is None:
+            self._notify(
+                f'Classification layer added for {fov_name} '
+                f'(no FastFLIM/sum background found in '
+                f'{_os.path.dirname(intensity_dir)}).'
+            )
+
     def _merge_clustered(self, old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
 
         def _dbg_cols(df, name):
