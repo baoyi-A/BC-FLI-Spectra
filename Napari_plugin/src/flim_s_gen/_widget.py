@@ -1097,6 +1097,16 @@ class PTUReader(Container):
         self.clahe_tile = SpinBox(
             label='CLAHE tile size (px)', min=8, max=512, step=4, value=64,
         )
+        # One-click bypass for all display-time contrast enhancement so
+        # the user can see the "pure" min/max τ + intensity render.
+        # Turning it OFF puts the sliders back to sensible defaults.
+        # We track the last-good values so the toggle round-trips
+        # cleanly instead of restoring to whatever we hardcoded here.
+        self.no_enhance = widgets.CheckBox(
+            text='No enhancement (raw min/max only — bypass CLAHE + γ + floor)',
+            value=False,
+        )
+        self.no_enhance.changed.connect(self._on_no_enhance_toggled)
         # Manual re-save button. The initial Process pass persists the
         # FastFLIM RGB PNG + grayscale seg-input TIF using whatever
         # contrast was active at that moment, but subsequent slider /
@@ -1196,6 +1206,15 @@ class PTUReader(Container):
         self.input_dir = widgets.FileEdit(label='PTU Folder', mode='d', value=_remembered_in)
         self.output_dir = widgets.FileEdit(label='Output Folder', mode='d', value=_remembered_out)
         self.frame = SpinBox(label='Frame (-1 for all)', min=-1, max=80, step=1, value=-1)
+        # Skip PTUs whose outputs already exist — makes a batch resumable
+        # after a crash/cancel and avoids re-decoding finished files. Untick
+        # to force a full re-process.
+        self.skip_done = widgets.CheckBox(text='Skip already-processed PTUs', value=True)
+        _tt(self.skip_done,
+            'When on, a PTU is skipped if its intensity/<name>_sum.tif, '
+            'flim_stack/<name>_sum.tif and <name>_fastflim_tau.tif all '
+            'already exist. Lets you resume an interrupted batch without '
+            're-decoding finished files. Turn off to force re-processing.')
         self.process_btn = PushButton(text='▶ Process / Re-render existing')
         self.process_btn.changed.connect(self._on_process)
         _style_process_button(self.process_btn)
@@ -1236,6 +1255,7 @@ class PTUReader(Container):
         self.append(self.input_dir)
         self.append(self.output_dir)
         self.append(self.frame)
+        self.append(self.skip_done)
 
         _append_section_divider(self, '— ⏱ FastFLIM parameters —')
         self.append(self.tau_min)
@@ -1261,6 +1281,14 @@ class PTUReader(Container):
         self.append(self.brightness_floor)
         self.append(self.use_clahe)
         self.append(self.clahe_tile)
+        self.append(self.no_enhance)
+        _tt(self.no_enhance,
+            'One-click bypass of all display-time contrast enhancement.\n'
+            'When TICKED, sets CLAHE=off, brightness gamma=1.0 (linear), '
+            'brightness floor=0.0 → the render is a pure min/max stretch '
+            'of τ and intensity. Toggling it back OFF restores the last '
+            'edited values (or the defaults CLAHE on / γ 0.55 / floor '
+            '0.10 on the first toggle).')
 
         _append_section_divider(self, '— ▶ Process —')
         self.append(self.process_btn)
@@ -1412,6 +1440,45 @@ class PTUReader(Container):
         (80, 40),    # idx 4 — aggressive
         (75, 50),    # idx 5 — very aggressive
     )
+
+    def _on_no_enhance_toggled(self, checked):
+        """Bypass all display-time contrast tweaks so the render is a
+        pure min/max stretch. Remembers the previous knob values so
+        toggling back OFF restores them.
+
+        Enhancements affected:
+          - use_clahe          (CLAHE per tile equalisation)
+          - brightness_gamma   (>0 curve — <1.0 lifts shadows)
+          - brightness_floor   (min brightness for signal pixels)
+
+        Left alone (they define the min/max regime the user still wants):
+          - tau_min / tau_max     (lifetime colormap range)
+          - intensity_clip        (upper percentile)
+        """
+        self._suppress_redraw = True
+        try:
+            if checked:
+                # Save current knobs, then flatten.
+                self._pre_no_enhance = dict(
+                    use_clahe=bool(self.use_clahe.value),
+                    brightness_gamma=float(self.brightness_gamma.value),
+                    brightness_floor=float(self.brightness_floor.value),
+                )
+                self.use_clahe.value = False
+                self.brightness_gamma.value = 1.0
+                self.brightness_floor.value = 0.0
+            else:
+                # Restore prior values (or sensible defaults on first flip).
+                prev = getattr(self, '_pre_no_enhance', None) or {}
+                self.use_clahe.value = bool(prev.get('use_clahe', True))
+                self.brightness_gamma.value = float(prev.get('brightness_gamma', 0.55))
+                self.brightness_floor.value = float(prev.get('brightness_floor', 0.10))
+        finally:
+            self._suppress_redraw = False
+        try:
+            self._redraw_all_fastflim()
+        except Exception:
+            pass
 
     def _on_auto_contrast(self, scope: str = 'all', *_args):
         """Cycle contrast one step tighter for the given scope.
@@ -1604,10 +1671,15 @@ class PTUReader(Container):
         """
         out_int = out_dir / 'intensity'
         n_total = len(ptu_files)
-        # Drop any stale cache and reset the auto-cycle so the first FOV
-        # we load triggers the data-driven default.
+        # Drop any stale cache and reset ALL cycle counters so the first
+        # FOV we load re-triggers the data-driven default. Post-refactor
+        # the auto-contrast lives on _auto_cycle_idx_all / _lifetime /
+        # _intensity; the legacy _auto_cycle_idx is kept in sync.
         self._fastflim_cache = {}
         self._auto_cycle_idx = -1
+        self._auto_cycle_idx_all = -1
+        self._auto_cycle_idx_lifetime = -1
+        self._auto_cycle_idx_intensity = -1
 
         self.progress.min = 0
         self.progress.max = max(1, n_total * 100)
@@ -1710,14 +1782,25 @@ class PTUReader(Container):
             show_warning(f"No .ptu files in {in_dir}")
             return
 
-        # Detect already-processed PTUs and ask whether to overwrite.
+        # Detect already-processed PTUs.
+        skip_done = bool(self.skip_done.value)
         already_done = []
         for p in ptu_files:
             sum_int = out_int / f'{p.stem}_sum.tif'
             sum_stack = out_stack / f'{p.stem}_sum.tif'
             if sum_int.exists() or sum_stack.exists():
                 already_done.append(p.name)
-        if already_done:
+        # When "Skip already-processed" is ON we resume silently — no
+        # dialog; the worker skips finished files one-by-one (true
+        # resume after a crash/cancel, only the missing PTUs get
+        # decoded).  EXCEPTION: when EVERY PTU is already done, silent
+        # resume would just say "all done, next step" — but the user's
+        # intent when re-clicking Process on a fully-decoded folder is
+        # usually to tweak the FastFLIM display (gamma/CLAHE/tau range)
+        # and see the render again.  So in that case we always show
+        # the Re-process / Re-render / Cancel dialog even with skip on.
+        all_done_now = bool(already_done) and len(already_done) == len(ptu_files)
+        if already_done and (all_done_now or not skip_done):
             preview = '\n  '.join(already_done[:5])
             more = f'\n  ... and {len(already_done) - 5} more' if len(already_done) > 5 else ''
             msg = (
@@ -1761,6 +1844,19 @@ class PTUReader(Container):
         clip_pct = float(self.intensity_clip.value)
 
         n_total = len(ptu_files)
+        # How many will actually be decoded (skip_done resumes the rest).
+        to_process = n_total - (len(already_done) if skip_done else 0)
+        # Gentle heads-up for big batches: each PTU is ~30-60s decode + a few
+        # GB transient RAM, so a large folder is slow and memory-heavy even
+        # though decay stacks are no longer kept in the viewer. Suggest
+        # splitting into subfolders if it's a lot. Non-blocking — just info.
+        if to_process >= 10:
+            est_min = to_process * 1.5
+            show_info(
+                f'{to_process} PTUs to decode (~{est_min:.0f} min). If the '
+                f'machine gets tight or you want it in chunks, move some PTUs '
+                f'into subfolders and process a folder at a time — "Skip '
+                f'already-processed" lets you resume safely either way.')
         self.progress.min = 0
         self.progress.max = max(1, n_total * 100)
         self.progress.value = 0
@@ -1770,7 +1866,7 @@ class PTUReader(Container):
         worker = self._process_worker(
             ptu_files=ptu_files, out_dir=out_dir, out_int=out_int, out_stack=out_stack,
             frame=frame, tau_min=tau_min, tau_max=tau_max,
-            tau_res=tau_res, clip_pct=clip_pct,
+            tau_res=tau_res, clip_pct=clip_pct, skip_done=skip_done,
         )
         worker.yielded.connect(self._on_worker_yield)
         worker.returned.connect(self._on_worker_done)
@@ -1779,22 +1875,84 @@ class PTUReader(Container):
 
     @thread_worker
     def _process_worker(self, ptu_files, out_dir, out_int, out_stack, frame,
-                        tau_min, tau_max, tau_res, clip_pct):
+                        tau_min, tau_max, tau_res, clip_pct, skip_done=False):
         n_total = len(ptu_files)
         for file_idx, p in enumerate(ptu_files):
             base = file_idx * 100
+            # Resume support: if skip_done is on and this PTU's three key
+            # outputs already exist, skip the slow decode entirely. A file
+            # only counts as "done" when intensity sum + flim_stack sum +
+            # fastflim tau are ALL present, so a half-written file (crash
+            # mid-decode) is re-processed rather than left broken.
+            if skip_done:
+                sum_int = out_int / f'{p.stem}_sum.tif'
+                sum_stack = out_stack / f'{p.stem}_sum.tif'
+                tau_tif = out_dir / f'{p.stem}_fastflim_tau.tif'
+                if sum_int.exists() and sum_stack.exists() and tau_tif.exists():
+                    yield ('status', (file_idx + 1) * 100,
+                           f'[{file_idx+1}/{n_total}] SKIP {p.name} (already processed)')
+                    continue
             try:
                 yield ('status', base + 2, f'[{file_idx+1}/{n_total}] Loading {p.name} (may take ~30-60s)...')
                 raw = _load_ptu(p, frame)
-                arr = np.array(raw)
+                # asarray (NOT np.array) — decode_image already returns a
+                # fresh array; np.array() would force a needless full copy
+                # (~3.4 GB for a 2048x2048x3x134 cube), the difference
+                # between fitting in RAM and a MemoryError on 32 GB boxes.
+                arr = np.asarray(raw)
+                # Collapse any leading frame/extra dims down to 4D
+                # (Y, X, C, bins). frame=-1 already yields a length-1 T
+                # axis, so this is normally a zero-cost squeeze. If a real
+                # multi-frame stack slips through, sum with an explicit
+                # uint32 accumulator instead of letting numpy promote to
+                # int64 — int64 would DOUBLE the cube's RAM footprint.
                 while arr.ndim > 4:
-                    arr = arr.sum(axis=0)
+                    if arr.shape[0] == 1:
+                        arr = arr[0]   # frame=-1 normal path: uint16 view
+                    else:
+                        # Real multi-frame sum. Each voxel is a single
+                        # (Y,X,C,time-bin) photon count — sparse (photons
+                        # spread across 134 bins), so even summed over frames
+                        # it almost always still fits uint16. But a hot voxel
+                        # across many frames could top 65535 and silently
+                        # wrap. Sum in uint32 to be safe, then downcast back
+                        # to uint16 when it actually fits (the common case)
+                        # so we don't carry a 2x-size cube downstream.
+                        _summed = arr.sum(axis=0, dtype=np.uint32)
+                        if int(_summed.max()) <= 65535:
+                            arr = _summed.astype(np.uint16)
+                        else:
+                            arr = _summed
+                        del _summed
+                # Drop the decode buffer's reference now so the 3.4 GB raw
+                # cube can be freed before the downstream sums allocate
+                # their own temporaries.
+                del raw
 
                 if arr.ndim == 4:
                     yield ('status', base + 35, f'[{file_idx+1}/{n_total}] Summing intensity / decay stacks...')
                     intensity = arr.sum(axis=3)
                     stack_sum = arr.sum(axis=2)
                     total_int = stack_sum.sum(axis=2)
+
+                    # Overflow guard (warn-only, format unchanged): the
+                    # intensity TIFs below are written as uint16, but these
+                    # are per-pixel TOTAL photon counts (summed over 134
+                    # bins) — a bright pixel can exceed 65535 and would
+                    # silently wrap on the uint16 cast. We don't change the
+                    # on-disk dtype (downstream BarcodeSeg / FLIM-S expect
+                    # uint16), but we surface a clear warning so a wrapped
+                    # value is never mistaken for real data.
+                    _imax = int(intensity.max()) if intensity.size else 0
+                    _tmax = int(total_int.max()) if total_int.size else 0
+                    if _imax > 65535 or _tmax > 65535:
+                        yield ('warn',
+                               f'{p.name}: intensity exceeds uint16 '
+                               f'(max per-channel={_imax}, sum={_tmax} > 65535). '
+                               f'The *_sum.tif / *_ch*.tif will WRAP on the '
+                               f'uint16 cast — those intensity values are '
+                               f'unreliable for this FOV. (tau / decay stacks '
+                               f'are unaffected.)')
 
                     n_ch = intensity.shape[2]
                     for ch in range(n_ch):
@@ -1806,7 +1964,16 @@ class PTUReader(Container):
                         stack_ch = arr[..., ch, :].transpose(2, 0, 1)
                         tifffile.imwrite(out_stack / f"{p.stem}_ch{ch + 1}.tif",
                                          stack_ch.astype(np.uint16), imagej=True)
-                        yield ('layer', f"{p.stem}_ch{ch + 1}", stack_ch.astype(np.uint16), {})
+                        # Deliberately NOT added as a napari layer. Each decay
+                        # stack is 134x2048x2048 (~1.1 GB); with many PTUs x
+                        # channels these pile up to tens of GB in the viewer
+                        # and were the main out-of-memory cause. They're saved
+                        # to flim_stack/ on disk and nobody scrolls 134 time
+                        # bins visually anyway — the FastFLIM RGB overlay below
+                        # is the visualization. Opt back in with
+                        # BCFLIM_SHOW_DECAY_STACKS=1 if you really need it.
+                        if _os_init.environ.get('BCFLIM_SHOW_DECAY_STACKS') == '1':
+                            yield ('layer', f"{p.stem}_ch{ch + 1}", stack_ch.astype(np.uint16), {})
 
                     yield ('status', base + 75, f'[{file_idx+1}/{n_total}] Writing sum TIFs...')
                     tifffile.imwrite(out_int / f"{p.stem}_sum.tif",
@@ -1847,8 +2014,44 @@ class PTUReader(Container):
                     yield ('warn', f'Unexpected array dims {arr.ndim} for {p.name}')
 
                 yield ('status', (file_idx + 1) * 100, f'[{file_idx+1}/{n_total}] Done: {p.name}')
+            except MemoryError:
+                import gc as _gc
+                _gc.collect()
+                yield ('warn',
+                       f'{p.name}: OUT OF MEMORY. A decoded PTU here is ~3.4 GB '
+                       f'(2048x2048x3x134). Fixes, in order: (1) remove big '
+                       f'layers from the napari layer list (right panel) — the '
+                       f'on-disk TIFs are kept, only the in-memory copies go; '
+                       f'(2) process fewer PTUs at once (move some out of the '
+                       f'PTU folder into subfolders and do them in batches); '
+                       f'(3) close other apps. Then retry.')
             except Exception as e:
                 yield ('warn', f'Failed {p.name}: {e}')
+            finally:
+                # Free this file's big arrays before the next iteration so a
+                # batch of 19x 3.4 GB cubes can't pile up in the worker
+                # thread (CPython won't always collect them promptly under a
+                # tight loop). Explicit guarded dels — dynamic del-by-name
+                # via exec() does NOT touch a function's locals in CPython,
+                # so each name must be spelled out.
+                import gc as _gc
+                try: del raw
+                except NameError: pass
+                try: del arr
+                except NameError: pass
+                try: del intensity
+                except NameError: pass
+                try: del stack_sum
+                except NameError: pass
+                try: del total_int
+                except NameError: pass
+                try: del tau_map
+                except NameError: pass
+                try: del stack_ch
+                except NameError: pass
+                try: del summed_stack
+                except NameError: pass
+                _gc.collect()
         return True
 
     def _on_worker_yield(self, payload):
@@ -2102,27 +2305,44 @@ def Gen_excel_multi(
             existing_df = pd.read_excel(save_path)
         except Exception as e:
             print(f'[FLIM-S] failed to read existing {save_path}: {e} — overwriting.')
-            notifications.show_warning(
-                f'Existing FLIM-S.xlsx unreadable ({e}); overwriting it.')
             existing_df = None
+
+    # Guard: a FOV that yields ZERO rows (every cell below threshold) must
+    # NOT wipe the accumulated workbook. An empty new_df has no 'FOV'
+    # column, so without this guard the merge below would fall through to
+    # `combined_df = new_df` and overwrite FLIM-S.xlsx with nothing,
+    # destroying every previously-processed FOV in a batch run.
+    #
+    # NOTE: all status here goes to print() (console/log) only — NOT
+    # napari notifications. Gen_excel_multi runs once PER FOV, so a popup
+    # here spams one-per-file during a batch. The single end-of-run summary
+    # is shown by _on_flims_done / _on_flims_all_done instead.
+    if new_df.empty:
+        if existing_df is not None:
+            print(f'[FLIM-S] FOV "{fov}": 0 cells passed threshold — '
+                  f'FLIM-S.xlsx left unchanged ({len(existing_df)} rows kept).')
+            return existing_df
+        # no existing file either: fall through and write the empty frame
+
     if (existing_df is not None
             and 'FOV' in existing_df.columns
             and 'FOV' in new_df.columns):
-        kept = existing_df[existing_df['FOV'] != fov]
+        # dtype-safe FOV match: a purely-numeric FOV name can be read back
+        # from Excel as int64 and would never equal the str we pass here,
+        # leaving the old rows in place and duplicating the FOV on re-run.
+        # Compare as strings on both sides.
+        kept = existing_df[existing_df['FOV'].astype(str) != str(fov)]
         combined_df = pd.concat([kept, new_df], ignore_index=True)
         n_kept = len(kept)
         n_new = len(new_df)
-        notifications.show_info(
-            f'FLIM-S.xlsx: {n_kept} prior rows kept, {n_new} new rows for FOV "{fov}" '
-            f'appended (total {n_kept + n_new}).')
+        print(f'[FLIM-S] {n_kept} prior rows kept, {n_new} new rows for FOV '
+              f'"{fov}" appended (total {n_kept + n_new}).')
     else:
         combined_df = new_df
 
     combined_df.to_excel(save_path, index=False)
-    print(f'Excel file saved at {save_path} ({len(combined_df)} rows total)')
-    notifications.show_info(
-        f'Excel saved: {save_path} ({len(combined_df)} rows, '
-        f'{combined_df["FOV"].nunique() if "FOV" in combined_df.columns else "?"} FOVs)')
+    print(f'Excel file saved at {save_path} ({len(combined_df)} rows total, '
+          f'{combined_df["FOV"].nunique() if "FOV" in combined_df.columns else "?"} FOVs)')
     return combined_df
 
 if TYPE_CHECKING:
@@ -2850,12 +3070,18 @@ class Calculate_FLIM_S(Container):
     def _on_flims_all_done(self, result):
         ok, total = result
         self._progress.value = 100
+        try:
+            save_path = os.path.join(str(self._base_dir.value), 'FLIM-S.xlsx')
+        except Exception:
+            save_path = 'FLIM-S.xlsx'
         self._status_label.value = (
-            f'Batch FLIM-S done: {ok}/{total} FOVs processed.'
+            f'Batch FLIM-S done: {ok}/{total} FOVs -> {save_path}'
         )
         self._process_button.enabled = True
         self._process_all_button.enabled = True
-        show_info(f'Batch FLIM-S done: {ok}/{total} FOVs.')
+        # ONE summary popup at the end of the whole batch (per-FOV popups
+        # were removed from Gen_excel_multi so this is the only one).
+        show_info(f'Batch FLIM-S done: {ok}/{total} FOVs saved to {save_path}')
 
     @thread_worker
     def _flims_worker(self, stacks, seg_dict, params):
