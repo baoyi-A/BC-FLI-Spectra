@@ -61,7 +61,7 @@ need to be downloaded and the network speed.
 ---
 
 ## 📜 License
-MIT License (recommended for review and reuse).
+BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
 
 ---
 

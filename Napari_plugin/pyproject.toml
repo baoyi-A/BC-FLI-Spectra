@@ -7,15 +7,23 @@ build-backend = "setuptools.build_meta"
 name = "bc-flim-spectra"
 # Using setuptools_scm for versioning:
 # declare it as dynamic so tools don't expect a hard-coded value here.
-description = "BC-FLIM Spectral — a napari plugin"
+description = "Spectral-lifetime barcode decoding for FLIM images: a napari plugin"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "BSD-2-Clause" }
+license-files = ["LICENSE"]
 authors = [{ name = 'Baoyi Wang', email = "wang.baoyi@stu.pku.edu.cn" }]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Framework :: napari",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Image Processing",
 ]
 version = "0.1.0"
 # Runtime deps read by pip install . / -e .
@@ -35,12 +43,14 @@ dependencies = [
   "tqdm>=4.66",
   "magicgui>=0.8",
   "matplotlib>=3.7",
-  # Optional — only needed for SeededKMeans → Harmony calibration.
-  "harmonypy>=0.0.9 ; extra == 'harmony'",
 ]
 
+# harmonypy is needed only for the optional SeededKMeans / Harmony calibration
+# step, so it is declared as an extra rather than a runtime dependency:
+#   pip install "bc-flim-spectra[harmony]"
 [project.optional-dependencies]
 harmony = ["harmonypy>=0.0.9", "scikit-learn>=1.2"]
+testing = ["tox", "pytest", "pytest-cov", "pytest-qt", "napari", "pyqt5"]
 
 [project.urls]
 Homepage = "https://github.com/baoyi-A/BC-FLI-Spectra"
@@ -49,7 +59,9 @@ Issues = "https://github.com/baoyi-A/BC-FLI-Spectra/issues"
 # Let napari discover your plugin manifest (napari.yaml).
 # Put your napari.yaml under the top-level package `flim_s_gen/`.
 [project.entry-points."napari.manifest"]
-bc-flim-spectral = "flim_s_gen:napari.yaml"
+# This key MUST match the `name:` field of src/flim_s_gen/napari.yaml,
+# otherwise napari will not register the plugin.
+bc-flim-spectra = "flim_s_gen:napari.yaml"
 
 
 
