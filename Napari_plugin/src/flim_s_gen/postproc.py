@@ -141,42 +141,63 @@ def merge_fragments(
             out = remap[out]
 
     if close_holes_px and close_holes_px > 0:
-        # Per-label hole filling. For each cell, find background regions
-        # fully enclosed by that cell, and fill them in if their area is
-        # below the cap. Per-label rather than global so a hole next to
-        # another cell doesn't get "filled" by both — only the enclosing
-        # cell claims it.
+        # Per-label hole filling. Same semantics as before, but bbox-cropped
+        # per label so we don't do binary_fill_holes on the full 2048x2048
+        # array for every cell. Pad by 1 px to keep a background ring around
+        # the label so floodfill behaves correctly at the crop boundary.
+        H, W = out.shape
+        slices = _ndi.find_objects(out)
         filled = out.copy()
-        for lbl in range(1, int(out.max()) + 1):
-            region = out == lbl
-            if not region.any():
+        for lbl in range(1, len(slices) + 1):
+            sl = slices[lbl - 1]
+            if sl is None:
                 continue
-            fully_filled = _ndi.binary_fill_holes(region)
-            holes = fully_filled & ~region
+            pad = 1
+            y0 = max(0, sl[0].start - pad); y1 = min(H, sl[0].stop + pad)
+            x0 = max(0, sl[1].start - pad); x1 = min(W, sl[1].stop + pad)
+            crop = out[y0:y1, x0:x1]
+            region_c = (crop == lbl)
+            if not region_c.any():
+                continue
+            fully_filled = _ndi.binary_fill_holes(region_c)
+            holes = fully_filled & ~region_c
             if not holes.any():
                 continue
             hole_labels, _nh = _ndi.label(holes)
             if _nh == 0:
                 continue
             hole_sizes = np.bincount(hole_labels.ravel())
+            keep_holes = np.zeros(_nh + 1, dtype=bool)
             for h in range(1, _nh + 1):
                 if hole_sizes[h] <= close_holes_px:
-                    filled[hole_labels == h] = lbl
+                    keep_holes[h] = True
+            if keep_holes.any():
+                mask_fill = keep_holes[hole_labels]
+                filled[y0:y1, x0:x1][mask_fill] = lbl
         out = filled
 
     if erode_px and erode_px > 0:
-        # Per-label erosion: distance_transform_edt on the boolean mask of
-        # each label tells us how far each pixel is from THIS label's
-        # boundary. Demote any pixel within erode_px of the boundary to
-        # background. We do it per-label so two touching labels don't
-        # melt into each other through erosion.
+        # Per-label erosion via EDT, bbox-cropped. Pad by erode_px+1 so the
+        # distance-to-background is accurate within the original label
+        # interior (without padding, label pixels at the crop edge would
+        # see a phantom "boundary" from the crop edge itself).
+        H, W = out.shape
+        slices = _ndi.find_objects(out)
         eroded = np.zeros_like(out, dtype=np.int32)
-        for lbl in range(1, int(out.max()) + 1):
-            region = out == lbl
-            if not region.any():
+        pad = int(erode_px) + 1
+        for lbl in range(1, len(slices) + 1):
+            sl = slices[lbl - 1]
+            if sl is None:
                 continue
-            dist = _ndi.distance_transform_edt(region)
-            eroded[dist > erode_px] = lbl
+            y0 = max(0, sl[0].start - pad); y1 = min(H, sl[0].stop + pad)
+            x0 = max(0, sl[1].start - pad); x1 = min(W, sl[1].stop + pad)
+            region_c = (out[y0:y1, x0:x1] == lbl)
+            if not region_c.any():
+                continue
+            dist = _ndi.distance_transform_edt(region_c)
+            keep = dist > erode_px
+            if keep.any():
+                eroded[y0:y1, x0:x1][keep] = lbl
         out = eroded
 
     if dilate_px and dilate_px > 0:
@@ -494,40 +515,47 @@ def split_at_kinks(
     # 8-connectivity kernel for skeleton-pixel degree (count of skel neighbours).
     _DEG_KERNEL = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
 
-    for lbl in range(1, int(a.max()) + 1):
-        region = a == lbl
-        area = int(region.sum())
+    # Pre-compute bboxes for every label — find_objects returns a list of
+    # slice tuples, one per label id (None for missing ids). This lets us
+    # operate on a small crop per label instead of the full 2048×2048.
+    H, W = a.shape
+    slices = _ndi.find_objects(a)
+
+    for lbl in range(1, len(slices) + 1):
+        sl = slices[lbl - 1]
+        if sl is None:
+            continue
+        # Pad the bbox by 2 px so skeletonize / EDT don't see a phantom
+        # boundary at the crop edge.
+        pad = 2
+        y0 = max(0, sl[0].start - pad); y1 = min(H, sl[0].stop + pad)
+        x0 = max(0, sl[1].start - pad); x1 = min(W, sl[1].stop + pad)
+        crop = a[y0:y1, x0:x1]
+        region_c = (crop == lbl)
+        area = int(region_c.sum())
         if area == 0:
             continue
         # Skip splitting on labels that are already too small to subdivide.
         if area < 2 * min_piece_area:
             next_lbl += 1
-            out[region] = next_lbl
+            out[y0:y1, x0:x1][region_c] = next_lbl
             continue
 
-        skel = skeletonize(region)
+        skel = skeletonize(region_c)
         if not skel.any():
             next_lbl += 1
-            out[region] = next_lbl
+            out[y0:y1, x0:x1][region_c] = next_lbl
             continue
 
         # === Always cut at skeleton branch points (degree >= 3). ===
-        # User observation: at a Y/T/X-junction the natural split is the
-        # junction pixel itself, not somewhere 8 px down each arm. So we
-        # remove branch pixels from cut_skel BEFORE walking segments —
-        # this leaves the arms as independent branch-free chains for the
-        # subsequent kink detection.
         cut_skel = skel.copy()
         deg = _ndi.convolve(skel.astype(np.uint8), _DEG_KERNEL,
                             mode='constant', cval=0) * skel
         branch_mask = (deg >= 3) & skel
         if branch_mask.any():
-            # Erase branch pixels AND their immediate 8-neighbours that are
-            # also branch pixels (densely packed junctions) so the cut is
-            # clean (no 8-connectivity leak across the junction).
             cut_skel = cut_skel & ~branch_mask
 
-        # Re-walk on the branch-free skeleton.
+        # DP corner detection on each branch-free chain.
         segments = _walk_skeleton_segments(cut_skel)
         for seg in segments:
             cuts = _find_corners_dp(
@@ -536,50 +564,39 @@ def split_at_kinks(
             for ci in cuts:
                 for k in range(max(0, ci - (cut_width // 2)),
                                min(len(seg), ci + (cut_width // 2) + 1)):
-                    y, x = int(seg[k][0]), int(seg[k][1])
-                    cut_skel[y, x] = False
+                    yy, xx = int(seg[k][0]), int(seg[k][1])
+                    cut_skel[yy, xx] = False
 
-        # 8-connectivity for skeleton CC — skeletons are 8-connected (include
-        # diagonal neighbours). The default 4-connectivity would shatter a
-        # diagonal chain into a fragment per pixel.
+        # 8-connectivity CC on the cut skeleton.
         sub_labels, n_sub = _ndi.label(cut_skel, structure=np.ones((3, 3), dtype=np.uint8))
-        if n_sub == 0:
-            # All skeleton was cut away — keep original as one piece.
+        if n_sub == 0 or n_sub == 1:
             next_lbl += 1
-            out[region] = next_lbl
-            continue
-        if n_sub == 1:
-            # No effective cut; keep as a single label.
-            next_lbl += 1
-            out[region] = next_lbl
+            out[y0:y1, x0:x1][region_c] = next_lbl
             continue
 
-        # Re-grow each sub-skeleton to full thickness via Voronoi.
+        # Voronoi-regrow each sub-skeleton to full thickness on the crop.
         sources = sub_labels > 0
         if not sources.any():
             next_lbl += 1
-            out[region] = next_lbl
+            out[y0:y1, x0:x1][region_c] = next_lbl
             continue
         _dist, (iy, ix) = _ndi.distance_transform_edt(
             ~sources, return_indices=True,
         )
         nearest = sub_labels[iy, ix]
 
-        # For each sub-label, mask to the region and check size; collect.
-        local_assign = np.zeros_like(out)
+        # Assign each region-crop pixel its sub-label; drop tiny pieces.
+        local_assign = np.zeros_like(crop, dtype=np.int32)
         for sub in range(1, n_sub + 1):
-            piece = region & (nearest == sub)
+            piece = region_c & (nearest == sub)
             piece_area = int(piece.sum())
             if piece_area < min_piece_area:
-                # Too small — fold it into the largest neighbour sub later.
                 continue
             next_lbl += 1
             local_assign[piece] = next_lbl
 
-        # Anything in region not yet assigned (because its nearest sub was
-        # too small or got dropped) — re-attach to the nearest *surviving*
-        # sub. Re-run Voronoi using the surviving sub-skeleton pixels.
-        leftover = region & (local_assign == 0)
+        # Re-attach leftover region pixels to nearest surviving sub.
+        leftover = region_c & (local_assign == 0)
         if leftover.any() and local_assign.max() > 0:
             surviving = local_assign > 0
             _, (iy2, ix2) = _ndi.distance_transform_edt(
@@ -587,11 +604,15 @@ def split_at_kinks(
             )
             local_assign[leftover] = local_assign[iy2, ix2][leftover]
 
-        out[region] = local_assign[region]
-        # If somehow nothing survived, fall back to keeping as one piece.
-        if not (out[region] > 0).any():
+        # Write local_assign back to the global out array via the bbox slice.
+        # Only overwrite the region pixels (not the padding background).
+        assign_mask = region_c & (local_assign > 0)
+        out_slice = out[y0:y1, x0:x1]
+        out_slice[assign_mask] = local_assign[assign_mask]
+        # If nothing survived, fall back to keeping as one piece.
+        if not (out_slice[region_c] > 0).any():
             next_lbl += 1
-            out[region] = next_lbl
+            out_slice[region_c] = next_lbl
 
     # Repack labels 1..M (close any gaps the per-label loop left).
     uniq = np.unique(out)

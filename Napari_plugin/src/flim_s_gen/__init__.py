@@ -10,6 +10,30 @@ except ImportError:
     except ImportError:
         __version__ = "unknown"
 
+# Enable Python faulthandler so that a future Qt fast-fail / segfault /
+# stack overrun dumps the full C-Python stack into a file BEFORE the
+# process dies. Without this the OS just kills python.exe and we get no
+# Python-side traceback at all (the user sees "napari closed silently").
+# Lab-machine context: PyQt5 5.15.2 + napari Labels paintbrush has been
+# observed to fast-fail (0xc0000409 STATUS_STACK_BUFFER_OVERRUN at
+# Qt5Core.dll+0x204e8) on bandwidth-constrained Win11 boxes — when it
+# happens again, the file below will show exactly which Python frame
+# triggered it.
+try:
+    import faulthandler as _fh
+    import os as _fh_os
+    import tempfile as _fh_tempfile
+    if not _fh.is_enabled():
+        # Append-mode so consecutive crashes accumulate. Lives in temp
+        # because anywhere under the install tree would be read-only on a
+        # shared lab machine.
+        _fh_log_path = _fh_os.path.join(
+            _fh_tempfile.gettempdir(), 'bcflim_faulthandler.log')
+        _fh_log = open(_fh_log_path, 'a', buffering=1)
+        _fh.enable(file=_fh_log, all_threads=True)
+except Exception:
+    pass
+
 from ._reader import napari_get_reader
 from ._sample_data import make_sample_data
 from ._widget import (
