@@ -1,6 +1,13 @@
 # 🔬 SLIC (Spectral-Lifetime Indexing of Cells) Tools
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
+[![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
+
 This repository contains two independent tools for barcode analysis in FLIM experiments:
+
+Each tagged release is archived on Zenodo. The DOI above always resolves to the
+most recent version; to cite the exact version described in the manuscript, use
+the version DOI listed on the Zenodo record.
 
 ## 1. 🧩 Napari Plugin — Single‑Anchor Barcode Analysis
 
