@@ -142,6 +142,8 @@ def _run_v2(cfg) -> int:
             eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
         if "flow_threshold" in cfg and cfg["flow_threshold"] is not None:
             eval_kw["flow_threshold"] = float(cfg["flow_threshold"])
+        if "niter" in cfg and cfg["niter"] is not None:
+            eval_kw["niter"] = int(cfg["niter"])
         out = base_model.eval(cfg["img"], **eval_kw)
         masks = out[0] if isinstance(out, (tuple, list)) else out
         if isinstance(masks, list):
@@ -223,6 +225,8 @@ def _run_v4(cfg) -> int:
             eval_kw["cellprob_threshold"] = float(cfg["cellprob_threshold"])
         if "flow_threshold" in cfg and cfg["flow_threshold"] is not None:
             eval_kw["flow_threshold"] = float(cfg["flow_threshold"])
+        if "niter" in cfg and cfg["niter"] is not None:
+            eval_kw["niter"] = int(cfg["niter"])
         # Pass channels only when the caller explicitly set them. None /
         # absence means "let cpsam use every channel" (default) — that's
         # the path the "RGB all 3 channels" GUI preset takes.

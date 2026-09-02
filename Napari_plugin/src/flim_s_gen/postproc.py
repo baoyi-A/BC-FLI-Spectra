@@ -25,6 +25,106 @@ from __future__ import annotations
 import numpy as np
 
 
+def _fit_nucleus_ellipse(component, allowed):
+    """Fit an ellipse to a dark component and clip it to the cell interior."""
+    from scipy import ndimage as _ndi
+
+    coords = np.column_stack(np.nonzero(component)).astype(float)
+    if len(coords) < 20:
+        return np.zeros_like(component, dtype=bool)
+    center = coords.mean(axis=0)
+    covariance = np.cov(coords, rowvar=False) + np.eye(2) * 1e-3
+    inverse = np.linalg.inv(covariance)
+    yy, xx = np.nonzero(allowed)
+    points = np.column_stack((yy, xx)).astype(float) - center
+    inside = np.einsum("ni,ij,nj->n", points, inverse, points) <= 4.0
+    ellipse = np.zeros_like(component, dtype=bool)
+    ellipse[yy[inside], xx[inside]] = True
+    return _ndi.binary_closing(ellipse, iterations=2)
+
+
+def carve_dark_nuclei(
+    image: np.ndarray,
+    masks: np.ndarray,
+    *,
+    percentile: float = 25,
+    min_contrast: float = 0.55,
+    nucleus_margin: int = 8,
+    max_nucleus_fraction: float = 0.35,
+    min_nucleus_area: int = 250,
+) -> np.ndarray:
+    """Remove at most one dark, interior nucleus from each cell label.
+
+    Only pixels at least ``nucleus_margin`` from the outer boundary can be
+    removed. A candidate is rejected if it is too large or if subtraction
+    disconnects the remaining cell, so tails and the outer footprint remain
+    unchanged.
+    """
+    from scipy import ndimage as _ndi
+
+    labels = np.asarray(masks)
+    if labels.ndim != 2:
+        return labels.astype(np.int32, copy=False)
+    img = np.asarray(image, dtype=np.float32)
+    if img.ndim == 3 and img.shape[-1] >= 3:
+        img = 0.299 * img[..., 0] + 0.587 * img[..., 1] + 0.114 * img[..., 2]
+    img = np.squeeze(img)
+    if img.shape != labels.shape:
+        raise ValueError(f"image/mask shape mismatch: {img.shape} vs {labels.shape}")
+    finite = np.isfinite(img)
+    if not finite.all():
+        replacement = float(np.median(img[finite])) if finite.any() else 0.0
+        img = np.where(finite, img, replacement)
+
+    smooth = _ndi.gaussian_filter(img, sigma=3)
+    output = labels.astype(np.int32, copy=True)
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        obj = labels == label_id
+        distance = _ndi.distance_transform_edt(obj)
+        interior = distance >= 3
+        if interior.sum() < 300:
+            continue
+        values = smooth[obj]
+        spread = max(float(np.std(values)), 1e-6)
+        threshold = np.percentile(values, percentile)
+        low = interior & (smooth <= threshold)
+        low = _ndi.binary_opening(low, iterations=2)
+        low = _ndi.binary_closing(low, iterations=4)
+        components, count = _ndi.label(low)
+        bright_cutoff = np.percentile(values, 60)
+        bright_reference = float(np.mean(values[values >= bright_cutoff]))
+        cell_area = int(obj.sum())
+        candidates = []
+        for component_id in range(1, count + 1):
+            component = components == component_id
+            area = int(component.sum())
+            fraction = area / max(cell_area, 1)
+            if area < max(min_nucleus_area, int(0.015 * cell_area)) or fraction > 0.50:
+                continue
+            contrast = (bright_reference - float(np.mean(smooth[component]))) / spread
+            centrality = float(np.mean(distance[component]))
+            score = contrast * np.sqrt(area) * centrality
+            candidates.append((score, contrast, component))
+        if not candidates:
+            continue
+        _, contrast, component = max(candidates, key=lambda item: item[0])
+        if contrast < min_contrast:
+            continue
+        allowed = distance >= nucleus_margin
+        nucleus = _fit_nucleus_ellipse(
+            _ndi.binary_fill_holes(component), allowed
+        ) & allowed
+        fraction = nucleus.sum() / max(cell_area, 1)
+        if not 0.015 <= fraction <= max_nucleus_fraction:
+            continue
+        if _ndi.label(obj & ~nucleus)[1] != 1:
+            continue
+        output[nucleus] = 0
+    return output
+
+
 def merge_fragments(
     masks: np.ndarray,
     *,
