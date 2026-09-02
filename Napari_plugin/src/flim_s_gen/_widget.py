@@ -3516,6 +3516,15 @@ class SeededKMeans(Container):
         self.axes = None
         # self.seeds = []
         self.seed_indices: List[int] = []
+        # Raw-space coordinates of seeds loaded from a file (K x len(dims)),
+        # or None when the seeds were clicked / dragged by hand. When set,
+        # run_kmeans initialises K-Means from these coordinates (mapped
+        # through the CURRENT scaler + weights) instead of from the nearest
+        # cells. Snapping to a cell was only ever a display convenience: in
+        # an unweighted space it could snap a seed onto the wrong barcode
+        # and flip an entire class.
+        self._seed_raw = None
+        self._seed_raw_dims = None
         self.seed_artists: List[Line2D] = []
         self.selected_class = 1
         self.lasso = None
@@ -3723,15 +3732,21 @@ class SeededKMeans(Container):
             'Fraction of points per class flagged as outliers. 0.05–0.15 '
             'is typical. Higher = more aggressive weeding.')
         _tt(self.save_seeds_btn,
-            'Save the currently-placed seeds to an .xlsx file so you can '
-            'reload them in a future session.')
+            'Save the current seeds to an .xlsx file so you can reload them '
+            'in a future session. Seeds you clicked or dragged are saved as '
+            'those cells\' coordinates; seeds loaded from a file (and not '
+            'moved) are saved as the loaded coordinates themselves.')
         _tt(self.load_seeds_btn,
             'Load class centres saved from an earlier acquisition of the '
             'same barcode panel. They are only a STARTING POINT: seeded '
             'K-Means re-fits the centres on the cells loaded now, which is '
             'what lets a reference acquired once be reused on a later '
             'acquisition. Holding the loaded centres fixed instead would '
-            'misassign whole classes when the batch has shifted.\n'
+            'misassign whole classes when the batch has shifted. With a file '
+            'that carries all current dims and Method = KMeans (seeds), the '
+            'stars are drawn on the nearest cells for display only and '
+            'K-Means starts from the loaded coordinates; clicking a new seed '
+            'or dragging a star makes that seed the cell again.\n'
             'Load a previously-saved seeds .xlsx. Number of seeds in the '
             'file auto-fills Clusters above.')
         _tt(self.save_dist_btn,
@@ -3927,6 +3942,46 @@ class SeededKMeans(Container):
         except Exception:
             pass
         self.append(lbl)
+
+    def _weights_for_dims(self, dims) -> np.ndarray:
+        """5D weight per dim name, same mapping as _ensure_scaled_ready."""
+        out = []
+        for d in dims:
+            if d == 'G':
+                out.append(float(self.weights['G'].value))
+            elif d == 'S':
+                out.append(float(self.weights['S'].value))
+            elif d.startswith('Int 1'):
+                out.append(float(self.weights['Int1'].value))
+            elif d.startswith('Int 2'):
+                out.append(float(self.weights['Int2'].value))
+            elif d.startswith('Int 3'):
+                out.append(float(self.weights['Int3'].value))
+            else:
+                out.append(1.0)
+        return np.asarray(out, dtype=float)
+
+    def _seed_rows_to_scaled(self, rows, dims_subset):
+        """Raw seed coordinates over ``dims_subset`` -> the SAME space as
+        ``df_scaled`` (StandardScaler fitted on the current df_test, then the
+        5D weights), restricted to those dims.
+
+        Returns (scaled_rows, column_indices_into_dims). Requires
+        _ensure_scaled_ready() to have run (scaler fitted, df_scaled built).
+        """
+        idx = [list(self.dims).index(d) for d in dims_subset]
+        mean = np.asarray(self.scaler.mean_, dtype=float)[idx]
+        scale = np.asarray(self.scaler.scale_, dtype=float)[idx]
+        w = self._weights_for_dims(dims_subset)
+        rows = np.asarray(rows, dtype=float).reshape(-1, len(idx))
+        return (rows - mean) / scale * w, idx
+
+    def _nearest_indices_scaled(self, rows, dims_subset):
+        """Nearest df_test row for each raw seed row, measured in the scaled
+        + weighted space over ``dims_subset`` (display placement of stars)."""
+        sc, idx = self._seed_rows_to_scaled(rows, dims_subset)
+        d = cdist(sc, np.asarray(self.df_scaled)[:, idx])
+        return [int(i) for i in d.argmin(axis=1)]
 
     def _nearest_index_in_5d(self, seed_raw_row: np.ndarray) -> int:
         """
@@ -4184,6 +4239,8 @@ class SeededKMeans(Container):
 
         # reset seeds each time we reload a loc
         self.seed_indices = []
+        self._seed_raw = None
+        self._seed_raw_dims = None
         self._notify(f"Plot ready for Localization='{loc}'. Select {self.n_clusters.value} seeds then Run K-Means.")
 
     def on_click(self, event):
@@ -4221,6 +4278,8 @@ class SeededKMeans(Container):
 
             self.seed_indices.clear()
             self.seed_artists.clear()
+            self._seed_raw = None
+            self._seed_raw_dims = None
             self._notify("Seed number exceeded, all seeds cleared. Please select new seeds.")
 
         ax_idx = self.axes.index(event.inaxes)
@@ -4232,6 +4291,10 @@ class SeededKMeans(Container):
         idx = int(np.argmin(cdist([(x, y)], coords)))
         self.seed_indices.append(idx)
         self._draw_seed(idx)
+        # A hand-placed seed IS a cell: from now on K-Means starts from the
+        # cells, not from any coordinates loaded earlier.
+        self._seed_raw = None
+        self._seed_raw_dims = None
 
         #
         # self.seeds.append(self.df_scaled[idx])
@@ -4258,10 +4321,12 @@ class SeededKMeans(Container):
             artist.set_picker(5)  # enable picking
             self.seed_artists.append(artist)
         self.fig.canvas.draw_idle()
-        # connect drag event once
-        if not hasattr(self, '_drag_cid'):
+        # connect drag handlers once per figure (the old sentinel was never
+        # set, so every star added another pair of handlers)
+        if getattr(self, '_drag_cid_fig', None) is not self.fig:
             self._drag_press_cid = self.fig.canvas.mpl_connect('pick_event', self._on_seed_press)
             self._drag_release_cid = self.fig.canvas.mpl_connect('button_release_event', self._on_seed_release)
+            self._drag_cid_fig = self.fig
 
     def _default_io_dir(self) -> str:
         """Default directory for file dialogs — the current sample folder if set."""
@@ -4358,12 +4423,21 @@ class SeededKMeans(Container):
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
 
-        # store raw coordinates (all dims)
-        seed_df = self.df_test.iloc[self.seed_indices][self.dims].copy()
+        # store raw coordinates (all dims). If the seeds came from a file and
+        # were not replaced by hand, save those exact coordinates rather than
+        # the cells the stars happen to sit on.
+        raw = getattr(self, '_seed_raw', None)
+        if (raw is not None and len(raw) == len(self.seed_indices)
+                and list(getattr(self, '_seed_raw_dims', []) or []) == list(self.dims)):
+            seed_df = pd.DataFrame(np.asarray(raw, dtype=float), columns=list(self.dims))
+            src_txt = 'the loaded seed coordinates (not the cells under the stars)'
+        else:
+            seed_df = self.df_test.iloc[self.seed_indices][self.dims].copy()
+            src_txt = 'the cells under the stars'
         seed_df.insert(0, "seed_id", np.arange(1, len(seed_df) + 1))
         seed_df.to_excel(path, index=False)
 
-        self._notify(f"Seeds saved to {path}")
+        self._notify(f"Seeds saved to {path}: {src_txt}.")
         try:
             self.seed_file_path.value = path
             self._refresh_file_combos()
@@ -4581,34 +4655,40 @@ class SeededKMeans(Container):
                 pass
         self.seed_artists.clear()
         self.seed_indices.clear()
+        # Forget any previously loaded coordinates NOW, so a load that fails
+        # midway leaves "no seeds" rather than old coordinates next to new stars.
+        self._seed_raw = None
+        self._seed_raw_dims = None
 
         # Proceed with whatever dim columns the seed file has in common with
-        # the current data. Nearest-neighbor is done in weighted raw space over
-        # that intersection — not as precise as the full-D scaled lookup, but
-        # handles the common "seed saved with only G,S" case without bailing.
+        # the current data. The nearest cell (where the star is drawn) is
+        # looked up in the SAME space K-Means runs in: StandardScaler fitted
+        # on the current data, then the 5D weights, over that intersection.
+        # The previous lookup used weighted RAW units, where G/S (~0.3-0.6)
+        # are dwarfed by the intensity ratios unless the G/S weights are
+        # large — with every weight at 1 it could snap a seed onto the wrong
+        # barcode and the whole class followed.
         rows = df[dims_in_file].to_numpy(dtype=float)
+        bad = ~np.isfinite(rows).all(axis=1)
+        if bad.any():
+            self._notify(
+                f"Seed file has blank / non-numeric values in row(s) "
+                f"{(np.where(bad)[0] + 1).tolist()} of {os.path.basename(path)}. "
+                f"Fix the file and load again; no seeds were loaded."
+            )
+            return
+        if len(np.unique(rows, axis=0)) < len(rows):
+            self._notify(
+                f"Seed file {os.path.basename(path)} contains duplicate rows; "
+                f"two identical seeds would start K-Means with two identical "
+                f"centres (one class would absorb two barcodes). No seeds were loaded."
+            )
+            return
         if dims_in_file != self.dims:
             self._notify(
                 f"Seed file dims={dims_in_file}, current dims={self.dims}. "
                 f"Matching on intersection."
             )
-
-        # weights for the intersection dims (same mapping as _nearest_index_in_5d)
-        def _weight_for_dim(d: str) -> float:
-            if d == 'G':
-                return float(self.weights['G'].value)
-            if d == 'S':
-                return float(self.weights['S'].value)
-            if d.startswith('Int 1'):
-                return float(self.weights['Int1'].value)
-            if d.startswith('Int 2'):
-                return float(self.weights['Int2'].value)
-            if d.startswith('Int 3'):
-                return float(self.weights['Int3'].value)
-            return 1.0
-
-        W_sub = np.asarray([_weight_for_dim(d) for d in dims_in_file], dtype=float)
-        test_xy = self.df_test[dims_in_file].to_numpy(dtype=float) * W_sub
 
         # IMPORTANT: sync n_clusters BEFORE drawing seeds. _draw_seed indexes into
         # a color table sized by `n_clusters + 1`; if we loaded more seeds than K
@@ -4621,36 +4701,75 @@ class SeededKMeans(Container):
             except Exception as e:
                 self._notify(f"Could not auto-update K to {n_loaded}: {e}")
 
-        for r in rows:
-            r_w = r * W_sub
-            dists = np.linalg.norm(test_xy - r_w, axis=1)
-            idx = int(dists.argmin())
+        nearest = self._nearest_indices_scaled(rows, dims_in_file)
+        for idx in nearest:
             self.seed_indices.append(idx)
             self._draw_seed(idx)
+        # Plausibility: a loaded seed that sits far from every cell in THIS
+        # data (batch shift, wrong localisation, wrong panel) is worth a
+        # warning, because K-Means will still start from it. Compare each
+        # seed's nearest-cell distance with the typical cell-to-cell spacing.
+        try:
+            sc, cols = self._seed_rows_to_scaled(rows, dims_in_file)
+            X = np.asarray(self.df_scaled)[:, cols]
+            d_seed = np.linalg.norm(X[nearest] - sc, axis=1)
+            sub = X if len(X) <= 2000 else X[np.linspace(0, len(X) - 1, 2000).astype(int)]
+            dd = cdist(sub, X)
+            dd[dd == 0] = np.inf
+            nn_typ = float(np.median(dd.min(axis=1)))
+            far = np.where(d_seed > 5.0 * max(nn_typ, 1e-9))[0]
+            if len(far):
+                self._notify(
+                    f"Warning: seed(s) {(far + 1).tolist()} sit far from every cell "
+                    f"in this data ({', '.join(f'{d_seed[i]/nn_typ:.0f}x' for i in far)} the "
+                    f"typical cell spacing). Possible batch shift or a seeds file from "
+                    f"another localisation / panel. K-Means still starts from them; "
+                    f"check the stars, or click / drag seeds by hand."
+                )
+        except Exception as e:
+            print(f'[SeededKMeans] seed plausibility check skipped: {e}')
+
+        # Keep the loaded coordinates themselves: K-Means starts from them
+        # (see run_kmeans); the snapped cells only say where the stars are
+        # drawn. Only possible when the file carries every current dim.
+        if list(dims_in_file) == list(self.dims):
+            self._seed_raw = np.asarray(rows, dtype=float).copy()
+            self._seed_raw_dims = list(dims_in_file)
+            init_txt = 'K-Means will start from the loaded coordinates'
+        else:
+            self._seed_raw = None
+            self._seed_raw_dims = None
+            init_txt = ('K-Means will start from the nearest cells (file lacks '
+                        'some of the current dims)')
 
         if n_loaded > 0 and old_k != n_loaded:
             self._notify(
-                f"Loaded {n_loaded} seeds; auto-updated Number of Clusters: {old_k} -> {n_loaded}."
+                f"Loaded {n_loaded} seeds; auto-updated Number of Clusters: "
+                f"{old_k} -> {n_loaded}. Stars mark the nearest cells; {init_txt}."
             )
         else:
-            self._notify(f"Loaded {n_loaded} seeds (snapped to nearest points).")
+            self._notify(f"Loaded {n_loaded} seeds. Stars mark the nearest cells; {init_txt}.")
 
     def _on_seed_press(self, event):
         # begin dragging one of our seed markers
         if event.artist in self.seed_artists:
             self._dragging_artist = event.artist
             self._drag_orig_xy = (event.mouseevent.xdata, event.mouseevent.ydata)
-            self._drag_artist_idx = self.seed_artists.index(event.artist)
+            # _draw_seed appends ONE artist PER PANEL for each seed, so the
+            # artist's position in seed_artists is seed * n_panels + panel.
+            # The seed number is what seed_indices / _seed_raw are indexed by.
+            n_panels = max(1, len(self.pairs))
+            self._drag_artist_idx = self.seed_artists.index(event.artist) // n_panels
             self._cid_motion = self.fig.canvas.mpl_connect('motion_notify_event', self._on_seed_motion)
 
     def _on_seed_motion(self, event):
-        if not hasattr(self, '_dragging_artist'): return
+        if getattr(self, '_dragging_artist', None) is None: return
         self._dragging_artist.set_data(event.xdata, event.ydata)
         self.fig.canvas.draw_idle()
 
     def _on_seed_release(self, event):
         # finish drag: snap to nearest data‐point
-        if not hasattr(self, '_dragging_artist'): return
+        if getattr(self, '_dragging_artist', None) is None: return
         artist = self._dragging_artist
         ax_idx = next(i for i, a in enumerate(self.axes) if a == artist.axes)
         xd, yd = self.pairs[ax_idx]
@@ -4660,13 +4779,40 @@ class SeededKMeans(Container):
         new_idx = int(dists.argmin())
         # update our records
         self.seed_indices[self._drag_artist_idx] = new_idx
-        # redraw that star at the true location
+        # A dragged seed now means "this cell": keep the loaded-coordinate
+        # init consistent by replacing that seed's coordinates with the
+        # cell's raw values.
+        raw = getattr(self, '_seed_raw', None)
+        if raw is not None and self._drag_artist_idx < len(raw):
+            try:
+                raw[self._drag_artist_idx] = self.df_test.iloc[new_idx][
+                    list(self._seed_raw_dims)].to_numpy(dtype=float)
+            except Exception:
+                self._seed_raw = None
+                self._seed_raw_dims = None
+        # redraw that seed's star on EVERY panel at the new cell (the drag
+        # happened on one panel, but the seed is one cell for all of them)
         row = self.df_test.iloc[new_idx]
-        artist.set_data(row[xd], row[yd])
-        # cleanup
-        self.fig.canvas.mpl_disconnect(self._cid_motion)
-        delattr(self, '_dragging_artist')
-        self._notify(f"Seed {self._drag_artist_idx + 1} reassigned to cell #{new_idx}")
+        n_panels = max(1, len(self.pairs))
+        s = int(self._drag_artist_idx)
+        sib = self.seed_artists[s * n_panels:(s + 1) * n_panels]
+        for a, (pxd, pyd) in zip(sib, self.pairs):
+            try:
+                a.set_data([row[pxd]], [row[pyd]])
+            except Exception:
+                pass
+        if artist not in sib:
+            artist.set_data([row[xd]], [row[yd]])
+        # cleanup. NOT delattr(): this widget is a magicgui Container whose
+        # __delattr__ removes a child widget and raises ValueError for a
+        # plain attribute, which used to leave the drag "open" forever so
+        # that every later mouse release re-ran this handler.
+        try:
+            self.fig.canvas.mpl_disconnect(self._cid_motion)
+        except Exception:
+            pass
+        self._dragging_artist = None
+        self._notify(f"Seed {s + 1} reassigned to cell #{new_idx}")
         self.fig.canvas.draw_idle()
 
     def _clear_seed_mode(self):
@@ -4706,6 +4852,9 @@ class SeededKMeans(Container):
                         pass
                 # IMPORTANT: don't delattr on magicgui Container
                 setattr(self, name, None)
+            # The drag handlers are gone from this figure, so let the next
+            # _draw_seed (e.g. the next Load Seeds) connect them again.
+            self._drag_cid_fig = None
 
         # 4) remove any dragging state flags
         for name in ["_dragging_artist", "_drag_orig_xy", "_drag_artist_idx",
@@ -5171,24 +5320,38 @@ class SeededKMeans(Container):
         Xs_sub = self.df_scaled[idx_global, :]
 
         init_seeds = None
+        init_src = ''
         if seeds_required:
-            seed_global = [i for i in self.seed_indices if i in idx_global_set]
-            if len(seed_global) != self.n_clusters.value:
-                self._notify(
-                    f"Seeds must be selected within Localization='{loc}'. "
-                    f"Currently selected {len(seed_global)} seeds in this localization, "
-                    f"need {self.n_clusters.value}. Please reselect seeds after filtering."
-                )
-                return
-            pos_map = {g: j for j, g in enumerate(idx_global.tolist())}
-            seed_sub_idx = [pos_map[g] for g in seed_global]
-            init_seeds = np.vstack([Xs_sub[i] for i in seed_sub_idx])
+            raw = getattr(self, '_seed_raw', None)
+            if (raw is not None and len(raw) == int(self.n_clusters.value)
+                    and list(getattr(self, '_seed_raw_dims', []) or []) == list(self.dims)):
+                # Seeds loaded from a file: start K-Means from the loaded
+                # coordinates themselves, mapped through the scaler + weights
+                # that _ensure_scaled_ready just (re)fitted on the current
+                # data. This does not depend on which cell each star sits on,
+                # so it cannot flip a class the way nearest-cell snapping
+                # could when the weights are all 1.
+                init_seeds, _ = self._seed_rows_to_scaled(raw, self.dims)
+                init_src = ' (init: loaded seed coordinates)'
+            else:
+                seed_global = [i for i in self.seed_indices if i in idx_global_set]
+                if len(seed_global) != self.n_clusters.value:
+                    self._notify(
+                        f"Seeds must be selected within Localization='{loc}'. "
+                        f"Currently selected {len(seed_global)} seeds in this localization, "
+                        f"need {self.n_clusters.value}. Please reselect seeds after filtering."
+                    )
+                    return
+                pos_map = {g: j for j, g in enumerate(idx_global.tolist())}
+                seed_sub_idx = [pos_map[g] for g in seed_global]
+                init_seeds = np.vstack([Xs_sub[i] for i in seed_sub_idx])
+                init_src = ' (init: the selected cells)'
 
         # clear seed mode (your original)
         self._clear_seed_mode()
 
         K = int(self.n_clusters.value)
-        self._notify(f"Running method='{method}' with K={K} on {len(Xs_sub)} points...")
+        self._notify(f"Running method='{method}' with K={K} on {len(Xs_sub)} points{init_src}...")
         try:
             if method == 'KMeans (seeds)':
                 km = KMeans(n_clusters=K, init=init_seeds, n_init=1)
@@ -5244,8 +5407,9 @@ class SeededKMeans(Container):
                 got = self._self_whiten(Xs_sub, labels0, init_seeds, K)
                 if got is None:
                     self._notify(
-                        'Whiten by within-cluster spread: skipped, fewer than 8 clusters are '
-                        'populated. This is expected for a dish carrying only one or two barcodes.'
+                        'Whiten by within-cluster spread: skipped, fewer than 8 seeds are '
+                        'claimed by a cluster centre (a dish carrying only a few barcodes, or '
+                        'seeds sitting far from the data). Classification continues without it.'
                     )
                 else:
                     Xs_sub, init_seeds, labels1 = got
