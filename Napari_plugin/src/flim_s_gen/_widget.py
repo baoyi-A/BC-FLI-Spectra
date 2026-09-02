@@ -3588,6 +3588,17 @@ class SeededKMeans(Container):
         row.append(self.kmeans_per_fov)
         self.append(row)
 
+        # --- Whiten by the within-cluster spread of this acquisition (before the outlier pass) ---
+        # Ported 2026-09-02 from the research fork (python_code/BC-FLIM-S/BC-FLIM-Spectra/
+        # SPEC_selfwhiten_260831.md). The diagonal 5D weights cannot describe a cluster that is
+        # long, thin and tilted, so the two closest barcodes can swap when a saved seed set is
+        # reused on a new acquisition. Whitening by the pooled covariance of the clusters found
+        # in the first pass (no labels involved) fixes that; see _self_whiten for the guard.
+        row = Container(layout='horizontal')
+        self.selfwhiten_enable = _CheckBox(text='Whiten by within-cluster spread', value=True)
+        row.append(self.selfwhiten_enable)
+        self.append(row)
+
         # --- Outlier detection (marks bad cells as cluster 0 before K-Means) ---
         row = Container(layout='horizontal')
         self.outlier_enable = _CheckBox(text='Auto-detect outliers -> class 0', value=True)
@@ -3614,6 +3625,11 @@ class SeededKMeans(Container):
             else:
                 value = 1.0
             w = FloatSpinBox(min=0.0, max=10.0, step=0.1, value=value)
+            _tt(w, 'Stretches this one axis before distances are taken. Each '
+                   'weight acts on its own axis only, which cannot describe a '
+                   'cluster that is long, thin and tilted. That is what "Whiten '
+                   'by within-cluster spread" above does instead; while it is '
+                   'ticked these weights carry almost nothing.')
             row.append(w)
             self.append(row)
             self.weights[d] = w
@@ -3677,6 +3693,17 @@ class SeededKMeans(Container):
             'Flag per-class outliers (Isolation Forest) and reassign '
             'them to class 0 (unassigned). Helps weed out dim or '
             'defocused cells without re-editing masks.')
+        _tt(self.selfwhiten_enable,
+            'Seed K-Means only. After a first clustering, measure how wide '
+            'the clusters themselves are, rescale the 5D space so that one '
+            'unit of distance means "one cluster width", and cluster once '
+            'more from the same seeds. Uses no labels. Stops the two closest '
+            'barcodes swapping when a seed set saved on one acquisition is '
+            'reused on another (measured on 12-barcode HEK: worst single '
+            'barcode 0.2 % -> 99.7 %). While ticked, the 5D weight spin '
+            'boxes below carry almost nothing. Skipped automatically when '
+            'fewer than 8 clusters are populated (e.g. a dish carrying one '
+            'or two barcodes), and for the non-seed methods.')
         _tt(self.kmeans_per_fov,
             'When ticked, Run K-Means pops a checklist asking which '
             'FOVs to cluster, then runs the chosen Method SEPARATELY '
@@ -4979,6 +5006,71 @@ class SeededKMeans(Container):
         self._kmeans_fov_selection = set(selected)
         return selected
 
+    @staticmethod
+    def _within_cluster_whitener(X, idx, shrink=0.10):
+        """Inverse square root of the pooled WITHIN-CLUSTER covariance. Uses no labels.
+
+        The clusters come from the first pass of the clusterer itself, so this is measurable on any
+        dish without knowing which barcode is which. After multiplying by it, a unit of distance means
+        one within-cluster width rather than one unit of whatever the axis happened to be, which is
+        what makes two nearby barcodes separable instead of merely close.
+        """
+        p = X.shape[1]
+        S = np.zeros((p, p))
+        n = 0
+        for k in np.unique(idx):
+            g = X[idx == k]
+            if len(g) > 1:
+                S += (len(g) - 1) * np.cov(g, rowvar=False)
+                n += len(g) - 1
+        S /= max(n, 1)
+        S = (1 - shrink) * S + shrink * np.eye(p) * np.trace(S) / p
+        ev, V = np.linalg.eigh(S)
+        return V @ np.diag(1.0 / np.sqrt(np.maximum(ev, 1e-9))) @ V.T
+
+    def _self_whiten(self, X, labels, seeds, K, min_cells=10, min_classes=8):
+        """Whiten by this acquisition's own within-cluster spread, then cluster again.
+
+        Returns (X_whitened, seeds_whitened, labels), or None if the guard refuses.
+
+        WHY THIS AND NOT A RIGID RE-ALIGNMENT
+            A seed set reused across acquisitions fails on the closest pair of barcodes: the widget
+            calls an entire class as its neighbour, worst single barcode 0.2 % across six measured
+            reference-to-query pairs. The first fix tried was an orthogonal Procrustes onto the
+            seeds. It works (99.7 %, worst class 97.6 %) but it is a patch for the real problem, which
+            is that the diagonal weights cannot express a correlated cluster shape. Whitening by the
+            measured cluster shape fixes it outright and needs no seed-file change:
+                                        macro     worst single barcode
+                widget before            97.8              0.2 %
+                + rigid re-alignment     99.7             97.6 %
+                + this                  100.0             99.7 %
+            Measured in python_code/leica_separation_260726/readout_all_260831.py.
+
+        Transductive: it needs a batch of cells whose composition is not badly skewed, because the
+        spread is measured on the cells being classified.
+
+        THE GUARD COUNTS DISTINCT SEEDS CLAIMED, NOT POPULATED CLUSTERS. k-means asked for K
+        clusters returns K populated clusters whatever the dish contains, so a two-barcode dish would
+        pass a populated-cluster check. It is the number of distinct seeds that some cluster centre
+        actually lands nearest to that reports composition, and a two-barcode dish claims two.
+        """
+        idx = np.asarray(labels, dtype=int)
+        seeds_a = np.asarray(seeds, dtype=float)
+        Xa = np.asarray(X, dtype=float)
+        have = [k for k in range(K) if int((idx == k).sum()) >= min_cells]
+        if len(have) < min_classes:
+            return None
+        cent = np.vstack([Xa[idx == k].mean(0) for k in have])
+        claimed = np.unique(
+            np.linalg.norm(cent[:, None, :] - seeds_a[None, :, :], axis=2).argmin(1))
+        if len(claimed) < min_classes:
+            return None
+        Wm = self._within_cluster_whitener(Xa, idx)
+        Xw = Xa @ Wm
+        seeds_w = seeds_a @ Wm
+        lab = KMeans(n_clusters=K, init=seeds_w, n_init=1).fit(Xw).labels_.astype(int)
+        return Xw, seeds_w, lab
+
     def run_kmeans(self):
         if self.df_test is None or len(self.df_test) == 0:
             self._notify("No test data loaded.")
@@ -5120,6 +5212,36 @@ class SeededKMeans(Container):
             self._notify(f"Clustering failed with method='{method}': {e}")
             traceback.print_exc()
             return
+
+        # --- Whiten by this acquisition's own within-cluster spread -----------------------------
+        # The 5D weights rescale each axis on its own, which cannot express a cluster that is long,
+        # thin and tilted. That is exactly the shape these clusters have, so the two closest barcodes
+        # end up separated by less than their own width and an entire class can be called as its
+        # neighbour when a seed set is reused across acquisitions. Measuring the spread of the
+        # clusters just found, and rescaling by it, fixes that (worst single barcode 0.2 % -> 99.7 %
+        # over six reference-to-query pairs). No label is used. See _self_whiten.
+        want_sw = bool(
+            seeds_required and init_seeds is not None
+            and getattr(self, 'selfwhiten_enable', None) and self.selfwhiten_enable.value
+        )
+        if want_sw:
+            try:
+                got = self._self_whiten(Xs_sub, labels0, init_seeds, K)
+                if got is None:
+                    self._notify(
+                        'Whiten by within-cluster spread: skipped, fewer than 8 clusters are '
+                        'populated. This is expected for a dish carrying only one or two barcodes.'
+                    )
+                else:
+                    Xs_sub, init_seeds, labels1 = got
+                    changed = int((labels1 != labels0).sum())
+                    labels0 = labels1
+                    self._notify(f'Whitened by within-cluster spread; {changed} of '
+                                 f'{len(labels0)} cells changed class.')
+            except Exception as e:
+                self._notify(f'Whiten by within-cluster spread failed: {e}. Keeping the '
+                             f'original clustering.')
+                traceback.print_exc()
 
         cluster_local = labels0.astype(int) + 1  # 1..K
 

@@ -61,7 +61,11 @@ viewer layers on transition, keeping the session clean.
   Basu et al. 2002 — seeds initialise the class centroids, then the
   K-Means EM loop refines them. Added alternative methods (K-Means++,
   MiniBatchKMeans, Gaussian Mixture, Spectral), per-class outlier
-  flagging (Isolation Forest), and save / load of **class distribution
+  flagging (Isolation Forest), an optional **whiten by within-cluster
+  spread** pass for seed K-Means (rescales the 5D space by the pooled
+  covariance of the first-pass clusters, no labels used, so a seed set
+  saved on one acquisition transfers to another without the two closest
+  barcodes swapping), and save / load of **class distribution
   overlays** (convex hulls) with a user-adjustable expansion factor that
   serve as prior knowledge for manual seeding.
 - 🎉 **NaCha finalise**: auto‑broadcasts single‑frame masks to the full
