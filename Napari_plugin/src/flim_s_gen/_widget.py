@@ -3704,8 +3704,9 @@ class SeededKMeans(Container):
             'unit of distance means "one cluster width", and cluster once '
             'more from the same seeds. Uses no labels. Stops the two closest '
             'barcodes swapping when a seed set saved on one acquisition is '
-            'reused on another (measured on 12-barcode HEK: worst single '
-            'barcode 0.2 % -> 99.7 %). While ticked, the 5D weight spin '
+            'reused on another (measured on the twelve-barcode HEK '
+            'reference series; see the Supplementary Note of the paper). '
+            'While ticked, the 5D weight spin '
             'boxes below carry almost nothing. Skipped automatically when '
             'fewer than 8 clusters are populated (e.g. a dish carrying one '
             'or two barcodes), and for the non-seed methods.')
@@ -5056,6 +5057,9 @@ class SeededKMeans(Container):
                 + rigid re-alignment     99.7             97.6 %
                 + this                  100.0             99.7 %
             Measured in python_code/leica_separation_260726/readout_all_260831.py.
+            These are internal development measurements taken in the plugin's
+            diagonal-weight space; the manuscript's Supplementary Note reports its
+            own protocol and numbers, which are the citable ones.
 
         Transductive: it needs a batch of cells whose composition is not badly skewed, because the
         spread is measured on the cells being classified.
