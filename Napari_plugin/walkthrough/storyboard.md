@@ -168,24 +168,37 @@ Barcode Seg opens.
 
 **Card text:**
 
-> *Turn the four decay stacks + N/P masks into per-cell phasor coordinates
+> *Turn the decay stacks + cell masks into per-cell phasor coordinates
 > (G, S) and per-channel intensities — a compact 5-D fingerprint per cell.*
 
 **Voiceover / caption sequence:**
 
-- *The widget auto-loads the four `flim_stack/*_ch[1-4].tif` stacks into the
-  Stack 1-4 selectors, and auto-fills the N / P segmentation slots from
-  the `.npy` files saved in Step 2.*
-- *Adjust phasor parameters only if needed (pulse frequency, peak offset,
-  pixel-wise vs mask-wise). Defaults match standard Leica FALCON setups.*
+- *The widget auto-loads whatever `flim_stack/*_ch[1-4].tif` stacks exist
+  into the Stack 1-4 selectors, and auto-fills the N / P segmentation slots
+  from the `.npy` files saved in Step 2. Any slot may stay empty: with only
+  Stack 1 + N, the phasor is computed on channel 1 alone, only N cells are
+  written, and the ch2-4 intensity columns are NaN.*
+- *Adjust phasor parameters only if needed (pulse frequency, peak / end
+  offset, tau resolution). Defaults match standard Leica FALCON setups.*
 - *Click the green **Process and Save to Excel**. Progress bar runs the
-  phasor engine; a G-S scatter plot pops up at the end.*
+  phasor engine; a G-S scatter of THIS FOV pops up at the end (rows kept
+  from other FOVs are drawn in grey).*
+- *A run merges into an existing `FLIM-S.xlsx`: this FOV's rows are
+  replaced, other FOVs' rows are kept, so several single-FOV runs
+  accumulate. The status line reports "new vs kept" counts and flags kept
+  rows that came from a different channel / mask configuration. Tick
+  **Fresh FLIM-S.xlsx** to move the old workbook aside first when the file
+  should hold one configuration only.*
+- *`▶▶ Process ALL FOVs (from disk)` runs every FOV under `flim_stack/`
+  with the channels and N / M / P masks currently selected in the widget
+  (leave every slot empty to use whatever exists on disk).*
 
 **Output:**
 
 - `<sample>/FLIM-S.xlsx` — one row per cell, columns include
-  `Localization, G, S, Lifetime, Chi^2, Total intensity, Mask label, FastFLIM,
-  Int 1..4, Int 1/(1-4) ... Int 4/(1-4), FOV`.
+  `Localization, G, S, Lifetime, Chi^2, Total intensity, Area (px), Mean
+  intensity, Mask label, FastFLIM, Int 1..4, Int 1/(1-4) ... Int 4/(1-4),
+  FOV`. Channels that were not provided are NaN.
 
 **Duration:** ~12 s.
 

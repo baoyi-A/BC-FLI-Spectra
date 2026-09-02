@@ -2172,6 +2172,38 @@ def calcu_phasor_info(
 
 # Parameter input: mask intensity threshold, pixel intensity threshold, peak offset, end offset, tau resolution, pulse frequency, harmonics
 
+def _loc_label(loc_key) -> str:
+    """'n'/'m'/'p' -> 'N'/'M'/'P'; anything else -> 'Any' (unspecified)."""
+    if isinstance(loc_key, str) and loc_key.lower() in ('n', 'm', 'p'):
+        return loc_key.upper()
+    return 'Any'
+
+
+def _backup_flims_workbook(save_path: str):
+    """Move an existing FLIM-S.xlsx aside as FLIM-S_old_<timestamp>.xlsx.
+
+    Returns the backup path, or None when there was nothing to move.
+    Used by the 'Fresh FLIM-S.xlsx' option so that a workbook only ever
+    holds rows from ONE configuration (channels + localisations); the old
+    file is renamed, never deleted.
+    """
+    if not os.path.exists(save_path):
+        return None
+    root, ext = os.path.splitext(save_path)
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup = f'{root}_old_{stamp}{ext}'
+    k = 1
+    while os.path.exists(backup):
+        backup = f'{root}_old_{stamp}_{k}{ext}'
+        k += 1
+    os.replace(save_path, backup)
+    print(f'[FLIM-S] fresh workbook requested: moved {save_path} -> {backup}')
+    return backup
+
+
+_FLIMS_INT_COLS = ('Int 570-590', 'Int 590-610', 'Int 610-638', 'Int 638-720')
+
+
 def Gen_excel_multi(
     stack1, stack2, stack3, stack4,
     basefolder: str,
@@ -2180,7 +2212,8 @@ def Gen_excel_multi(
     peak_offset, end_offset,
     tau_resolution, pulse_freq,
     harmonics,
-    fov: str
+    fov: str,
+    fresh: bool = False,
 ):
     """
     seg_dict:
@@ -2192,8 +2225,22 @@ def Gen_excel_multi(
     are computed on the SUM of the available channels; per-channel
     intensity columns are NaN for missing slots, and any ratio that
     references a missing channel is also NaN (numpy NaN propagation).
+
+    Workbook policy: by default the result is MERGED into an existing
+    ``<basefolder>/FLIM-S.xlsx`` — rows of this ``fov`` are replaced, rows
+    of every other FOV are kept untouched (so multi-FOV runs accumulate,
+    but rows written earlier with a different channel / localisation
+    configuration survive too). ``fresh=True`` moves the old workbook
+    aside (``FLIM-S_old_<timestamp>.xlsx``) before writing, so the new
+    file holds only this run.
+
+    The returned DataFrame carries a ``.attrs`` dict describing what was
+    written: ``fov, channels, new_locs, n_new, n_kept, kept_fovs,
+    kept_locs, kept_channels, backup, save_path``. The GUI uses it to say
+    exactly which rows are new and which were inherited.
     """
     save_path = os.path.join(basefolder, 'FLIM-S.xlsx')
+    backup_path = _backup_flims_workbook(save_path) if fresh else None
 
     all_rows = []
 
@@ -2293,6 +2340,25 @@ def Gen_excel_multi(
 
     new_df = pd.DataFrame(all_rows)
 
+    # Provenance of THIS run — attached to the returned frame as .attrs so
+    # the widget can report "new vs kept" instead of a bare "Excel saved".
+    run_meta = dict(
+        fov=str(fov),
+        channels=[i + 1 for i, _ in available],
+        new_locs=sorted({_loc_label(k) for k in seg_dict.keys()}),
+        n_new=int(len(new_df)),
+        n_kept=0, kept_fovs=[], kept_locs=[], kept_channels=[],
+        backup=backup_path, save_path=save_path,
+    )
+
+    def _with_meta(df, **extra):
+        try:
+            df.attrs.update(run_meta)
+            df.attrs.update(extra)
+        except Exception:
+            pass
+        return df
+
     # Merge with existing FLIM-S.xlsx (if any) so batch processing
     # accumulates per-FOV rows instead of overwriting on every call.
     # Re-running a single FOV replaces just that FOV's prior rows; new
@@ -2321,7 +2387,10 @@ def Gen_excel_multi(
         if existing_df is not None:
             print(f'[FLIM-S] FOV "{fov}": 0 cells passed threshold — '
                   f'FLIM-S.xlsx left unchanged ({len(existing_df)} rows kept).')
-            return existing_df
+            kept_fovs = (sorted(existing_df['FOV'].astype(str).unique())
+                         if 'FOV' in existing_df.columns else [])
+            return _with_meta(existing_df, n_kept=int(len(existing_df)),
+                              kept_fovs=kept_fovs)
         # no existing file either: fall through and write the empty frame
 
     if (existing_df is not None
@@ -2337,13 +2406,114 @@ def Gen_excel_multi(
         n_new = len(new_df)
         print(f'[FLIM-S] {n_kept} prior rows kept, {n_new} new rows for FOV '
               f'"{fov}" appended (total {n_kept + n_new}).')
+        # Describe the inherited rows: which FOVs, which localisations and
+        # which channels carry real (non-NaN) intensities. This is what
+        # tells the user that e.g. P rows / ch2-4 values in the workbook
+        # came from an EARLIER run, not from this one.
+        kept_locs = []
+        if 'Localization' in kept.columns and n_kept:
+            kept_locs = sorted({(str(v).upper() if str(v).upper() in ('N', 'M', 'P') else 'Any')
+                                for v in kept['Localization'].fillna('').tolist()})
+        kept_channels = [c + 1 for c, col in enumerate(_FLIMS_INT_COLS)
+                         if col in kept.columns and n_kept and kept[col].notna().any()]
+        run_meta.update(n_kept=int(n_kept),
+                        kept_fovs=sorted(kept['FOV'].astype(str).unique()) if n_kept else [],
+                        kept_locs=kept_locs, kept_channels=kept_channels)
     else:
         combined_df = new_df
 
     combined_df.to_excel(save_path, index=False)
     print(f'Excel file saved at {save_path} ({len(combined_df)} rows total, '
           f'{combined_df["FOV"].nunique() if "FOV" in combined_df.columns else "?"} FOVs)')
-    return combined_df
+    return _with_meta(combined_df)
+
+
+def _flims_run_summary(meta: dict) -> dict:
+    """Human-readable 'what just happened' from Gen_excel_multi .attrs.
+
+    Returns {'short': one-liner for the status label,
+             'long': multi-line text for the popup}.
+    """
+    if not meta or 'fov' not in meta:
+        return {'short': 'FLIM-S done. Excel saved.',
+                'long': 'FLIM-S done. Excel saved.'}
+    fov = meta['fov']
+    ch = meta.get('channels') or []
+    ch_txt = 'ch' + '+'.join(str(c) for c in ch) if ch else 'ch?'
+    locs = meta.get('new_locs') or []
+    loc_txt = '/'.join(locs) if locs else 'Any'
+    n_new = meta.get('n_new', 0)
+    n_kept = meta.get('n_kept', 0)
+    kept_fovs = meta.get('kept_fovs') or []
+    backup = meta.get('backup')
+
+    head = f'FLIM-S done: FOV {fov} -> {n_new} new rows ({loc_txt}; {ch_txt}).'
+    lines = [head]
+    if backup:
+        lines.append(f'Fresh workbook: previous FLIM-S.xlsx moved to '
+                     f'{os.path.basename(backup)}.')
+        short = head + ' Fresh workbook (old file moved aside).'
+    elif n_kept:
+        kept_locs = meta.get('kept_locs') or []
+        kept_ch = meta.get('kept_channels') or []
+        fov_list = ', '.join(kept_fovs[:6]) + (' ...' if len(kept_fovs) > 6 else '')
+        lines.append(f'Kept {n_kept} rows from {len(kept_fovs)} other FOV(s) already in '
+                     f'FLIM-S.xlsx: {fov_list}.')
+        extra_locs = [l for l in kept_locs if l not in locs]
+        extra_ch = [c for c in kept_ch if c not in ch]
+        if extra_locs or extra_ch:
+            bits = []
+            if extra_locs:
+                bits.append('localisation ' + '/'.join(extra_locs))
+            if extra_ch:
+                bits.append('ch' + '+'.join(str(c) for c in extra_ch) + ' intensities')
+            lines.append('Those kept rows come from an earlier run with a different '
+                         'configuration (' + '; '.join(bits) + ') - they were NOT '
+                         'computed now. Tick "Fresh FLIM-S.xlsx" and re-run if you want '
+                         'a workbook with only this configuration.')
+        short = (head + f' Kept {n_kept} rows from {len(kept_fovs)} other FOV(s)'
+                 + (' [older config!]' if (extra_locs or extra_ch) else '') + '.')
+    else:
+        lines.append('Workbook holds only this FOV.')
+        short = head
+    return {'short': short, 'long': '\n'.join(lines)}
+
+
+def _plot_gs_for_run(data_df, meta: dict):
+    """G-S scatter for the FOV just processed. Rows inherited from other
+    FOVs (merge policy) are drawn in light grey so they are visibly NOT
+    part of this run."""
+    fov = meta.get('fov') if meta else None
+    if fov is not None and 'FOV' in data_df.columns:
+        is_new = data_df['FOV'].astype(str) == str(fov)
+    else:
+        is_new = pd.Series(True, index=data_df.index)
+    new = data_df[is_new]
+    old = data_df[~is_new]
+    plt.figure()
+    if len(old):
+        plt.scatter(old['G'], old['S'], s=8, c='lightgrey',
+                    label=f'other FOVs kept from earlier runs (n={len(old)})')
+    if 'Localization' in new.columns:
+        loc_col = new['Localization'].fillna('').astype(str).str.upper()
+    else:
+        loc_col = pd.Series('', index=new.index)
+    palette = {'N': 'tab:blue', 'M': 'tab:green', 'P': 'tab:orange', '': 'tab:purple'}
+    for loc in sorted(loc_col.unique()):
+        sel = new[loc_col == loc]
+        plt.scatter(sel['G'], sel['S'], s=10, c=palette.get(loc, 'tab:red'),
+                    label=f'{fov if fov is not None else "this run"} - {loc or "Any"} (n={len(sel)})')
+    plt.xlabel('G')
+    plt.ylabel('S')
+    ch = (meta or {}).get('channels') or []
+    title = 'G-S plot'
+    if fov is not None:
+        title += f' - FOV {fov}'
+    if ch:
+        title += ' - ch' + '+'.join(str(c) for c in ch)
+    plt.title(title)
+    plt.legend(fontsize=8, loc='best')
+    plt.show()
 
 if TYPE_CHECKING:
     import napari
@@ -2548,7 +2718,7 @@ def find_seg_npys(intensity_folder: str):
 
 class Calculate_FLIM_S(Container):
     def __init__(self, viewer: "napari.viewer.Viewer"):
-        print('version 250828 (NMP barcode-ready)')
+        print('version 260902 (fresh-workbook option; batch honours selectors)')
         super().__init__()
         self._viewer = viewer
 
@@ -2641,6 +2811,15 @@ class Calculate_FLIM_S(Container):
         self._process_all_button = PushButton(text="▶▶ Process ALL FOVs (from disk)")
         self._process_all_button.clicked.connect(self.process_all_fovs)
         _style_process_button(self._process_all_button)
+        # Workbook policy. A run MERGES into an existing FLIM-S.xlsx: rows
+        # of this FOV are replaced, rows of every other FOV are kept, so
+        # several runs accumulate. The flip side: rows written earlier
+        # with a different configuration (e.g. 4 channels + N/P) survive
+        # a later ch1 + N run on another FOV. Ticking this moves the old
+        # workbook aside (FLIM-S_old_<timestamp>.xlsx) before writing.
+        self._fresh_workbook = widgets.CheckBox(
+            text='Fresh FLIM-S.xlsx (move old workbook aside first)',
+            value=False)
 
         self._progress = widgets.ProgressBar(label='Progress', value=0, min=0, max=100)
         self._status_label = Label(value='Ready')
@@ -2702,12 +2881,21 @@ class Calculate_FLIM_S(Container):
             'Fit phasor + lifetime per cell and write FLIM-S.xlsx to the '
             'Base folder.')
         _tt(self._process_all_button,
-            'Batch: enumerate every FOV under <base>/flim_stack/, load each '
-            'one\'s ch1..4 + masks from disk, and run FLIM-S per FOV. '
-            'Bypasses the manual Stack 1/2/3/4 layer selectors — you do '
-            'not need to drag every FOV into the napari viewer. Per-FOV '
-            'Excel files land in the Base folder, named the same way as '
-            'the single-FOV path.')
+            'Batch: enumerate every FOV under <base>/flim_stack/, load its '
+            'stacks + masks from disk, and run FLIM-S per FOV into ONE '
+            'FLIM-S.xlsx. Uses the SAME configuration as the selectors '
+            'above: only the channels whose Stack slot is filled and only '
+            'the N / M / P masks whose slot is filled (the layer names do '
+            'not matter, just which slots are set). Leave every slot empty '
+            'to use whatever ch1..4 / seg_n,m,p files exist on disk. You do '
+            'not need to drag every FOV into the viewer.')
+        _tt(self._fresh_workbook,
+            'Unticked (default): merge into an existing FLIM-S.xlsx - this '
+            'FOV\'s rows are replaced, other FOVs\' rows are kept, so runs '
+            'accumulate. Rows written earlier with a different set of '
+            'channels / masks are kept too, and the status line will say '
+            'so. Ticked: move the old workbook to FLIM-S_old_<time>.xlsx '
+            'first (never deleted), so the new file holds only this run.')
 
         _append_section_divider(self, '— 📚 FLIM stacks —')
         self.extend(self._stack_selectors + [self._base_dir])
@@ -2721,7 +2909,8 @@ class Calculate_FLIM_S(Container):
                      self._tau_resolution, self._harmonics])
 
         _append_section_divider(self, '— ▶ Process —')
-        self.extend([self._process_button, self._process_all_button,
+        self.extend([self._fresh_workbook, self._process_button,
+                      self._process_all_button,
                       self._progress, self._status_label])
 
         _add_next_button(self, viewer)
@@ -2936,6 +3125,7 @@ class Calculate_FLIM_S(Container):
             pulse_frequency=self._pulse_frequency.value,
             harmonics=self._harmonics.value,
             fov=fov,
+            fresh=bool(self._fresh_workbook.value),
         )
         # Build a length-4 list of stacks with None for missing slots.
         stacks = [None, None, None, None]
@@ -2945,8 +3135,12 @@ class Calculate_FLIM_S(Container):
         self._progress.min = 0
         self._progress.max = 100
         self._progress.value = 0
-        self._status_label.value = f'Starting FLIM-S for {fov} '\
-                                   f'(seg groups: {list(seg_dict.keys())})...'
+        ch_txt = 'ch' + '+'.join(str(i + 1) for i, _ in used)
+        loc_txt = '/'.join(sorted({_loc_label(k) for k in seg_dict.keys()}))
+        policy = ('fresh workbook' if self._fresh_workbook.value
+                  else 'merging into existing FLIM-S.xlsx if present')
+        self._status_label.value = (f'Starting FLIM-S for {fov} ({ch_txt}; '
+                                    f'masks {loc_txt}; {policy})...')
         self._process_button.enabled = False
 
         worker = self._flims_worker(stacks=stacks, seg_dict=seg_dict, params=params)
@@ -2994,27 +3188,55 @@ class Calculate_FLIM_S(Container):
         self._progress.min = 0
         self._progress.max = 100
         self._progress.value = 0
-        self._status_label.value = f'Batch FLIM-S: {len(stems)} FOVs ...'
+        # Honour the GUI configuration: a Stack slot that is filled means
+        # "use this channel", an N/M/P slot that is filled means "use this
+        # localisation". Which layer sits in the slot is irrelevant for the
+        # batch (each FOV's files are read from disk). All slots empty ->
+        # everything that exists on disk (the pre-260902 behaviour).
+        sel_channels = [i + 1 for i, s in enumerate(self._stack_selectors)
+                        if s.value is not None]
+        sel_locs = [k for k, w in (('n', self._seg_n), ('m', self._seg_m),
+                                   ('p', self._seg_p)) if w.value is not None]
+        channels = sel_channels or [1, 2, 3, 4]
+        locs = sel_locs or ['n', 'm', 'p']
+        src_txt = ('as selected above' if (sel_channels or sel_locs)
+                   else 'nothing selected -> everything on disk')
+        cfg_txt = ('ch' + '+'.join(str(c) for c in channels)
+                   + ' / masks ' + '/'.join(l.upper() for l in locs)
+                   + f' ({src_txt})')
+        if self._fresh_workbook.value:
+            _backup_flims_workbook(os.path.join(str(base), 'FLIM-S.xlsx'))
+        self._status_label.value = f'Batch FLIM-S: {len(stems)} FOVs - {cfg_txt} ...'
+        print(f'[FLIM-S] batch over {len(stems)} FOVs: {cfg_txt}')
         self._process_button.enabled = False
         self._process_all_button.enabled = False
-        worker = self._flims_all_fovs_worker(base, stems, params)
+        worker = self._flims_all_fovs_worker(base, stems, params, channels, locs,
+                                             strict_locs=bool(sel_locs))
         worker.yielded.connect(self._on_flims_yield)
         worker.returned.connect(self._on_flims_all_done)
         worker.errored.connect(self._on_flims_error)
         worker.start()
 
     @thread_worker
-    def _flims_all_fovs_worker(self, base, stems, params):
-        """Per-FOV worker: load stacks + masks from disk, call Gen_excel_multi."""
+    def _flims_all_fovs_worker(self, base, stems, params,
+                               channels=(1, 2, 3, 4), locs=('n', 'm', 'p'),
+                               strict_locs=False):
+        """Per-FOV worker: load the selected stacks + masks from disk and
+        call Gen_excel_multi. ``channels`` / ``locs`` come from the widget's
+        selectors (see process_all_fovs); rows accumulate in one workbook.
+        ``strict_locs`` = the localisations were explicitly selected, so a
+        FOV lacking one of them is worth reporting (when nothing was
+        selected we simply take what exists on disk, silently)."""
         import time as _time
         fs = Path(base) / 'flim_stack'
         intensity_folder = find_intensity_folder(str(base))
         total = len(stems)
         ok = 0
+        missing = {}  # loc -> number of FOVs where the selected mask was absent
         for i, stem in enumerate(stems):
             t0 = _time.time()
             stacks = [None, None, None, None]
-            for ch in (1, 2, 3, 4):
+            for ch in channels:
                 tif = fs / f'{stem}_ch{ch}.tif'
                 if tif.is_file():
                     try:
@@ -3027,7 +3249,7 @@ class Calculate_FLIM_S(Container):
             seg_dict = {}
             if intensity_folder is not None:
                 int_p = Path(intensity_folder)
-                for loc in ('n', 'm', 'p'):
+                for loc in locs:
                     # BarcodeSeg saves masks with the intensity-sum stem
                     # (which ends in `_sum`), so a flim_stack/<stem>_ch1.tif-
                     # derived `stem` (no `_sum`) needs the `_sum_` variant
@@ -3045,8 +3267,12 @@ class Calculate_FLIM_S(Container):
                             break
                         except Exception as e:
                             yield ('warn', f'{stem} seg_{loc} load failed: {e}')
+                    if strict_locs and loc not in seg_dict:
+                        missing[loc] = missing.get(loc, 0) + 1
             if not seg_dict:
-                yield ('warn', f'{stem}: no masks found in intensity/, skipping.')
+                yield ('warn', f'{stem}: none of the selected masks '
+                               f'({"/".join(l.upper() for l in locs)}) found in '
+                               f'intensity/, skipping.')
                 continue
             yield ('status', int(i * 100 / total),
                     f'[{i+1}/{total}] {stem} — running Gen_excel_multi...')
@@ -3065,23 +3291,45 @@ class Calculate_FLIM_S(Container):
                         f'[{i+1}/{total}] {stem} done in {_time.time()-t0:.1f}s')
             except Exception as e:
                 yield ('warn', f'{stem}: Gen_excel_multi failed: {e}')
-        return ok, total
+        return ok, total, list(channels), list(locs), missing
 
     def _on_flims_all_done(self, result):
-        ok, total = result
+        ok, total, channels, locs, missing = result
         self._progress.value = 100
         try:
             save_path = os.path.join(str(self._base_dir.value), 'FLIM-S.xlsx')
         except Exception:
             save_path = 'FLIM-S.xlsx'
-        self._status_label.value = (
-            f'Batch FLIM-S done: {ok}/{total} FOVs -> {save_path}'
-        )
+        cfg_txt = ('ch' + '+'.join(str(c) for c in channels)
+                   + ' / masks ' + '/'.join(l.upper() for l in locs))
+        head = f'Batch FLIM-S done: {ok}/{total} FOVs -> {save_path} ({cfg_txt}).'
+        lines = [head]
+        # Report what the workbook actually holds now, per localisation and
+        # per FOV, so a stale/unexpected row set is visible immediately.
+        try:
+            wb = pd.read_excel(save_path)
+            n_fov = wb['FOV'].nunique() if 'FOV' in wb.columns else '?'
+            loc_counts = {}
+            if 'Localization' in wb.columns:
+                for v, c in wb['Localization'].fillna('').astype(str).str.upper().value_counts().items():
+                    loc_counts[v or 'Any'] = int(c)
+            loc_txt = ', '.join(f'{k}: {v}' for k, v in sorted(loc_counts.items())) or 'n/a'
+            lines.append(f'Workbook now: {len(wb)} rows, {n_fov} FOVs (rows per localisation - {loc_txt}).')
+            if 'FOV' in wb.columns and isinstance(n_fov, int) and n_fov > ok:
+                lines.append(f'{n_fov - ok} FOV(s) in the workbook were NOT processed in this batch '
+                             f'(inherited from an earlier run). Tick "Fresh FLIM-S.xlsx" to start clean.')
+        except Exception as e:
+            lines.append(f'(could not re-read the workbook: {e})')
+        if missing:
+            miss_txt = ', '.join(f'{l.upper()} missing in {n} FOV(s)' for l, n in sorted(missing.items()))
+            lines.append('Selected masks not found on disk: ' + miss_txt + '.')
+        self._status_label.value = head
+        print('[FLIM-S] ' + ' | '.join(lines))
         self._process_button.enabled = True
         self._process_all_button.enabled = True
         # ONE summary popup at the end of the whole batch (per-FOV popups
         # were removed from Gen_excel_multi so this is the only one).
-        show_info(f'Batch FLIM-S done: {ok}/{total} FOVs saved to {save_path}')
+        show_info('\n'.join(lines))
 
     @thread_worker
     def _flims_worker(self, stacks, seg_dict, params):
@@ -3096,6 +3344,7 @@ class Calculate_FLIM_S(Container):
             params['tau_resolution'], params['pulse_frequency'],
             params['harmonics'],
             params['fov'],
+            fresh=bool(params.get('fresh', False)),
         )
         yield ('status', 95, f'Gen_excel_multi done in {_time.time()-t0:.1f}s.')
         return data_df
@@ -3117,19 +3366,25 @@ class Calculate_FLIM_S(Container):
 
     def _on_flims_done(self, data_df):
         self._progress.value = self._progress.max
-        self._status_label.value = 'FLIM-S done. Excel saved. Plotting G-S...'
         self._process_button.enabled = True
-        # Plot on main thread (matplotlib is not thread-safe)
+        meta = {}
         try:
-            plt.figure()
-            plt.scatter(data_df['G'], data_df['S'])
-            plt.xlabel('G')
-            plt.ylabel('S')
-            plt.title('G-S plot')
-            plt.show()
+            meta = dict(getattr(data_df, 'attrs', {}) or {})
+        except Exception:
+            meta = {}
+        summary = _flims_run_summary(meta)
+        # Say what was written vs inherited - the old "Excel saved" hid
+        # the fact that other FOVs' (possibly differently configured)
+        # rows were carried over from the previous workbook.
+        self._status_label.value = summary['short']
+        print('[FLIM-S] ' + summary['long'].replace('\n', ' | '))
+        # Plot on main thread (matplotlib is not thread-safe). Only this
+        # FOV is coloured; inherited rows are grey.
+        try:
+            _plot_gs_for_run(data_df, meta)
         except Exception as e:
             show_warning(f'G-S plot failed: {e}')
-        show_info('FLIM-S processing complete. Click Next to continue.')
+        show_info(summary['long'] + '\nClick Next to continue.')
 
     def _on_flims_error(self, exc):
         self._status_label.value = f'ERROR: {exc}'

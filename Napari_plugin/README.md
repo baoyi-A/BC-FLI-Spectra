@@ -264,8 +264,11 @@ took effect.
 2. 🔬 **Barcode Seg (Cellpose)** — run N and P segmentation on the
    intensity‑sum image. Edit masks in napari. Optionally fine‑tune the
    N / P model from the edits (single‑image or multi‑folder).
-3. 🌀 **Calculate FLIM‑S** — compute lifetime / phasor features; write
-   `FLIM‑S.xlsx` with per‑cell features.
+3. 🌀 **Calculate FLIM‑S** — compute lifetime / phasor features from
+   1–4 decay channels and the N / M / P masks you select; write
+   `FLIM‑S.xlsx` with per‑cell features. A run merges into an existing
+   workbook per FOV (tick *Fresh FLIM‑S.xlsx* to start clean); the
+   batch button uses the same channel / mask selection.
 4. 🧩 **Seeded K-Means** — place seeds on each barcode class (optionally
    load a prior distribution overlay), pick a method, flag outliers, and
    export per‑cell class labels.
