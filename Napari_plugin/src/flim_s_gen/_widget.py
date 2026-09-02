@@ -3691,8 +3691,13 @@ class SeededKMeans(Container):
             'ignore the seeds and cluster blind.')
         _tt(self.outlier_enable,
             'Flag per-class outliers (Isolation Forest) and reassign '
-            'them to class 0 (unassigned). Helps weed out dim or '
-            'defocused cells without re-editing masks.')
+            'them to class 0 (unassigned). Within each cluster just '
+            'assigned, the cells that do not look like the rest of that '
+            'cluster are declined. This is an OUTLIER detector, not a '
+            'confidence gate: it catches segmentation fragments, dim or '
+            'defocused cells and non-expressing cells, but it cannot catch '
+            'a cell that sits neatly inside the wrong cluster. Declined '
+            'cells are excluded from the per-class results.')
         _tt(self.selfwhiten_enable,
             'Seed K-Means only. After a first clustering, measure how wide '
             'the clusters themselves are, rescale the 5D space so that one '
@@ -3720,6 +3725,12 @@ class SeededKMeans(Container):
             'Save the currently-placed seeds to an .xlsx file so you can '
             'reload them in a future session.')
         _tt(self.load_seeds_btn,
+            'Load class centres saved from an earlier acquisition of the '
+            'same barcode panel. They are only a STARTING POINT: seeded '
+            'K-Means re-fits the centres on the cells loaded now, which is '
+            'what lets a reference acquired once be reused on a later '
+            'acquisition. Holding the loaded centres fixed instead would '
+            'misassign whole classes when the batch has shifted.\n'
             'Load a previously-saved seeds .xlsx. Number of seeds in the '
             'file auto-fills Clusters above.')
         _tt(self.save_dist_btn,
