@@ -621,8 +621,15 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
 
     table = QTableWidget(0, 4)
     table.setHorizontalHeaderLabels(['Folder', 'FOVs used', 'First image', 'Status'])
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-    table.horizontalHeader().setStretchLastSection(True)
+    hh = table.horizontalHeader()
+    # A long sample path used to size the first column to the full path and
+    # push Status off the right edge — the one column the user must read.
+    hh.setSectionResizeMode(0, QHeaderView.Interactive)
+    hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    hh.setStretchLastSection(True)
+    table.setColumnWidth(0, 360)
+    table.setTextElideMode(Qt.ElideLeft)
     table.setSelectionBehavior(QTableWidget.SelectRows)
     table.setEditTriggers(QTableWidget.NoEditTriggers)
     root.addWidget(table)
@@ -641,7 +648,9 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
         folder_pairs[str(sd)] = pairs
         r = table.rowCount()
         table.insertRow(r)
-        table.setItem(r, 0, QTableWidgetItem(str(sd)))
+        folder_item = QTableWidgetItem(str(sd))
+        folder_item.setToolTip(str(sd))
+        table.setItem(r, 0, folder_item)
         table.setItem(r, 1, QTableWidgetItem(str(len(pairs))))
         table.setItem(r, 2, QTableWidgetItem(pairs[0][0].name if pairs else '(none)'))
         item = QTableWidgetItem(status)
