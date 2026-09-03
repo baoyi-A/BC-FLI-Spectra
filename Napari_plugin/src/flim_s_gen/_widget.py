@@ -357,10 +357,37 @@ def _run_infer_subprocess(
                        f'(exit={proc.returncode}); tail: {out[-500:]}')
 
 
+def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images):
+    """Record how a fine-tuned model was trained, next to the weights.
+
+    ``_load_model_config`` probes ``<model>.config.json``, ``<model>/../config.json``
+    and ``<model>/../../config.json``; the training output lives at
+    ``<save_dir>/models/<name>``, so ``<save_dir>/config.json`` is found. An
+    existing config is never overwritten.
+    """
+    if not input_kind:
+        return None
+    try:
+        dest = Path(save_dir) / 'config.json'
+        if dest.exists():
+            return None
+        payload = {
+            'input_kind': input_kind,
+            'trained_from': str(base_name),
+            'trained_on_images': int(n_images),
+        }
+        dest.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+        print(f'[finetune] wrote {dest} (input_kind={input_kind})')
+        return dest
+    except Exception as e:
+        print(f'[finetune] could not write config.json: {e}')
+        return None
+
+
 def _run_finetune_subprocess(
     *, img=None, mask=None, imgs=None, masks=None,
     base_name, new_name, save_dir, n_epochs, channels,
-    use_gpu, extra_roots,
+    use_gpu, extra_roots, input_kind=None,
 ) -> "Path":
     """Run Cellpose fine-tune in a child Python process.
 
@@ -429,7 +456,12 @@ def _run_finetune_subprocess(
     for line in out.splitlines()[::-1]:
         s = line.strip()
         if s.startswith('RESULT:'):
-            return Path(s[len('RESULT:'):].strip())
+            new_path = Path(s[len('RESULT:'):].strip())
+            _write_finetune_config(
+                save_dir, new_path, base_name, input_kind,
+                len(imgs) if imgs is not None else 1,
+            )
+            return new_path
         if s.startswith('ERROR:'):
             raise RuntimeError(s[len('ERROR:'):].strip())
     raise RuntimeError(f'fine-tune subprocess ended without RESULT/ERROR '
@@ -444,44 +476,71 @@ def _run_finetune_subprocess(
 # - status: short human-readable note for the table
 # All detectors are cheap — they just probe filesystem paths, not load data.
 
-def _detect_finetune_pair_barcode_n(sample_dir: Path):
+def _detect_finetune_pairs_barcode(sample_dir: Path, loc: str):
+    """Every (intensity-sum tif, mask npy) pair in one sample folder.
+
+    Returns ``(pairs, status)``. BarcodeSeg writes each mask NEXT TO the sum
+    tif it segmented, i.e. ``<sample>/intensity/<stem>_seg_{n,p}.npy`` — the
+    old detector looked one directory higher (``<sample>/``) and therefore
+    reported "missing" for every folder. The sample root is still probed as a
+    fallback for hand-made / legacy layouts, and EVERY FOV in the folder is
+    collected, not just the first one.
+    """
     intensity = sample_dir / 'intensity'
-    img = None
-    if intensity.is_dir():
-        tifs = sorted(intensity.glob('*_sum.tif'))
-        if tifs:
-            img = tifs[0]
-    if img is None:
-        return None, None, '✗ no intensity/*_sum.tif'
-    mask = img.parent.parent / f'{img.stem}_seg_n.npy'
-    if mask.exists():
-        return img, mask, '✓ n mask found'
-    return img, None, '⚠ missing *_seg_n.npy'
+    if not intensity.is_dir():
+        # Some hand-assembled folders keep the sums at the top level.
+        intensity = sample_dir
+    tifs = sorted(intensity.glob('*_sum.tif'))
+    if not tifs:
+        return [], '✗ no intensity/*_sum.tif'
+    pairs = []
+    for t in tifs:
+        cands = [t.parent / f'{t.stem}_seg_{loc}.npy',
+                 sample_dir / f'{t.stem}_seg_{loc}.npy']
+        m = next((c for c in cands if c.is_file()), None)
+        if m is not None:
+            pairs.append((t, m))
+    if not pairs:
+        return [], (f'⚠ {len(tifs)} FOV(s), none with a *_seg_{loc}.npy — '
+                    f'segment + save {loc.upper()} in this folder first')
+    if len(pairs) < len(tifs):
+        return pairs, f'✓ {len(pairs)} of {len(tifs)} FOV(s) have a {loc.upper()} mask'
+    return pairs, f'✓ {len(pairs)} FOV(s)'
+
+
+def _detect_finetune_pair_barcode_n(sample_dir: Path):
+    return _detect_finetune_pairs_barcode(sample_dir, 'n')
 
 
 def _detect_finetune_pair_barcode_p(sample_dir: Path):
-    intensity = sample_dir / 'intensity'
-    img = None
-    if intensity.is_dir():
-        tifs = sorted(intensity.glob('*_sum.tif'))
-        if tifs:
-            img = tifs[0]
-    if img is None:
-        return None, None, '✗ no intensity/*_sum.tif'
-    mask = img.parent.parent / f'{img.stem}_seg_p.npy'
-    if mask.exists():
-        return img, mask, '✓ p mask found'
-    return img, None, '⚠ missing *_seg_p.npy'
+    return _detect_finetune_pairs_barcode(sample_dir, 'p')
 
 
 def _detect_finetune_pair_biosensor(sample_dir: Path):
-    img = sample_dir / 'seg_image.tif'
-    if not img.is_file():
-        return None, None, '✗ no seg_image.tif'
-    mask = sample_dir / 'seg_image_seg.npy'
-    if mask.exists():
-        return img, mask, '✓ seg_image_seg.npy'
-    return img, None, '⚠ missing seg_image_seg.npy'
+    """Every (seg image, mask) pair in one sample folder.
+
+    BiosensorSeg names the seg image after the FOV
+    (``<fov>_seg_image.tif``) and saves the edited mask beside it as
+    ``<fov>_seg_image_seg.npy``; the bare ``seg_image.tif`` is only the
+    fallback name. The old detector knew only the bare name.
+    """
+    imgs = sorted(sample_dir.glob('*_seg_image.tif'))
+    bare = sample_dir / 'seg_image.tif'
+    if bare.is_file() and bare not in imgs:
+        imgs.append(bare)
+    if not imgs:
+        return [], '✗ no *_seg_image.tif'
+    pairs = []
+    for img in imgs:
+        m = img.parent / f'{img.stem}_seg.npy'
+        if m.is_file():
+            pairs.append((img, m))
+    if not pairs:
+        return [], (f'⚠ {len(imgs)} seg image(s), none with a *_seg.npy — '
+                    f'click Save Mask in this folder first')
+    if len(pairs) < len(imgs):
+        return pairs, f'✓ {len(pairs)} of {len(imgs)} seg image(s) have a mask'
+    return pairs, f'✓ {len(pairs)} seg image(s)'
 
 
 _FINETUNE_DETECTORS = {
@@ -508,7 +567,7 @@ def _load_mask_npy_any(path: Path) -> "np.ndarray":
 def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
                                  default_new_name: str, default_epochs: int,
                                  use_gpu: bool, save_root: Path,
-                                 on_done, on_error):
+                                 on_done, on_error, prep_fn=None):
     """Show a modal dialog to pick multiple sample folders and fine-tune.
 
     Parameters
@@ -523,6 +582,14 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
                        (``save_root / <new_name>`` is then created).
     on_done(new_name, new_path, n_samples) : callback on successful training.
     on_error(exc) : callback on failure.
+    prep_fn : optional ``(image_path) -> (array, channels)`` or
+              ``(array, channels, input_kind)``. Supplied by the
+              widget so a training image is prepared EXACTLY the way that
+              widget prepares an image for inference (RGB render for a
+              CellposeSAM model, the 2-channel stack for BS-BC-assist, an
+              ``input_kind`` from config.json, the GUI's Input-kind picker).
+              Without it the raw file is used with channels [0, 0], which is
+              only correct for a grayscale v2 model.
     """
     from qtpy.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
@@ -543,14 +610,17 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
 
     hdr = QLabel(
         f'<b>Fine-tune <code>{base_name}</code> on multiple sample folders.</b><br>'
-        f'Add each folder; the dialog auto-detects the image + mask pair '
-        f'<i>({mask_label})</i>. Rows with ⚠ or ✗ will be skipped.'
+        f'Add each folder; every FOV in it that already has a saved mask '
+        f'<i>({mask_label})</i> is used for training. Rows with ⚠ or ✗ are skipped.'
     )
     hdr.setWordWrap(True)
     root.addWidget(hdr)
 
+    # folder string -> list[(image_path, mask_path)] found by the detector
+    folder_pairs: "dict[str, list]" = {}
+
     table = QTableWidget(0, 4)
-    table.setHorizontalHeaderLabels(['Folder', 'Image', 'Mask', 'Status'])
+    table.setHorizontalHeaderLabels(['Folder', 'FOVs used', 'First image', 'Status'])
     table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     table.horizontalHeader().setStretchLastSection(True)
     table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -567,12 +637,13 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
         for r in range(table.rowCount()):
             if table.item(r, 0) and table.item(r, 0).text() == str(sd):
                 return
-        img, mask, status = detector_fn(sd)
+        pairs, status = detector_fn(sd)
+        folder_pairs[str(sd)] = pairs
         r = table.rowCount()
         table.insertRow(r)
         table.setItem(r, 0, QTableWidgetItem(str(sd)))
-        table.setItem(r, 1, QTableWidgetItem(str(img) if img else '(none)'))
-        table.setItem(r, 2, QTableWidgetItem(str(mask) if mask else '(none)'))
+        table.setItem(r, 1, QTableWidgetItem(str(len(pairs))))
+        table.setItem(r, 2, QTableWidgetItem(pairs[0][0].name if pairs else '(none)'))
         item = QTableWidgetItem(status)
         if status.startswith('✓'):
             item.setForeground(Qt.darkGreen)
@@ -621,7 +692,7 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
     progress.setRange(0, 100)
     progress.setValue(0)
     root.addWidget(progress)
-    status_lbl = QLabel('Ready. Add at least one folder with a valid ✓ pair.')
+    status_lbl = QLabel('Ready. Add at least one folder that already has saved masks.')
     status_lbl.setWordWrap(True)
     root.addWidget(status_lbl)
 
@@ -637,18 +708,24 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
     cancel_btn.clicked.connect(dlg.reject)
 
     def _on_start():
-        # Gather valid rows.
+        # Gather every (image, mask) pair of every ✓ folder still in the table.
         pairs: list[tuple[Path, Path]] = []
+        n_folders = 0
         for r in range(table.rowCount()):
             status = table.item(r, 3).text() if table.item(r, 3) else ''
             if not status.startswith('✓'):
                 continue
-            img_p = Path(table.item(r, 1).text())
-            mask_p = Path(table.item(r, 2).text())
-            pairs.append((img_p, mask_p))
+            folder = table.item(r, 0).text() if table.item(r, 0) else ''
+            got = folder_pairs.get(folder) or []
+            if got:
+                n_folders += 1
+                pairs.extend(got)
         if not pairs:
             QMessageBox.warning(dlg, 'Nothing to train',
-                                'No folders with a complete ✓ image + mask pair.')
+                                'No folder in the list has a saved mask yet.\n\n'
+                                'Segment and save the mask in each folder first '
+                                '(the file sits next to the image the mask was '
+                                'drawn on).')
             return
         new_name = name_edit.text().strip()
         if not new_name:
@@ -664,18 +741,48 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
         start_btn.setEnabled(False)
         b_add.setEnabled(False)
         b_rm.setEnabled(False)
-        status_lbl.setText(f'Loading {len(pairs)} image/mask pairs...')
+        status_lbl.setText(
+            f'Loading {len(pairs)} image/mask pairs from {n_folders} folder(s)...')
         progress.setValue(5)
 
         try:
             imgs = []
             masks = []
+            # Default when the caller supplied no preparation function: the raw
+            # file as-is, single channel. Correct only for a grayscale v2 model.
+            channels = [0, 0]
+            input_kind = None
             for i, (img_p, mask_p) in enumerate(pairs):
-                img = tifffile.imread(str(img_p))
-                if img.ndim > 2:
-                    img = np.squeeze(img)
-                imgs.append(np.asarray(img, dtype=np.float32))
-                masks.append(_load_mask_npy_any(mask_p))
+                if prep_fn is not None:
+                    # Same routing as inference, so the model is trained on the
+                    # form it will be used with (RGB for CellposeSAM, etc.).
+                    got = prep_fn(img_p)
+                    if len(got) == 3:
+                        img, ch, kind = got
+                    else:
+                        img, ch = got
+                        kind = None
+                    img = np.asarray(img, dtype=np.float32)
+                    if i == 0:
+                        channels = list(ch)
+                        input_kind = kind
+                    elif list(ch) != list(channels):
+                        raise RuntimeError(
+                            f'{img_p.name} needs channels {list(ch)} but the first '
+                            f'image needs {list(channels)} — the folders do not '
+                            f'share one input form; train them separately.')
+                else:
+                    img = tifffile.imread(str(img_p))
+                    if img.ndim > 2:
+                        img = np.squeeze(img)
+                    img = np.asarray(img, dtype=np.float32)
+                mask = _load_mask_npy_any(mask_p)
+                if mask.shape[:2] != img.shape[:2]:
+                    raise RuntimeError(
+                        f'{mask_p.name} is {mask.shape[:2]} but {img_p.name} is '
+                        f'{img.shape[:2]} — the mask does not belong to that image.')
+                imgs.append(img)
+                masks.append(mask)
                 progress.setValue(5 + int(15 * (i + 1) / max(1, len(pairs))))
 
             status_lbl.setText(
@@ -683,20 +790,16 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
                 f'for {ep_spin.value()} epochs...')
             progress.setValue(25)
 
-            # Channels: barcode single-channel (0,0). Biosensor is single-channel
-            # too in _prep_biosensor_seg_input output, so [0,0] is correct for
-            # all three targets.
-            channels = [0, 0]
-
             new_path = _run_finetune_subprocess(
                 imgs=imgs, masks=masks,
                 base_name=base_name, new_name=new_name,
                 save_dir=save_dir, n_epochs=int(ep_spin.value()),
                 channels=channels, use_gpu=bool(gpu_chk.isChecked()),
-                extra_roots=[str(save_root)],
+                extra_roots=[str(save_root)], input_kind=input_kind,
             )
             progress.setValue(100)
-            status_lbl.setText(f'Done: {new_path}')
+            status_lbl.setText(
+                f'Done ({len(pairs)} FOVs from {n_folders} folders): {new_path}')
             on_done(new_name, new_path, len(pairs))
             dlg.accept()
         except Exception as e:
@@ -12063,7 +12166,7 @@ class BarcodeSeg(Container):
         if cand.is_file():
             self.tif_override.value = str(cand)
 
-    def _load_image_2d(self, path: Path) -> np.ndarray:
+    def _load_image_2d(self, path: Path, sample_dir=None) -> np.ndarray:
         """Load the GRAY seg input for ``path`` (the intensity-sum tif).
 
         For v2 render-trained models we produce the FastFLIM-render BT.601
@@ -12074,7 +12177,11 @@ class BarcodeSeg(Container):
         fallback layer), but the worker prefers the RGB form returned by
         :meth:`_load_fastflim_display_rgb`. See :meth:`_cellpose_input_for`.
         """
-        sample_dir = Path(self.sample_dir.value) if self.sample_dir.value else path.parent.parent
+        if sample_dir is not None:
+            sample_dir = Path(sample_dir)
+        else:
+            sample_dir = (Path(self.sample_dir.value) if self.sample_dir.value
+                          else path.parent.parent)
         seg_img, source = _make_barcode_seg_grayscale(sample_dir, path)
         if seg_img is not None:
             print(f'[BarcodeSeg] using FastFLIM render input ({source}) for {path.name}')
@@ -12105,11 +12212,15 @@ class BarcodeSeg(Container):
         cfg = _load_model_config(model_name, extra_roots=extra_roots) or {}
         # GUI override beats config.
         kind = gui_kind_override or cfg.get('input_kind')
+        # `_last_input_kind` records the form actually returned, so a
+        # fine-tune can save it next to the trained model and inference can
+        # reproduce it later without re-deriving it from heuristics.
         if kind == 'intensity_sum' and raw_path is not None:
             try:
                 raw = tifffile.imread(str(raw_path))
                 if raw.ndim > 2:
                     raw = np.squeeze(raw)
+                self._last_input_kind = 'intensity_sum'
                 return np.asarray(raw, dtype=np.float32)
             except Exception as e:
                 _log.warning(
@@ -12117,12 +12228,16 @@ class BarcodeSeg(Container):
                     'load failed (%s); falling back to gray.', model_name, e,
                 )
         if kind == 'barcode_seg_rgb' and rgb is not None:
+            self._last_input_kind = 'barcode_seg_rgb'
             return rgb
         if kind == 'barcode_seg_grayscale':
+            self._last_input_kind = 'barcode_seg_grayscale'
             return gray
         # Legacy path — no override / config didn't recognise the kind.
         if _is_v4_model(model_name, extra_roots=extra_roots) and rgb is not None:
+            self._last_input_kind = 'barcode_seg_rgb'
             return rgb
+        self._last_input_kind = 'barcode_seg_grayscale'
         return gray
 
     def _get_model(self, name: str):
@@ -12431,7 +12546,7 @@ class BarcodeSeg(Container):
         show_warning(f'Segmentation failed: {exc}')
         traceback.print_exc()
 
-    def _load_fastflim_display_rgb(self, sum_tif_path):
+    def _load_fastflim_display_rgb(self, sum_tif_path, sample_dir=None):
         """Return an HxWx3 uint8 FastFLIM colour render for the current FOV.
 
         Tries the cached PNG saved by PTU Reader first
@@ -12439,11 +12554,18 @@ class BarcodeSeg(Container):
         render with the BarcodeSeg training params from the saved tau +
         intensity. Returns ``None`` if neither source is available — the
         caller can still show the grayscale.
+
+        ``sample_dir`` overrides the widget's current sample folder. Pass it
+        whenever the image comes from somewhere else (multi-folder
+        fine-tuning), or the render of a DIFFERENT FOV would be picked up.
         """
         sum_tif_path = Path(sum_tif_path)
-        sample_dir = (Path(str(self.sample_dir.value))
-                      if self.sample_dir.value
-                      else sum_tif_path.parent.parent)
+        if sample_dir is not None:
+            sample_dir = Path(sample_dir)
+        else:
+            sample_dir = (Path(str(self.sample_dir.value))
+                          if self.sample_dir.value
+                          else sum_tif_path.parent.parent)
         bare = sum_tif_path.stem
         if bare.endswith('_sum'):
             bare = bare[:-len('_sum')]
@@ -12739,16 +12861,23 @@ class BarcodeSeg(Container):
 
         # Fine-tune on the same input form the model expects: RGB for v4,
         # gray for v2.
+        # Same routing as Auto Segment / Re-segment, including raw_path and the
+        # GUI Input-kind picker — otherwise the model can be fine-tuned on one
+        # input form and then used on another.
         ft_input = self._cellpose_input_for(
             base_name, self._current_img,
             getattr(self, '_current_img_rgb', None),
             extra_roots=[str(sample_dir)],
+            raw_path=getattr(self, '_current_src', None),
+            gui_kind_override=_input_kind_preset_to_cfg(
+                (self.n_input_kind if target == 'n' else self.p_input_kind).value),
         )
+        ft_kind = getattr(self, '_last_input_kind', None)
         worker = self._finetune_worker(
             target=target, base_name=base_name, new_name=new_name,
             save_dir=save_dir, img=ft_input, mask=mask,
             n_epochs=n_epochs, use_gpu=bool(self.use_gpu.value),
-            extra_roots=[str(sample_dir)],
+            extra_roots=[str(sample_dir)], input_kind=ft_kind,
         )
         worker.yielded.connect(self._on_seg_yield)
         worker.returned.connect(self._on_finetune_done)
@@ -12757,7 +12886,7 @@ class BarcodeSeg(Container):
 
     @thread_worker
     def _finetune_worker(self, target, base_name, new_name, save_dir, img, mask,
-                         n_epochs, use_gpu, extra_roots):
+                         n_epochs, use_gpu, extra_roots, input_kind=None):
         import time as _time
         yield ('status', 10, f'Spawning fine-tune subprocess ({base_name}, '
                               f'{n_epochs} epochs on 1 image)... '
@@ -12769,6 +12898,7 @@ class BarcodeSeg(Container):
             base_name=base_name, new_name=new_name,
             save_dir=save_dir, n_epochs=n_epochs,
             channels=[0, 0], use_gpu=use_gpu, extra_roots=extra_roots,
+            input_kind=input_kind,
         )
         yield ('status', 95, f'Training done in {_time.time()-t0:.1f}s. Saving...')
         return (target, new_name, new_path)
@@ -12798,6 +12928,36 @@ class BarcodeSeg(Container):
     def _on_finetune_multi(self, target: str):
         """Open the multi-folder fine-tune dialog for target 'n' or 'p'."""
         base_name = str(self.n_model.value if target == 'n' else self.p_model.value)
+        kind_widget = self.n_input_kind if target == 'n' else self.p_input_kind
+
+        def _prep(img_path):
+            """Prepare one FOV exactly the way Auto Segment would.
+
+            The render / tau map of a FOV lives in ITS OWN sample folder, so
+            resolve that from the image path (``<sample>/intensity/<stem>_sum.tif``)
+            instead of using the widget's currently-selected folder.
+            """
+            img_path = Path(img_path)
+            fov_sample_dir = (img_path.parent.parent
+                              if img_path.parent.name.lower() == 'intensity'
+                              else img_path.parent)
+            gray = self._load_image_2d(img_path, sample_dir=fov_sample_dir)
+            try:
+                rgb = self._load_fastflim_display_rgb(
+                    img_path, sample_dir=fov_sample_dir)
+            except Exception:
+                rgb = None
+            extra = [str(fov_sample_dir)]
+            if self.sample_dir.value:
+                extra.append(str(self.sample_dir.value))
+            arr = self._cellpose_input_for(
+                base_name, gray, rgb,
+                extra_roots=extra,
+                raw_path=img_path,
+                gui_kind_override=_input_kind_preset_to_cfg(kind_widget.value),
+            )
+            return arr, [0, 0], getattr(self, '_last_input_kind', None)
+
         ts = datetime.now().strftime('%Y%m%d-%H%M%S')
         default_new = f'{"N" if target == "n" else "P"}-multi-{ts}'
         sd = self.sample_dir.value
@@ -12829,6 +12989,7 @@ class BarcodeSeg(Container):
             save_root=save_root,
             on_done=_done,
             on_error=_err,
+            prep_fn=_prep,
         )
 
     def _reenable_buttons(self):
@@ -13386,7 +13547,8 @@ class BiosensorSeg(Container):
             'mask. New model is saved under <sample>/_finetune/.')
         _tt(self.ft_multi_btn,
             'Open a dialog to pick MULTIPLE sample folders and fine-tune '
-            'jointly on every (seg_image, seg_image_seg.npy) pair found.')
+            'jointly on every seg image + saved mask pair found in them '
+            '(all FOVs of each folder, not just the first).')
 
         _append_section_divider(self, '— 📁 Sample folder —')
         self.append(self.sample_folder)
@@ -14032,6 +14194,14 @@ class BiosensorSeg(Container):
         session. The dialog loads all valid pairs and trains them jointly.
         """
         base_name = str(self.seg_model.value)
+        if base_name.lower().startswith('bs-bc-assist'):
+            show_warning(
+                'BS-BC-assist models take a second channel built from the '
+                'barcode classification of THIS field of view, which the '
+                'other folders cannot supply. Fine-tune an assist model one '
+                'folder at a time, or pick a plain biosensor model here.'
+            )
+            return
         ts = datetime.now().strftime('%Y%m%d-%H%M%S')
         default_new = f'BS-multi-{ts}'
         sd = self.sample_folder.value
@@ -14052,6 +14222,15 @@ class BiosensorSeg(Container):
             self._set_progress(0, f'Multi-folder fine-tune ERROR: {exc}')
             show_warning(f'Multi-folder fine-tune failed: {exc}')
 
+        def _prep(img_path):
+            img2d = np.asarray(tifffile.imread(str(img_path)), dtype=np.float32)
+            if img2d.ndim > 2:
+                img2d = np.squeeze(img2d)
+            # use_assist is False here (assist models are refused above), so
+            # this returns the same single-channel form the single-image
+            # fine-tune and Segment use.
+            return self._build_seg_input(img2d, False)
+
         _open_multi_finetune_dialog(
             parent_widget=self,
             target='bs',
@@ -14062,6 +14241,7 @@ class BiosensorSeg(Container):
             save_root=save_root,
             on_done=_done,
             on_error=_err,
+            prep_fn=_prep,
         )
 
     # ---------- Viewer interaction (edit mask) ----------
