@@ -293,6 +293,8 @@ def _run_infer_subprocess(
     try:
         default_roots = [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose_finetune_*'))]
         default_roots += [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*'))]
+        # ...and the root itself, which may simply be a folder of weights.
+        default_roots.append(str(_BARCODE_MODEL_ROOT))
     except Exception:
         pass
 
@@ -425,6 +427,8 @@ def _run_finetune_subprocess(
     try:
         default_roots = [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose_finetune_*'))]
         default_roots += [str(d) for d in sorted(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*'))]
+        # ...and the root itself, which may simply be a folder of weights.
+        default_roots.append(str(_BARCODE_MODEL_ROOT))
     except Exception:
         pass
 
@@ -11069,6 +11073,24 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "",
             if not mdir.is_dir():
                 continue
             _consider(mdir / "models" / mdir.name, mdir.name)
+
+    # The shared root may simply BE a folder of weights — which is what a
+    # downloaded or archived model set looks like. _resolve_barcode_model_path
+    # accepts those layouts, so the dropdown has to offer them too: a model the
+    # plugin can load but cannot list is a model nobody can select.
+    try:
+        if _BARCODE_MODEL_ROOT.is_dir():
+            for p in _BARCODE_MODEL_ROOT.iterdir():
+                if p.is_file() and _looks_like_model_weight(p):
+                    _consider(p, p.name)          # <root>/<name>
+                elif p.is_dir():
+                    for cand in (p / p.name, p / f"{p.name}_BEST",
+                                 p / "models" / p.name):
+                        if cand.is_file():
+                            _consider(cand, p.name)   # <root>/<name>/<name>[_BEST]
+                            break
+    except Exception as e:
+        _log.debug('flat model-root scan failed: %s', e)
 
     # Cache scan: ~/.cellpose/models/ may hold lab-shared v2 weights
     # (a007, BS-2405-1k, CP_<date>, 4_NTOM_U2OS_2k_*, …) that aren't in a

@@ -79,17 +79,27 @@ def _resolve_local_model(name: str, extra_roots, default_finetune_roots):
     cache = Path.home() / ".cellpose" / "models" / name
     if cache.exists():
         return cache
+    # Every layout the parent accepts, or a model the GUI can select becomes a
+    # model the child cannot load. The parent passes the shared model root
+    # itself among default_finetune_roots for exactly this reason.
+    def _candidates(root, n):
+        root = Path(root)
+        return (
+            root / n / "models" / n,      # what cellpose's trainer writes
+            root / n / n,                 # archived: folder named after the model
+            root / n / f"{n}_BEST",       # ... with the best-epoch suffix
+            root / n,                     # flat store: the weight file itself
+            root / "models" / n,
+        )
+
     for d in default_finetune_roots:
-        c = Path(d) / name / "models" / name
-        if c.exists():
-            return c
+        for c in _candidates(d, name):
+            if c.is_file():
+                return c
     for root in extra_roots:
-        for cand in (
-            Path(root) / "_finetune" / name / "models" / name,
-            Path(root) / name / "models" / name,
-        ):
-            if cand.exists():
-                return cand
+        for c in _candidates(Path(root) / "_finetune", name) + _candidates(root, name):
+            if c.is_file():
+                return c
     return None
 
 
