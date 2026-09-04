@@ -22,22 +22,33 @@ Two independent parts:
 | `Napari_plugin/` | The plugin. Seven GUI widgets, all in `src/flim_s_gen/_widget.py`. |
 | `LUMINA_classification/` | A standalone PyTorch classifier for dual-anchor barcodes. Not imported by the plugin. |
 
-## Usage knowledge lives in a skill
+## Usage knowledge lives in two skills
 
-How to *operate* the software — the seven steps, what each parameter means,
-what to do when something looks wrong — is in
+How to *operate* the software — which step to run, what each parameter means,
+what to do when something looks wrong — is not in this file. One skill per
+tool, both written to the [Agent Skills](https://agentskills.io) format:
 
 ```
-.claude/skills/bc-flim-spectra/SKILL.md
+.claude/skills/slic-napari/SKILL.md          the napari plugin
     references/workflow.md          all seven widgets, control by control
     references/troubleshooting.md   real failure modes and the check for each
     references/install.md           environments, model weights, constraints
+    references/status-and-qc.md     "where am I / does this look right"
+
+.claude/skills/lumina-network/SKILL.md       the dual-anchor classifier
+    references/data-and-prep.md         the on-disk contract and Data_prep.py
+    references/training.md              architecture, the two stages, checkpoints
+    references/inference-and-heatmap.md confidence scoring and the figure
+    references/domain-adaptation.md     moving a checkpoint to a new cell line
+    references/troubleshooting.md       failure modes, each with its check
 ```
 
-written to the [Agent Skills](https://agentskills.io) format. Read it before
-answering a user's question about how to run the workflow; read this file
-before changing code. One canonical copy — do not fork it into another skills
-directory, point your tool at this path instead.
+Read the matching skill before answering a user's question about how to run
+something; read this file before changing code. The two tools share no code and
+no file conventions — LUMINA wants `<fov>-1.tif` where the plugin writes
+`<fov>_ch1.tif` — so do not answer a question about one from the other.
+One canonical copy of each: do not fork them into another skills directory,
+point your tool at these paths instead.
 
 ## Layout you need to know
 

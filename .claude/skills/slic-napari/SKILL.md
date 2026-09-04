@@ -1,5 +1,5 @@
 ---
-name: bc-flim-spectra
+name: slic-napari
 description: Guide a user through SLIC (Spectral-Lifetime Indexing of Cells), the napari plugin for barcoded FLIM imaging distributed as the bc-flim-spectra package - installing it, running the seven-step workflow from .ptu files to per-barcode biosensor readouts, choosing parameters, and diagnosing the failures that actually happen. Use whenever someone is working with this plugin, a barcoded FLIM sample folder (flim_stack/, intensity/, FLIM-S.xlsx, clustered.xlsx), PTU decoding, phasor G/S per cell, seeded K-Means barcode classification, or Cellpose N/P segmentation in this context.
 license: BSD-3-Clause
 ---

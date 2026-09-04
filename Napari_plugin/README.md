@@ -341,4 +341,4 @@ Napari_plugin/
 
 ---
 
-**Enjoy NaCha! 🎉**
+**Enjoy SLIC! 🎉**

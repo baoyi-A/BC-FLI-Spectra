@@ -3,34 +3,67 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
 
-This repository contains two independent tools for barcode analysis in FLIM experiments:
+**Many barcoded cell populations in one dish, each read out separately.**
 
-Each tagged release is archived on Zenodo. The DOI above always resolves to the
-most recent version; to cite the exact version described in the manuscript, use
-the version DOI listed on the Zenodo record.
+![SLIC workflow](docs/slic_workflow.png)
 
-## 1. 🧩 Napari Plugin — Single‑Anchor Barcode Analysis
+Cells carry **barcodes**: fluorophore combinations that differ in fluorescence
+lifetime and emission spectrum. One FLIM acquisition gives every pixel a
+photon-arrival histogram in four spectral channels. Averaged over a segmented
+cell that becomes five numbers — phasor coordinates *G* and *S* plus three
+spectral intensity ratios. Cells sharing a barcode land in the same place in
+that 5-D space, so clustering assigns each cell its barcode. A biosensor
+channel is then read per class, giving one measurement per barcoded population
+from a single mixed dish.
 
-The SLIC napari plugin provides the full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion through segmentation, classification and tracking to alignment and visualization. It is distributed as the Python package `bc-flim-spectra` and appears in napari under that name; *NaCha* is the label of its final widget.
+This repository contains two independent tools. Each tagged release is archived
+on Zenodo; the DOI above always resolves to the most recent version, and the
+version DOI on the Zenodo record cites the exact version in the manuscript.
 
-It exposes **seven widgets**, listed in napari under `Plugins → bc-flim-spectra`:
+---
+
+## 1. 🧩 Napari Plugin — Single-Anchor Barcode Analysis
+
+The SLIC napari plugin runs the full workflow, from `.ptu` ingestion through
+segmentation, classification and tracking to alignment and visualization. It is
+distributed as the Python package `bc-flim-spectra` and appears in napari under
+that name; *NaCha* is the label of its final widget.
+
+**Seven widgets**, listed under `Plugins → bc-flim-spectra`. Each has a blue
+**Next ▶** button that opens the following one, so the workflow chains without
+returning to the menu.
 
 - 📥 **PTU Reader** — import and decode FLIM `.ptu` files.
-- 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.
-- 🌀 **Calculate FLIM‑S** — lifetime / phasor computation.
-- 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture, Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
-- 🟡 **Biosensor Seg (Cellpose)** — dual‑input segmentation on the confocal biosensor stack using the barcode classification mask as an auxiliary channel.
-- 🎬 **B&P Tracker** — barcode / object tracking (built on Track‑Anything / XMem).
-- 📈 **NaCha** — final alignment and per‑class signal readout / visualization.
+- 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single- or multi-folder fine-tuning.
+- 🌀 **Calculate FLIM-S** — lifetime / phasor computation.
+- 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture and Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
+- 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
+- 🎬 **B&P Tracker** — barcode / object tracking (built on Track-Anything / XMem).
+- 📈 **NaCha** — final alignment and per-class signal readout / visualization.
+
+![SLIC demo](docs/demo.gif)
+
+*Barcode classes assigned across a field, then the biosensor response followed
+per class through a stimulation. A full step-by-step
+[instruction video](https://zenodo.org/records/17045806) is on Zenodo.*
 
 For details, see [Napari plugin/README](Napari_plugin/README.md).
 
 ---
 
-## 2. 🧠 LUMINA — Dual‑Anchor Barcode Classification Network
+## 2. 🧠 LUMINA — Dual-Anchor Barcode Classification Network
 
-**LUMINA** is a PyTorch‑based deep learning framework for **dual‑anchor barcodes classification**.
-It provides scripts for preprocessing, training, inference, and visualization:
+![LUMINA network](docs/lumina_network.png)
+
+**LUMINA** classifies cells carrying **two** barcodes at once — one fluorophore
+on a nuclear anchor, one on a mitochondrial anchor. Averaging a whole cell into
+five numbers cannot separate two fluorophores sitting in two organelles, so
+LUMINA keeps the pixels: per segmented cell it builds a six-plane stack (the
+per-pixel phasor *G* and *S*, three spectral intensity ratios, and the
+intensity), gives each plane its own convolutional stem, fuses them in a shared
+trunk, and ends in **two independent heads** under a class-balanced loss. One
+forward pass reads both anchors. Training is two-stage: pre-train on
+single-anchor data, then fine-tune on dual-anchor data.
 
 - 🧹 `Data_Prep.py` — preprocess raw data.
 - 🏋️ `Train_LUMINA.py` — train the LUMINA model.
@@ -48,8 +81,8 @@ For details, see [LUMINA classification/README](LUMINA_classification/README.md)
   - Expected to work on: Windows 10/11, Linux (Ubuntu 20.04)
 - GPU: optional (CUDA-enabled GPU recommended for acceleration)
 
-**Typical installation time:** ~20–60 minutes depending on whether PyTorch/CUDA wheels
-need to be downloaded and the network speed.
+**Typical installation time:** ~20–60 minutes depending on whether PyTorch/CUDA
+wheels need to be downloaded and the network speed.
 
 ---
 
@@ -60,9 +93,9 @@ need to be downloaded and the network speed.
   spent looking at masks rather than waiting.
 - Tracking step: ~5 minutes (included above).
 - **Check the "Compute:" line in the segmentation panel first.** The default
-  PyTorch package has no GPU support, and on CPU segmentation of one 2048 × 2048
-  field takes tens of minutes instead of seconds. Nothing fails — it is just
-  slow, and the header is the only place that says so.
+  PyTorch package has no GPU support, and on CPU segmentation of one
+  2048 × 2048 field takes tens of minutes instead of seconds. Nothing fails —
+  it is just slow, and the header is the only place that says so.
 - Runtime otherwise depends on dataset size, number of cells, and hardware.
 
 ### 🧠 LUMINA
@@ -78,34 +111,48 @@ Seven steps are easy to run and easy to forget. So the repository also carries
 its documentation in a form coding assistants read — the
 [agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
 conventions, used by Claude Code, Codex, Cursor, Copilot and others. Point one
-at this repository and it can install SLIC, walk you through a step, tell you
-what a parameter means, and look at your data to say where you are.
+at this repository and it can install either tool, walk you through a step,
+tell you what a parameter means, and look at your data to say where you are.
 
-### ✅ We tried it, and it works
+### ✅ Validation — an assistant reproduced the curated result
 
 We gave **Claude Code** nothing but the address of this repository and asked it
 to install SLIC and process one dataset. Working only from the files here, it
-built a fresh environment, installed the plugin, and ran the workflow through
-on a real acquisition:
+built a fresh environment, installed the plugin and ran all seven steps on a
+real acquisition:
 
-| Step | What came out |
+| Step | Result |
 |---|---|
 | 📥 PTU Reader | a 1.5 GB `.ptu` decoded into four spectral channels, the decay stacks and a lifetime map |
-| 🔬 Barcode Seg | 418 nuclei and 416 cytoplasm masks on the full 2048 × 2048 field |
-| 🌀 Calculate FLIM-S | 834 cells, each reduced to its 5‑D fingerprint |
-| 🧩 Seeded K-Means | 373 cells sorted into 10 barcodes; 45 declined as outliers |
-| 🟡 Biosensor Seg | 342 cells in the confocal channel, against 349 in our own stored result |
+| 🔬 Barcode Seg | nucleus and cytoplasm masks over the full 2048 × 2048 field |
+| 🌀 Calculate FLIM-S | every cell reduced to its 5-D fingerprint |
+| 🧩 Seeded K-Means | cells sorted into the barcodes of the panel, with per-class outlier rejection |
+| 🟡 Biosensor Seg | cells segmented in the confocal channel |
 | 📈 NaCha | one signal curve per barcode across 101 frames |
 
-The registration was checked rather than assumed: with the correct 90°
-rotation, 96 % of biosensor cells carry a barcode class at 99 % purity, and the
-three wrong rotations were run as controls and fall apart, as they should.
+**Then the harder question: does a fully automatic run agree with our own manual
+curation?** We compared it against the hand-curated masks and barcode calls for
+that acquisition — the version a human checked and corrected.
 
-Two honest notes. Steps 1–4 above used a public Cellpose model, because our
-fine-tuned weights are distributed separately from the code. And the exercise
-was worth doing for its own sake: it turned up a dozen real defects — including
-a packaging error that stopped `pip install` outright, and a failed
-segmentation that hung the interface with no message — all fixed here.
+| Against manual curation | Result |
+|---|---|
+| 🧩 **Barcode identity** | **271 of 271 cells received the same barcode. Zero disagreements.** Stable from IoU 0.3 to 0.8; shuffling the labels drops it to 21–28 %, so the agreement is not an artefact of the matching. |
+| 🔬 **Segmentation, nuclei** | F1 = 0.83 at IoU ≥ 0.5 (precision 0.96, recall 0.73), mean Dice 0.84 on matched cells |
+| 🔬 **Segmentation, cytoplasm** | F1 = 0.87 at IoU ≥ 0.5 (precision 0.82, recall 0.92), mean Dice 0.86 on matched cells |
+| 🧬 **Cell shapes** | 0 splits and 1 merge across both masks — disagreements are whole cells found or not found, never fragmented |
+| 📋 **End to end** | of the curated classified cells, **77 % received the correct barcode, 5 % were declined as outliers, 18 % were not segmented, and none received a wrong one** |
+
+So the classification reproduces the curated result exactly wherever it finds
+the cell. What a fully automatic run costs is coverage, not correctness: the
+stock nucleus model finds about three quarters of the curated nuclei, where the
+curated reference was produced with a sample-specific fine-tune plus hand
+editing. The cells it misses are ordinary-looking rather than dim or small, and
+the barcode composition shifts by at most 2 percentage points, so the
+population readout survives. Fine-tuning on your own cells is a widget in the
+plugin, and it closes that gap.
+
+*One field of one acquisition. This is a reproduction check against a curated
+reference, not a benchmark.*
 
 ### 🔍 "Where am I in the workflow?"
 
@@ -145,10 +192,12 @@ scripting; exit status 1 when a check fails, so it works as a gate too.
 | File | Contents |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Repository layout, installation, the three-environment design, the headless testing pattern, and the conventions the code follows. Claude Code picks it up through the one-line `CLAUDE.md`. |
-| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | The seven steps control by control, how to read each output, the failure modes with the check that identifies each, and installation notes. |
+| [`.claude/skills/slic-napari/`](.claude/skills/slic-napari/) | The plugin: seven steps control by control, how to read each output, the failure modes with the check that identifies each, and installation notes. |
+| [`.claude/skills/lumina-network/`](.claude/skills/lumina-network/) | LUMINA: the four scripts, the data layout they expect, the training recipe, how to read the confidence outputs, and how to adapt a trained checkpoint to a new cell line. |
 
-Parameter descriptions in the skill are pulled from the widget tooltips in the
-source, so the documentation and the interface cannot drift apart.
+Parameter descriptions in the skills are pulled from the widget tooltips and
+argument parsers in the source, so the documentation and the interfaces cannot
+drift apart.
 
 ## 📜 License
 BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
@@ -157,13 +206,9 @@ BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for t
 
 ## 📝 Notes
 
-- These tools are under active development.  
-- The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available.  
-- An [instruction video](https://zenodo.org/records/17045806) is available, providing a step-by-step guide on how to use the Napari plugin.  
-- The [Dual-Anchor dataset](https://zenodo.org/records/17036213), used for training the LUMINA network, is also provided.  
-- A [demo dataset](https://zenodo.org/records/16940026) is included for testing the Napari plugin functionalities.  
-- The [original version of all software code](https://zenodo.org/records/17018436) has been archived as well.  
-
----
-
-**Enjoy using BC‑FLIM Tools!**
+- These tools are under active development.
+- The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available. The schematics above are figure panels from that manuscript.
+- An [instruction video](https://zenodo.org/records/17045806) is available, providing a step-by-step guide on how to use the Napari plugin.
+- The [Dual-Anchor dataset](https://zenodo.org/records/17036213), used for training the LUMINA network, is also provided.
+- A [demo dataset](https://zenodo.org/records/16940026) is included for testing the Napari plugin functionalities.
+- The [original version of all software code](https://zenodo.org/records/17018436) has been archived as well.
