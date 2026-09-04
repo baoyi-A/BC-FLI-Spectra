@@ -116,7 +116,7 @@ image that was actually classified.
 
 The repository README quotes "~1 second" per cell for inference and "typically
 3 minutes" including preprocessing. Those are the README's numbers, not the
-code's; nothing in these four scripts times itself.
+code's; no script in this folder times itself.
 
 ---
 
