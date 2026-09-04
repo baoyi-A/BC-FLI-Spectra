@@ -9978,15 +9978,57 @@ def _python_for_model(model_name, extra_roots=()) -> Path:
         return _CELLPOSE_V2_PYTHON
     import sys as _sys
     return Path(_sys.executable)
-# As of 2026-05-10 the barcode N/P defaults are CellposeSAM (v4) models
-# trained on the FastFLIM RGB render. v4 takes the 3-channel render
-# directly so we keep more lifetime + intensity information than the
-# v2 luminance grayscale path. The older v2 *-render-260425-1 models
-# are still in the dropdown for users without a v4 conda env.
-_DEFAULT_N_MODEL = "NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam"
-_DEFAULT_P_MODEL = "CinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam"
+# Default models, in preference order. The FIRST one that actually resolves on
+# this machine wins, so the same code gives a working default on three quite
+# different installs:
+#
+#   1. the published set, distributed with the paper (~27 MB each, Cellpose v2,
+#      trained on the FastFLIM render — this is what the reviewer demo runs);
+#   2. the lab's CellposeSAM (v4) models, which take the 3-channel render
+#      directly and keep more lifetime + intensity information, on machines
+#      that have them;
+#   3. a public Cellpose base model, so a clean checkout with no custom weights
+#      still segments something instead of naming a model that cannot exist.
+#
+# The barcode dropdown remembers the last-used model, so choosing another one
+# sticks. Do not hardcode a single name here again: the previous defaults
+# pointed at a lab drive that has since moved.
+_DEFAULT_N_MODEL_CANDIDATES = (
+    "NinNC-260328-1",
+    "NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam",
+    "NinNC-cpsam-fastflimRGB-rgb0427-260510-std1",
+    "nuclei",
+)
+_DEFAULT_P_MODEL_CANDIDATES = (
+    "CinNC-260328-1",
+    "CinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam",
+    "CinNC-cpsam-fastflimRGB-rgb0427-260510-std1",
+    "cyto2",
+)
+
+
+def _first_available_model(candidates):
+    """First candidate present on this machine; the last one if none are.
+
+    A Cellpose builtin counts as present — Cellpose downloads it on first use.
+    """
+    for name in candidates:
+        if name in _CELLPOSE_BUILTIN:
+            return name
+        try:
+            if _resolve_barcode_model_path(name) is not None:
+                return name
+        except Exception as e:
+            # Never swallow this silently: a resolver that raises would make
+            # every custom model look absent and quietly demote the default
+            # to a builtin.
+            _log.warning('model lookup failed for %s: %s', name, e)
+    return candidates[-1]
 _DEFAULT_N_DIAMETER = 55.0
 _DEFAULT_P_DIAMETER = 92.0
+# Filled in below, once _CELLPOSE_BUILTIN exists.
+_DEFAULT_N_MODEL = _DEFAULT_N_MODEL_CANDIDATES[0]
+_DEFAULT_P_MODEL = _DEFAULT_P_MODEL_CANDIDATES[0]
 # All builtin model names cellpose recognises across both versions
 # (cellpose==2.x exposes MODEL_NAMES, cellpose==4.x exposes ['cpsam']).
 # Anything in this set is a valid choice even when the weight file is
@@ -10817,6 +10859,13 @@ def _resolve_barcode_model_path(model_type: str, extra_roots=()) -> "Path | None
     return None
 
 
+# The resolver exists now, so the preference lists can be evaluated. Doing this
+# any earlier silently fell through to the builtin fallback.
+_DEFAULT_N_MODEL = _first_available_model(_DEFAULT_N_MODEL_CANDIDATES)
+_DEFAULT_P_MODEL = _first_available_model(_DEFAULT_P_MODEL_CANDIDATES)
+_log.info('default models: N=%s  P=%s', _DEFAULT_N_MODEL, _DEFAULT_P_MODEL)
+
+
 def _build_barcode_cellpose(model_type: str, use_gpu: bool, extra_roots=()):
     """Return a cellpose.models.CellposeModel for built-in or custom name."""
     import sys as _sys
@@ -11221,16 +11270,16 @@ class BarcodeSeg(Container):
             'Untick to skip the P model. Existing *_seg_p.npy on disk is '
             'left untouched.')
         _tt(self.n_model,
-            'Cellpose model for nucleus (N) segmentation. Default is '
-            'NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam — a Cellpose v4 '
-            '(CellposeSAM) model trained on the 3-channel FastFLIM RGB '
-            'render. Names containing "cpsam" → v4 RGB input; names like '
-            '*-render-260425-1 → v2 grayscale input. The widget routes '
-            'subprocess + input form per model automatically.')
+            f'Cellpose model for nucleus (N) segmentation. On this machine the '
+            f'default resolved to "{_DEFAULT_N_MODEL}" — the first of the known '
+            f'N models actually present here. Names containing "cpsam" are '
+            f'Cellpose v4 and take the 3-channel FastFLIM RGB render; names '
+            f'like *-render-260425-1 are v2 and take the grayscale render. The '
+            f'widget routes the subprocess and the input form per model '
+            f'automatically, so mixing generations in the dropdown is safe.')
         _tt(self.p_model,
-            'Cellpose model for cytoplasm (P) segmentation. Default is '
-            'CinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam (v4). Same '
-            'auto-routing as N model.')
+            f'Cellpose model for cytoplasm (P) segmentation. Resolved default '
+            f'here: "{_DEFAULT_P_MODEL}". Same auto-routing as the N model.')
         _tt(self.n_diameter,
             'Approximate nucleus diameter in pixels. Cellpose auto-'
             'detects if you set 0 (slower).')
@@ -13292,15 +13341,16 @@ class BarcodeSeg(Container):
 # intensity-trained models are kept in the dropdown so users can still pick
 # them — the widget falls back to the legacy frame-mean intensity flow when
 # the chosen model name does NOT contain "-bgy-".
-_BIOSENSOR_MODEL_DEFAULT = "BS-BC-assist-cls-bgy-260426"
 _BIOSENSOR_MODEL_FALLBACKS = [
-    "BS-BC-assist-cls-bgy-260426",
-    "BS-BC-assist-cls-260402-forDense",  # legacy (intensity-trained)
+    "BS-BC-assist-cls-260402-forDense",  # published with the paper
+    "BS-BC-assist-cls-bgy-260426",       # lab model, BGY-render trained
     "BS-BC-assist-cls-260328-1",         # legacy
     "BS-BC-assist-cls-260328",           # legacy
     "cyto2",
     "cyto",
 ]
+# Same rule as the barcode heads: the first one actually on this machine.
+_BIOSENSOR_MODEL_DEFAULT = _first_available_model(_BIOSENSOR_MODEL_FALLBACKS)
 _BIOSENSOR_DEFAULT_DIAM = 45.0
 _BARCODE_ASSIST_ROTATE_K = 3  # 90° * k clockwise; matches BS-BC-assist training
 

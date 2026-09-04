@@ -62,11 +62,23 @@ the code needs one environment.
 
 ## Model weights
 
-**The fine-tuned barcode and biosensor models are not in this repository.** The
-segmentation widgets name them as defaults (`NinNC-…`, `CinNC-…`,
-`BS-BC-assist-…`), but the weight files are distributed separately. Without
-them, choose a public Cellpose base model (`cpsam` for v4, `cyto3` for v2) from
-the dropdown — segmentation will work but will not match the published masks.
+**The fine-tuned models are not in this repository** — the weights are
+distributed separately. The published set is three Cellpose v2 models of about
+27 MB each, the same ones the reviewer demo runs:
+
+| Model | Role |
+|---|---|
+| `NinNC-260328-1` | barcode nucleus (N) |
+| `CinNC-260328-1` | barcode cytoplasm (P) |
+| `BS-BC-assist-cls-260402-forDense` | biosensor cells |
+
+Each widget's default is the **first model it can actually find**, in this
+order: the published set, then the lab's larger CellposeSAM models on machines
+that have them, then a public Cellpose base model (`nuclei`, `cyto2`) so a
+clean checkout still segments something. The resolved default is named in the
+model dropdown's tooltip, and the barcode dropdown remembers your last choice.
+With no custom weights at all, segmentation runs but will not reproduce the
+published masks.
 
 Point the plugin at a folder of models with either:
 

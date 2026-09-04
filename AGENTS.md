@@ -102,9 +102,14 @@ Custom model weights are searched under `BCFLIM_MODEL_ROOT` (env var, or
 and `~/.cellpose`. Several on-disk layouts are accepted, so a plain folder of
 weight files works as a model store.
 
-**The fine-tuned models named as widget defaults are not in this repository.**
-A clean checkout can only use the public Cellpose base models (`cpsam`,
-`cyto3`). Do not assume the defaults resolve.
+**The fine-tuned models are not in this repository**; the weights are
+distributed separately (`NinNC-260328-1`, `CinNC-260328-1`,
+`BS-BC-assist-cls-260402-forDense`, ~27 MB each). Each default is resolved at
+import as the first candidate that exists on the machine — published set, then
+the lab's CellposeSAM models, then a public base model — so a clean checkout
+gets a default that runs rather than a name that cannot resolve. See
+`_first_available_model` and the `_DEFAULT_*_CANDIDATES` tuples. Do not
+hardcode a single default name again.
 
 **If you are only reading, editing or testing code, you do not need the
 cellpose envs.** Everything except the two segmentation widgets runs in one env.

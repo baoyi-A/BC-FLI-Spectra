@@ -50,7 +50,7 @@ render (Leica blue→green→red, 30/85 percentile auto-range, CLAHE on, gamma
 | Control | What it does |
 |---|---|
 | Segment N / Segment P | Nucleus and cytoplasm heads. Untick one to skip it; existing masks on disk are left alone. Both off is rejected. |
-| N model / P model | Default `NinNC-cpsam-fastflimRGB-rgb0427-260508-cpsam` and `CinNC-…` — Cellpose v4 (CellposeSAM) models trained on the 3-channel RGB render. A name containing `cpsam` routes to the v4 environment with RGB input; names like `*-render-260425-1` are v2 with grayscale input. Routing is automatic. |
+| N model / P model | The default is the first known model present on the machine: the published `NinNC-260328-1` / `CinNC-260328-1` (Cellpose v2, ~27 MB), else the lab's CellposeSAM models, else a public base model. A name containing `cpsam` routes to the v4 environment with RGB input; other names are v2 with grayscale input. Routing is automatic, so both generations can sit in the dropdown together. |
 | Diameter N / P | Approximate object diameter in pixels; 0 lets Cellpose estimate it (slower). P is typically ~2× N. |
 | Channels N / P | v2 takes at most 2 of the RGB channels (`0`=gray, `1`=R, `2`=G, `3`=B). v4 `RGB all 3 channels` feeds the full H×W×3. `(auto)` defers to the model's `config.json`. |
 | Input kind N / P | Which form of the image the model gets: grayscale render, RGB render, or raw intensity sum. `(auto from model)` uses the model's `config.json`, else v4→RGB / v2→gray. |
