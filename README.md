@@ -16,6 +16,16 @@ that 5-D space, so clustering assigns each cell its barcode. A biosensor
 channel is then read per class, giving one measurement per barcoded population
 from a single mixed dish.
 
+### 🌐 Try it in a browser — nothing to install
+
+A hosted instance of the napari plugin runs at
+**<https://baoyi-a.github.io/nacha-demo/>**. It opens the plugin on the demo
+dataset with no local setup, so the whole workflow can be walked through before
+installing anything. The page starts a cloud machine on demand and shuts it
+down again once idle; a GPU can be requested for the segmentation steps. The
+instance re-installs from this repository's `main` on every cold start, so it
+runs the code published here rather than a snapshot.
+
 This repository contains two independent tools. Each tagged release is archived
 on Zenodo; the DOI above always resolves to the most recent version, and the
 version DOI on the Zenodo record cites the exact version in the manuscript.

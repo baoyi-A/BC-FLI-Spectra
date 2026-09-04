@@ -1,5 +1,8 @@
 # 🔬 SLIC — the napari plugin
 
+*One of the two tools in [SLIC](../README.md). For dual-anchor barcodes, see
+[LUMINA](../LUMINA_classification/README.md).*
+
 **SLIC** (Spectral‑Lifetime Indexing of Cells) is a napari plugin that supports an end‑to‑end
 workflow for FLIM and barcode analysis, from raw **`.ptu`** ingestion through
 segmentation, classification, tracking and final alignment / visualisation.
@@ -81,6 +84,12 @@ viewer layers on transition, keeping the session clean.
 ---
 
 ## 🔧 Installation
+
+> 💡 **Want to look before installing?** A hosted instance of this plugin runs
+> at <https://baoyi-a.github.io/nacha-demo/> — the same workflow on the demo
+> dataset, in a browser, with none of the setup below. It re-installs from this
+> repository's `main` on every cold start. The three-environment setup here is
+> for running it on your own data.
 
 The plugin runs Cellpose in **subprocess‑isolated child processes** (to
 keep CUDA / OpenGL state out of napari's main process), and Cellpose 2.x
