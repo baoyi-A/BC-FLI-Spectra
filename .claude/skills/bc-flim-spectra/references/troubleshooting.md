@@ -74,6 +74,22 @@ something else when you trained it, set the same override when you use it.
 
 ---
 
+## Segmentation starts and never finishes, with no error
+
+Fixed 2026-09-04; if you see it, the plugin is older than that. A Cellpose child
+process that died used to raise a bare `RuntimeError` inside a generator
+worker. superqt catches `RuntimeError` there, returns it, and then declines to
+emit either `errored` or `finished` — so the widget's error handler never ran,
+the status label kept saying the run had started, and the buttons stayed
+disabled. The only trace was a console line:
+
+> `RuntimeWarning: RuntimeError in aborted thread: …`
+
+Child failures now raise `CellposeChildError`, which is not a `RuntimeError`,
+so the error reaches the widget and the buttons come back. If a run still
+hangs, read the console for that warning: anything else raising a bare
+`RuntimeError` inside a `@thread_worker` generator has the same problem.
+
 ## Cellpose does not run / wrong environment
 
 The plugin runs Cellpose in a **child process**, and Cellpose 2.x and 4.x have

@@ -36,6 +36,21 @@ need a particular CUDA build — the extra will not replace one that is already
 there. CPU-only torch works; Cellpose falls back to CPU automatically and is
 roughly 10× slower on 2k×2k images.
 
+## One environment is usually enough
+
+`pip install -e ".[segmentation]"` puts a current Cellpose in the same
+environment as the plugin, and that environment is then a valid v4 slot by
+itself. Steps 1-4 — PTU decoding, segmentation, FLIM-S and clustering — run
+without any extra environment. Point the plugin at itself if the auto-detection
+picks something else:
+
+```bash
+export BCFLIM_CELLPOSE_V4_PYTHON=/path/to/envs/<your-env>/bin/python
+```
+
+The three-environment setup below matters when you need **both** Cellpose
+generations, because models trained on 2.x and 4.x are not interchangeable.
+
 ## Why three environments
 
 Cellpose 2.x and 4.x have incompatible APIs and model formats, and the models

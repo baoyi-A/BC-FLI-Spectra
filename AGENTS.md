@@ -141,6 +141,10 @@ root. Getting this wrong is a recurring bug source.
 - **numpy is pinned below 2.0** — napari 0.4.19 loads numba, which requires
   numpy ≤ 1.26. Do not "upgrade numpy to fix" anything.
 - Long work goes in a `@thread_worker`, never on the Qt main thread.
+- **Never raise a bare `RuntimeError` inside a `@thread_worker`.** superqt's
+  generator worker catches `RuntimeError`, returns it, and then skips both the
+  `errored` and `finished` signals — the widget hangs with no message. Raise
+  `CellposeChildError` (or any non-`RuntimeError` type) instead.
 - `_tt(widget, text)` attaches a tooltip. Every user-facing control should
   have one, and it should say what the number *does*, not restate its name.
 - This widget is a magicgui `Container`, which overrides `__delattr__`.

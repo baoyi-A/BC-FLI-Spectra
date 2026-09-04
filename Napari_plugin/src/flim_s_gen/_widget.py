@@ -255,6 +255,19 @@ def _clear_all_viewer_layers(viewer):
         pass
 
 
+class CellposeChildError(Exception):
+    """A Cellpose child process failed.
+
+    Deliberately NOT a subclass of RuntimeError. superqt's worker base treats a
+    RuntimeError coming out of a thread_worker as "the Qt object was deleted",
+    warns, and returns WITHOUT emitting ``errored`` (superqt
+    utils/_qthreading.py). Any RuntimeError raised inside a worker therefore
+    never reaches the widget's error handler: the status label keeps saying the
+    run started, the buttons stay disabled, and the user sees a hang with no
+    message. Raise this instead for anything a worker can hit.
+    """
+
+
 def _run_infer_subprocess(
     *, img, base_name, diameter, channels, use_gpu, extra_roots, out_path,
     cellprob_threshold=None, flow_threshold=None, proc_holder=None,
@@ -347,7 +360,7 @@ def _run_infer_subprocess(
     # User-cancelled via .terminate() / .kill() — propagate as a
     # recognisable exception so the caller can show a friendly status.
     if proc.returncode is not None and proc.returncode < 0:
-        raise RuntimeError(f'cellpose subprocess was terminated (signal {proc.returncode})')
+        raise CellposeChildError(f'cellpose subprocess was terminated (signal {proc.returncode})')
 
     out = (stdout or '') + '\n' + (stderr or '')
     for line in out.splitlines()[::-1]:
@@ -358,9 +371,9 @@ def _run_infer_subprocess(
             saved = Path(body.split('|', 1)[0].strip())
             return _np.load(str(saved))
         if s.startswith('ERROR:'):
-            raise RuntimeError(s[len('ERROR:'):].strip())
+            raise CellposeChildError(s[len('ERROR:'):].strip())
     # Fall through: nothing parseable. Surface the tail of output.
-    raise RuntimeError(f'infer subprocess ended without RESULT/ERROR '
+    raise CellposeChildError(f'infer subprocess ended without RESULT/ERROR '
                        f'(exit={proc.returncode}); tail: {out[-500:]}')
 
 
@@ -470,8 +483,8 @@ def _run_finetune_subprocess(
             )
             return new_path
         if s.startswith('ERROR:'):
-            raise RuntimeError(s[len('ERROR:'):].strip())
-    raise RuntimeError(f'fine-tune subprocess ended without RESULT/ERROR '
+            raise CellposeChildError(s[len('ERROR:'):].strip())
+    raise CellposeChildError(f'fine-tune subprocess ended without RESULT/ERROR '
                        f'(exit={proc.returncode}); stdout tail: {out[-500:]}')
 
 
@@ -1316,11 +1329,11 @@ class PTUReader(Container):
         # On a fresh viewer it defaults to the hardcoded dev sample; once
         # the user picks something else it's remembered on the viewer.
         _remembered_out = _get_remembered_sample_dir(
-            viewer, r'J:/Mix16-N-P-260306-DCZ-2-1')
+            viewer, _DEFAULT_SAMPLE_DIR)
         _remembered_in = (
             str(Path(_remembered_out) / 'raw')
             if Path(_remembered_out).is_dir()
-            else r'J:/Mix16-N-P-260306-DCZ-2-1/raw'
+            else _DEFAULT_SAMPLE_DIR
         )
         self.input_dir = widgets.FileEdit(label='PTU Folder', mode='d', value=_remembered_in)
         self.output_dir = widgets.FileEdit(label='Output Folder', mode='d', value=_remembered_out)
@@ -2860,7 +2873,7 @@ class Calculate_FLIM_S(Container):
         # doesn't need a re-pick.
         self._base_dir = FileEdit(label="Base Folder", mode='d')
         self._base_dir.value = _get_remembered_sample_dir(
-            self._viewer, r'J:/Mix16-N-P-260306-DCZ-2-1')
+            self._viewer, _DEFAULT_SAMPLE_DIR)
         self._base_dir.changed.connect(
             lambda v: _remember_sample_dir(self._viewer, v))
 
@@ -3657,7 +3670,7 @@ class SeededKMeans(Container):
         self.sample_folder = FileEdit(
             label='Sample Folder', filter='*', mode='d',
             value=_get_remembered_sample_dir(
-                self.viewer, r'J:/Mix16-N-P-260306-DCZ-2-1'),
+                self.viewer, _DEFAULT_SAMPLE_DIR),
         )
         self.sample_folder.changed.connect(
             lambda v: _remember_sample_dir(self.viewer, v))
@@ -6657,7 +6670,7 @@ class Trackrevise(Container):
         # re-pick after PTU Reader / Biosensor Seg. Track_log_rainbow is
         # the canonical mask subfolder under the sample dir.
         _trackrevise_root = Path(_get_remembered_sample_dir(
-            self.viewer, r'J:/Mix16-N-P-260306-DCZ-2-1'))
+            self.viewer, _DEFAULT_SAMPLE_DIR))
         self.mask_folder = FileEdit(label="Masks Folder", mode='d')
         self.mask_folder.value = str(_trackrevise_root / 'Track_log_rainbow')
         self.read_masks_button = PushButton(text="Read")
@@ -8945,7 +8958,7 @@ class BPTracker(Container):
 
         # --- Build a smoothed multi-channel tracking stack from biosensor TIFs ---
         sample_dir = Path(_get_remembered_sample_dir(
-            self.viewer, r"J:/Mix16-N-P-260306-DCZ-2-1"))
+            self.viewer, _DEFAULT_SAMPLE_DIR))
         fov_b = _first_existing(sample_dir.glob('FOV-*-b.tif'))
         fov_g = _first_existing(sample_dir.glob('FOV-*-g.tif'))
         fov_y = _first_existing(sample_dir.glob('FOV-*-y.tif'))
@@ -9556,6 +9569,13 @@ if not _log.handlers:
 # hardcoded default until 2026-09; the drive has since moved, so on every other
 # machine the plugin was resolving custom models against a path that does not
 # exist — silently, because a missing root just produces empty globs.
+# Where a FileEdit starts when nothing has been used yet. The plugin used to
+# open on a lab sample folder (J:/Mix16-...) that exists on one machine; on any
+# other install the picker started on a path that is not there. The real value
+# comes from the remembered last-used folder anyway.
+_DEFAULT_SAMPLE_DIR = str(Path.home())
+
+
 _LEGACY_LAB_MODEL_ROOTS = (
     r"G:/BC-FLIM-S/LYH",
     r"J:/BC-FLIM-S/LYH",
@@ -9635,8 +9655,10 @@ _BARCODE_MODEL_ROOT = _resolve_barcode_model_root()
 _log.info('model root: %s (%s)', _BARCODE_MODEL_ROOT, _MODEL_ROOT_SOURCE)
 # Optional checkout of cellpose 2.x source — only used by the v2 subprocess
 # runner if a local working copy is needed (most users don't need this).
-_CELLPOSE_SRC_PATH = Path(_os_init.environ.get(
-    'BCFLIM_CELLPOSE_SRC', r"D:/PKU_STUDY/DeepLearining/BC-FLIM/cellpose-main"))
+# Optional local checkout of the cellpose 2.x source, used only when the v2
+# subprocess needs one. Empty by default: the previous fallback was a personal
+# development path that exists on one machine.
+_CELLPOSE_SRC_PATH = Path(_os_init.environ.get('BCFLIM_CELLPOSE_SRC', ''))     if _os_init.environ.get('BCFLIM_CELLPOSE_SRC') else Path('cellpose_src_not_configured')
 
 # ---- Cellpose dual-version support ------------------------------------
 # v2 (CellposeModel(model_type=..., pretrained_model=...)) and v4
@@ -11058,7 +11080,7 @@ class BarcodeSeg(Container):
         self.sample_dir = FileEdit(
             label='Sample Folder', mode='d',
             value=_get_remembered_sample_dir(
-                self.viewer, r'J:/Mix16-N-P-260306-DCZ-2-1'),
+                self.viewer, _DEFAULT_SAMPLE_DIR),
         )
         self.sample_dir.changed.connect(
             lambda v: _remember_sample_dir(self.viewer, v))
@@ -13447,7 +13469,7 @@ def _render_bgy_seg_input_rgb(b_frame, g_frame, y_frame):
             continue
         x = _bs_render_enhance_channel(np.asarray(f, dtype=np.float32))
         if x.shape[:2] != ref_hw:
-            raise RuntimeError(
+            raise CellposeChildError(
                 f'BGY render shape mismatch: B/G/Y must share H×W; got {x.shape}')
         enhanced[slot] = x
     rgb = np.zeros((*ref_hw, 3), dtype=np.float32)
@@ -13557,7 +13579,7 @@ class BiosensorSeg(Container):
         self.sample_folder = FileEdit(
             label='Sample Folder', mode='d',
             value=_get_remembered_sample_dir(
-                self.viewer, r'J:/Mix16-N-P-260306-DCZ-2-1'),
+                self.viewer, _DEFAULT_SAMPLE_DIR),
         )
         self.sample_folder.changed.connect(
             lambda v: _remember_sample_dir(self.viewer, v))
