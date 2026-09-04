@@ -103,9 +103,15 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 git clone https://github.com/gaomingqi/Track-Anything.git
 cd Track-Anything && pip install -r requirements.txt && cd ..
 
+# napari needs a Qt backend, which this plugin deliberately does not pin
+pip install "napari[all]"          # or: pip install napari pyqt5
+
 # Install this plugin (editable mode recommended)
 cd Path_To_BC-FLI-Spectra/Napari_plugin
-pip install -e .   # or: pip install .
+pip install -e ".[segmentation]"   # add ,harmony for the Harmony calibration option
+#   `pip install -e .` alone is enough for PTU Reader, Calculate FLIM-S and
+#   Seeded K-Means; the [segmentation] extra adds cellpose + torch, which the
+#   Barcode / Biosensor segmentation widgets need.
 
 # 2️⃣ Cellpose 2.x env (segmentation Barcode/Biosensor — legacy 2-channel models)
 conda deactivate

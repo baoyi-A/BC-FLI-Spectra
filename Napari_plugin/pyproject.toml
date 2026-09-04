@@ -10,14 +10,13 @@ name = "bc-flim-spectra"
 description = "Spectral-lifetime barcode decoding for FLIM images: a napari plugin"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "BSD-2-Clause" }
+license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = 'Baoyi Wang', email = "wang.baoyi@stu.pku.edu.cn" }]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Framework :: napari",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: BSD License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -28,7 +27,9 @@ classifiers = [
 version = "0.1.0"
 # Runtime deps read by pip install . / -e .
 dependencies = [
-  "napari>=0.4.19",
+  # Upper bound is real: napari >= 0.5 removed QtViewer._remove_layer, which the
+  # OpenGL crash patch wraps, and the widget layout targets the 0.4.x Qt viewer.
+  "napari>=0.4.19,<0.5",
   "numpy>=1.23",
   "scipy>=1.12",
   "scikit-image>=0.20",
@@ -43,12 +44,31 @@ dependencies = [
   "tqdm>=4.66",
   "magicgui>=0.8",
   "matplotlib>=3.7",
+  # Imported by _widget.py / _finetune_runner.py at runtime. These were missing,
+  # so a clean `pip install -e .` produced a plugin that raised ImportError on the
+  # first PTU read (ptufile), on any segmentation (cellpose, torch) and on the
+  # sample-data download (gdown, requests).
+  # pandas needs openpyxl to write FLIM-S.xlsx / clustered.xlsx. Without it every
+  # cell is computed and then the write fails.
+  "openpyxl>=3.1",
+  "ptufile>=0.1",
+  "requests>=2.28",
+  "gdown>=5.0",
+]
+
+[project.optional-dependencies]
+# Segmentation and fine-tuning. Kept optional because torch must match the user's
+# CUDA driver: install torch first from https://pytorch.org/get-started/locally/,
+# then `pip install -e ".[segmentation]"`. The plugin imports cellpose lazily, so
+# PTU reading, Calculate FLIM-S and Seeded K-Means work without this extra.
+segmentation = [
+  "torch>=2.0",
+  "cellpose>=2.2",
 ]
 
 # harmonypy is needed only for the optional SeededKMeans / Harmony calibration
 # step, so it is declared as an extra rather than a runtime dependency:
 #   pip install "bc-flim-spectra[harmony]"
-[project.optional-dependencies]
 harmony = ["harmonypy>=0.0.9", "scikit-learn>=1.2"]
 testing = ["tox", "pytest", "pytest-cov", "pytest-qt", "napari", "pyqt5"]
 

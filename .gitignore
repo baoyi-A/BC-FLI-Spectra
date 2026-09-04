@@ -1,0 +1,16 @@
+# Editable installs write metadata into the source tree
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.py[cod]
+
+# Per-user plugin state (env detection, last sample folder)
+.bc_flim_spectra_*.json
+
+# Fine-tuned model weights are large and per-experiment
+_finetune/
+
+.tox/
+.pytest_cache/
+.DS_Store

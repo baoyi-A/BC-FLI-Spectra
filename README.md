@@ -67,6 +67,22 @@ need to be downloaded and the network speed.
 
 ---
 
+## 🤖 Using this repository with an AI assistant
+
+Both tools ship machine-readable instructions, so a general-purpose coding
+assistant can install the software and answer questions about it without
+being told anything else:
+
+| File | For |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Coding agents — layout, install, conventions, testing pattern. Follows the [agents.md](https://agents.md) convention; Claude Code picks it up via the one-line `CLAUDE.md`. |
+| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | Usage — the seven steps control by control, what every parameter means, and the failure modes with the check for each. [Agent Skills](https://agentskills.io) format. |
+
+Point your assistant at the repository and ask it, for example, *"install this
+and open Calculate FLIM-S"* or *"why does my FLIM-S.xlsx contain rows I did not
+compute"*. The parameter descriptions in the skill are the same strings the
+widgets show as tooltips, so the two cannot drift apart.
+
 ## 📜 License
 BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
 

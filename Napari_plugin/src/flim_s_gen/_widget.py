@@ -77,7 +77,14 @@ def _install_vispy_0x1c_patch():
     if getattr(QtViewer, '_bcflim_0x1c_patched', False):
         return
     import functools as _ft
-    _orig_remove = QtViewer._remove_layer
+    # napari >= 0.5 dropped QtViewer._remove_layer (and carries the upstream fix
+    # anyway). Skip quietly instead of raising AttributeError at import time,
+    # which used to make the whole plugin unimportable on a newer napari.
+    _orig_remove = getattr(QtViewer, '_remove_layer', None)
+    if _orig_remove is None:
+        print('[vispy-patch] napari has no QtViewer._remove_layer '
+              '(napari >= 0.5); skipping the 0x1C backport.')
+        return
 
     @_ft.wraps(_orig_remove)
     def _remove_layer(self, event):
