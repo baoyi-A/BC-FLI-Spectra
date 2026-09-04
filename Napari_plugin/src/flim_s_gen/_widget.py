@@ -32,8 +32,6 @@ from scipy.ndimage import center_of_mass
 from typing import Union
 from pathlib import Path
 
-import tkinter as tk
-from tkinter import messagebox
 from matplotlib.widgets import LassoSelector
 from matplotlib.path import Path as MplPath
 import os
@@ -7719,17 +7717,6 @@ class Trackrevise(Container):
         cols = ['Class'] + [col for col in cols if col != 'Class']
         return df[cols]
 
-    def show_warning_dialog(self, message):
-        root = tk.Tk()
-        root.withdraw()
-        response = messagebox.askquestion("Warning", message + "\n\nDo you want to continue?",
-                                          icon='warning', type='yesnocancel')
-        if response == 'yes':
-            return "continue"
-        elif response == 'no':
-            return "add"
-        else:
-            return "cancel"
     def load_classification(self):
         # load the tif file which is masks from 0-14, 0 for bg, 1-14 for cells in different classes
         classification_file = self.classification_input.value
@@ -8093,6 +8080,10 @@ class Trackrevise(Container):
             except Exception as e:
                 print(e)
                 notifications.show_error("Error reading Stack B. Consider there's no Stack B needed.")
+                # Nothing was loaded: returning here is the point of the
+                # message above. Falling through would hit add_image with
+                # tif_stack unbound and raise UnboundLocalError.
+                return
         elif name == 'Stack G':
             try:
                 tif_stack = tiff.imread(self.stack_g_input.value)
@@ -8100,6 +8091,10 @@ class Trackrevise(Container):
             except Exception as e:
                 print(e)
                 notifications.show_error("Error reading Stack G. Consider there's no Stack G needed.")
+                # Nothing was loaded: returning here is the point of the
+                # message above. Falling through would hit add_image with
+                # tif_stack unbound and raise UnboundLocalError.
+                return
         elif name == 'Stack NIR':
             try:
                 tif_stack = tiff.imread(self.stack_nir_input.value)
@@ -8107,6 +8102,10 @@ class Trackrevise(Container):
             except Exception as e:
                 print(e)
                 notifications.show_error("Error reading Stack NIR. Consider there's no Stack NIR needed.")
+                # Nothing was loaded: returning here is the point of the
+                # message above. Falling through would hit add_image with
+                # tif_stack unbound and raise UnboundLocalError.
+                return
         self.viewer.add_image(tif_stack, name=name)
 
     def save_tracking(self):

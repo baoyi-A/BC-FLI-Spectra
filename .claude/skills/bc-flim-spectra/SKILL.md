@@ -54,6 +54,7 @@ Read the one you need; do not read them all.
 
 | File | Read it when |
 |---|---|
+| `references/status-and-qc.md` | **Start here for any "where am I / how is it going / does this look right" question.** Runs one read-only script that reports which steps are done, the quality checks with real numbers, and what is outstanding. |
 | `references/workflow.md` | Walking someone through a step, or choosing parameters. Covers all seven widgets, every control, and what each number does. |
 | `references/troubleshooting.md` | Something failed, looks wrong, or produced surprising numbers. |
 | `references/install.md` | Installing, or diagnosing an install: the three-environment design, Cellpose model weights, Qt backends, China-network workarounds. |
@@ -79,6 +80,19 @@ are in `FLIM-S.xlsx`; say which one you mean.
 at the tooltip in the widget, which carries the authoritative value.
 
 **Barcode colours come from the project palette**, never `tab20`.
+
+## Someone asks how their run is going
+
+Do not answer from the conversation. Look at the folder:
+
+```bash
+python Napari_plugin/scripts/workflow_status.py <sample folder>
+```
+
+Read-only. It says which of the seven steps have run, gives the quality checks
+with their numbers, and lists what is outstanding — including the registration
+check, which is the one people skip. `references/status-and-qc.md` explains how
+to read it and when a failure is real.
 
 ## Fast checks
 
