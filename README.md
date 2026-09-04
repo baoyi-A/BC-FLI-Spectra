@@ -3,10 +3,6 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
 
-![One mixed dish, ten barcoded populations, one readout each](docs/images/pipeline_overview.png)
-
-<p align="center"><em>Every panel above is real output of the napari plugin on one acquisition — not a schematic. Regenerate it with <code>Napari_plugin/scripts/make_overview_figure.py</code>.</em></p>
-
 This repository contains two independent tools for barcode analysis in FLIM experiments:
 
 Each tagged release is archived on Zenodo. The DOI above always resolves to the
