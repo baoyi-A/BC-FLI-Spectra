@@ -98,8 +98,19 @@ environment variable only reaches processes started *after* it is set, so a
 napari launched from a desktop shortcut will not see one you just typed in a
 terminal.
 
-**Model not found:** custom weights are searched under `BCFLIM_MODEL_ROOT`, the
-per-sample `_finetune/` folder, and `~/.cellpose`.
+**Model not found.** The widget header shows the resolved model root, where it
+came from, and how many models are under it. The fine-tuned defaults
+(`NinNC-…`, `CinNC-…`, `BS-BC-assist-…`) are **not** in the repository; on a
+fresh checkout pick a public base model (`cpsam`, `cyto3`) or point the plugin
+at your own store:
+
+```bash
+export BCFLIM_MODEL_ROOT=/path/to/models
+```
+
+Flat folders, one-directory-per-model (with or without a `_BEST` suffix), and
+the trainer's `<name>/models/<name>` layout are all accepted. Weights are also
+searched in the per-sample `_finetune/` folder and `~/.cellpose`.
 
 ---
 

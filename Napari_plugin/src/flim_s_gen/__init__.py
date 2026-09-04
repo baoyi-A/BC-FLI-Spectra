@@ -47,6 +47,9 @@ from ._widget import (
     Trackrevise,
     # MultiModelTracker,
     BPTracker,
+    # Point the plugin at a folder of Cellpose weights and remember the choice
+    # (also settable with the BCFLIM_MODEL_ROOT environment variable).
+    set_barcode_model_root,
 )
 from ._writer import write_multiple, write_single_image
 

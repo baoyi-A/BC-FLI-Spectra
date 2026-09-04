@@ -94,8 +94,17 @@ one with cellpose 2.x, one with cellpose 4.x.
 
 The plugin auto-detects them at startup and caches the choice in
 `~/.bc_flim_spectra_envs.json`. Override with `BCFLIM_CELLPOSE_V2_PYTHON` /
-`BCFLIM_CELLPOSE_V4_PYTHON`. Custom model weights are searched under
-`BCFLIM_MODEL_ROOT`, the per-sample `_finetune/` folder, and `~/.cellpose`.
+`BCFLIM_CELLPOSE_V4_PYTHON`.
+
+Custom model weights are searched under `BCFLIM_MODEL_ROOT` (env var, or
+`model_root` in `~/.bc_flim_spectra_state.json`, or
+`flim_s_gen.set_barcode_model_root(path)`), the per-sample `_finetune/` folder,
+and `~/.cellpose`. Several on-disk layouts are accepted, so a plain folder of
+weight files works as a model store.
+
+**The fine-tuned models named as widget defaults are not in this repository.**
+A clean checkout can only use the public Cellpose base models (`cpsam`,
+`cyto3`). Do not assume the defaults resolve.
 
 **If you are only reading, editing or testing code, you do not need the
 cellpose envs.** Everything except the two segmentation widgets runs in one env.

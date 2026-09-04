@@ -9552,8 +9552,87 @@ if not _log.handlers:
     _log.addHandler(_h)
     _log.setLevel(_logging.INFO)
     _log.propagate = False
-_BARCODE_MODEL_ROOT = Path(_os_init.environ.get(
-    'BCFLIM_MODEL_ROOT', r"G:/BC-FLIM-S/LYH"))
+# Legacy lab location, kept only as one candidate among several. It was the
+# hardcoded default until 2026-09; the drive has since moved, so on every other
+# machine the plugin was resolving custom models against a path that does not
+# exist — silently, because a missing root just produces empty globs.
+_LEGACY_LAB_MODEL_ROOTS = (
+    r"G:/BC-FLIM-S/LYH",
+    r"J:/BC-FLIM-S/LYH",
+)
+_MODEL_ROOT_SOURCE = 'fallback'
+
+
+def _resolve_barcode_model_root() -> "Path":
+    """Where the shared ``_cellpose*_finetune_*`` model folders live.
+
+    Resolution order, first hit wins:
+
+    1. ``BCFLIM_MODEL_ROOT`` — always honoured, even if it does not exist, so a
+       typo is visible rather than silently replaced.
+    2. ``model_root`` in ``~/.bc_flim_spectra_state.json`` — set once per machine
+       without touching the environment.
+    3. The first legacy lab path that actually exists on this machine.
+    4. ``~/.cellpose`` — always present once Cellpose has run, and already one of
+       the places individual models are searched for, so a plain user gets a
+       working root instead of a dangling drive letter.
+
+    Sets the module-level ``_MODEL_ROOT_SOURCE`` so the widget header can report
+    which rule fired.
+    """
+    global _MODEL_ROOT_SOURCE
+    env = _os_init.environ.get('BCFLIM_MODEL_ROOT')
+    if env:
+        _MODEL_ROOT_SOURCE = 'BCFLIM_MODEL_ROOT'
+        return Path(env)
+    try:
+        state_file = Path.home() / '.bc_flim_spectra_state.json'
+        if state_file.is_file():
+            import json as _json
+            saved = _json.loads(state_file.read_text(encoding='utf-8')).get('model_root')
+            if saved:
+                _MODEL_ROOT_SOURCE = 'saved in ~/.bc_flim_spectra_state.json'
+                return Path(saved)
+    except Exception:
+        pass
+    for cand in _LEGACY_LAB_MODEL_ROOTS:
+        try:
+            p = Path(cand)
+            if p.is_dir():
+                _MODEL_ROOT_SOURCE = 'lab default'
+                return p
+        except Exception:
+            continue
+    _MODEL_ROOT_SOURCE = 'no shared store found, using the Cellpose cache'
+    return Path.home() / '.cellpose'
+
+
+def set_barcode_model_root(path) -> "Path":
+    """Point the plugin at a shared model store and remember it.
+
+    Writes ``model_root`` into ``~/.bc_flim_spectra_state.json`` so the choice
+    survives restarts, and updates the resolved root for this session.
+    """
+    global _BARCODE_MODEL_ROOT, _MODEL_ROOT_SOURCE
+    p = Path(str(path))
+    try:
+        import json as _json
+        state_file = Path.home() / '.bc_flim_spectra_state.json'
+        state = {}
+        if state_file.is_file():
+            state = _json.loads(state_file.read_text(encoding='utf-8'))
+        state['model_root'] = str(p)
+        state_file.write_text(_json.dumps(state, indent=2, ensure_ascii=False),
+                              encoding='utf-8')
+    except Exception as e:
+        _log.warning('could not persist model_root: %s', e)
+    _BARCODE_MODEL_ROOT = p
+    _MODEL_ROOT_SOURCE = 'set by set_barcode_model_root()'
+    return p
+
+
+_BARCODE_MODEL_ROOT = _resolve_barcode_model_root()
+_log.info('model root: %s (%s)', _BARCODE_MODEL_ROOT, _MODEL_ROOT_SOURCE)
 # Optional checkout of cellpose 2.x source — only used by the v2 subprocess
 # runner if a local working copy is needed (most users don't need this).
 _CELLPOSE_SRC_PATH = Path(_os_init.environ.get(
@@ -9850,7 +9929,13 @@ def _describe_cellpose_envs() -> str:
         n_v4 = len(list(_BARCODE_MODEL_ROOT.glob('_cellpose4_finetune_*')))
     except Exception:
         n_v2 = n_v4 = 0
-    env_set = '✓ env var' if _os_init.environ.get('BCFLIM_MODEL_ROOT') else '✗ env var (using fallback)'
+    n_found = n_v2 + n_v4
+    if n_found == 0:
+        hint = ('no shared models here — set one with the BCFLIM_MODEL_ROOT '
+                'env var, or flim_s_gen.set_barcode_model_root(path). '
+                'Per-sample _finetune/ models and ~/.cellpose still work.')
+    else:
+        hint = f'{n_found} finetune dirs'
     return (
         f'<b>Cellpose envs:</b> '
         f'<span style="color:{v2_color}">{v2_mark} v2</span> · '
@@ -9858,7 +9943,7 @@ def _describe_cellpose_envs() -> str:
         f'<b>Model root:</b> '
         f'<span style="color:{root_color}">{root_mark} '
         f'{_BARCODE_MODEL_ROOT}</span> '
-        f'({n_v2 + n_v4} finetune dirs, {env_set})<br>'
+        f'(source: {_MODEL_ROOT_SOURCE}; {hint})<br>'
         f'<span style="font-size:10px">'
         f'v2 → {v2_path}<br>'
         f'v4 → {v4_path}<br>'
@@ -10670,31 +10755,65 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
     return seg_img, source
 
 
+def _model_file_candidates(root: "Path", name: str):
+    """Every layout a Cellpose weight file for ``name`` is known to sit in under ``root``.
+
+    Cellpose's own trainer writes ``<dir>/models/<name>``, so that is the layout the
+    plugin produces. A model set that has been archived, copied off a training machine
+    or downloaded from a data repository is usually flatter than that, and the training
+    run may also have left the "best epoch" suffix on the file name. Accepting all of
+    them is what makes "point BCFLIM_MODEL_ROOT at a folder of models" behave the way
+    the documentation implies.
+    """
+    root = Path(root)
+    return (
+        root / name / "models" / name,     # cellpose trainer output (what we write)
+        root / name / name,                # archived: folder named after the model
+        root / name / f"{name}_BEST",      # ... with the trainer's best-epoch suffix
+        root / name,                       # flat store: the weight file itself
+        root / "models" / name,            # a bare cellpose model cache
+        root / f"{name}_BEST",
+    )
+
+
 def _resolve_barcode_model_path(model_type: str, extra_roots=()) -> "Path | None":
     """Resolve a Cellpose custom model name to a concrete file path.
 
-    Scans both ``_cellpose_finetune_*`` (v2 finetune outputs) and
-    ``_cellpose4_finetune_*`` (CellposeSAM finetune outputs) under the
-    shared model root.
+    Search order: an explicit path, the ``~/.cellpose`` cache, the shared model
+    root (both the ``_cellpose*_finetune_*`` subfolders the plugin writes and the
+    flatter layouts an archived or downloaded model set has), then each caller-
+    supplied root (a sample folder's ``_finetune/``).
     """
     p = Path(model_type)
-    if p.exists():
+    if p.exists() and p.is_file():
         return p
     cached = Path.home() / ".cellpose" / "models" / model_type
     if cached.exists():
         return cached
     for pattern in ("_cellpose_finetune_*", "_cellpose4_finetune_*"):
-        for d in sorted(_BARCODE_MODEL_ROOT.glob(pattern)):
+        try:
+            subdirs = sorted(_BARCODE_MODEL_ROOT.glob(pattern))
+        except Exception:
+            subdirs = []
+        for d in subdirs:
             c = d / model_type / "models" / model_type
             if c.exists():
                 return c
-    for root in extra_roots:
-        for cand in (
-            Path(root) / "_finetune" / model_type / "models" / model_type,
-            Path(root) / model_type / "models" / model_type,
-        ):
-            if cand.exists():
+    # The shared root itself may simply be a folder of models.
+    for cand in _model_file_candidates(_BARCODE_MODEL_ROOT, model_type):
+        try:
+            if cand.is_file():
                 return cand
+        except OSError:
+            continue
+    for root in extra_roots:
+        for cand in (_model_file_candidates(Path(root) / "_finetune", model_type)
+                     + _model_file_candidates(Path(root), model_type)):
+            try:
+                if cand.is_file():
+                    return cand
+            except OSError:
+                continue
     return None
 
 

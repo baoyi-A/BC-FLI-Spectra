@@ -62,6 +62,27 @@ the code needs one environment.
 
 ## Model weights
 
+**The fine-tuned barcode and biosensor models are not in this repository.** The
+segmentation widgets name them as defaults (`NinNC-…`, `CinNC-…`,
+`BS-BC-assist-…`), but the weight files are distributed separately. Without
+them, choose a public Cellpose base model (`cpsam` for v4, `cyto3` for v2) from
+the dropdown — segmentation will work but will not match the published masks.
+
+Point the plugin at a folder of models with either:
+
+```bash
+export BCFLIM_MODEL_ROOT=/path/to/models      # PowerShell: $env:BCFLIM_MODEL_ROOT = "..."
+```
+
+```python
+import flim_s_gen; flim_s_gen.set_barcode_model_root(r"D:/path/to/models")  # remembered
+```
+
+The folder may be flat (`<root>/<name>`), one directory per model
+(`<root>/<name>/<name>`, with or without a `_BEST` suffix), or the layout the
+plugin's own fine-tuning writes (`<root>/<name>/models/<name>`). The widget
+header reports which root it resolved and how many models it found there.
+
 `cpsam` (~1.15 GB) downloads from `cellpose.org` on first use, which is often
 blocked in China:
 
