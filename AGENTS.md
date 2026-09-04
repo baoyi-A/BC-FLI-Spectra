@@ -1,4 +1,4 @@
-# AGENTS.md — BC-FLIM-Spectra
+# AGENTS.md — SLIC
 
 Instructions for coding agents working in this repository. Written for the
 [AGENTS.md](https://agents.md) convention; Claude Code reads it through the
@@ -6,8 +6,11 @@ one-line `CLAUDE.md`.
 
 ## What this is
 
-**BC-FLIM-Spectra** (in-app name *NaCha*) is a [napari](https://napari.org)
-plugin for barcoded fluorescence-lifetime imaging (FLIM). It turns raw
+**SLIC** (Spectral-Lifetime Indexing of Cells) is a [napari](https://napari.org)
+plugin for barcoded fluorescence-lifetime imaging (FLIM). The Python package and
+the napari plugin id are both `bc-flim-spectra`, and the module is `flim_s_gen`;
+those identifiers are historical and are not renamed. *NaCha* is the name of the
+seventh widget, not of the software. It turns raw
 PicoQuant `.ptu` acquisitions into per-cell 5-D fingerprints
 (phasor *G*, *S* + three spectral intensity ratios), classifies each cell into
 its barcode, then reads a biosensor channel per class.

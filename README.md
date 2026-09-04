@@ -1,4 +1,4 @@
-# 🔬 SLIC (Spectral-Lifetime Indexing of Cells) Tools
+# 🔬 SLIC — Spectral-Lifetime Indexing of Cells
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
@@ -11,9 +11,9 @@ the version DOI listed on the Zenodo record.
 
 ## 1. 🧩 Napari Plugin — Single‑Anchor Barcode Analysis
 
-A napari plugin named **BC‑FLIM‑Spectra (NaCha)** that provides a full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion through segmentation, classification, tracking to alignment and visualization.
+The SLIC napari plugin provides the full workflow for single‑anchor barcode analysis, from `.ptu` data ingestion through segmentation, classification and tracking to alignment and visualization. It is distributed as the Python package `bc-flim-spectra` and appears in napari under that name; *NaCha* is the label of its final widget.
 
-It exposes **seven widgets** under `Plugins → BC‑FLIM‑Spectra`:
+It exposes **seven widgets**, listed in napari under `Plugins → bc-flim-spectra`:
 
 - 📥 **PTU Reader** — import and decode FLIM `.ptu` files.
 - 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single‑ or multi‑folder fine‑tuning.
@@ -72,32 +72,35 @@ need to be downloaded and the network speed.
 
 ---
 
-## 🤖 Ask an assistant instead of reading the manual
+## Machine-readable documentation
 
-The seven steps are easy to run and hard to remember. So the repository ships
-its own instructions **for coding assistants** — Claude Code, Codex, Cursor,
-Copilot and anything else that reads the [agents.md](https://agents.md) and
-[Agent Skills](https://agentskills.io) conventions. Point one at this
-repository and it can install the software, walk you through a step, explain
-what a parameter does, and tell you what state your data is in.
+The repository includes documentation written for coding assistants, following
+the [agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
+conventions. An assistant given the repository — Claude Code, Codex, Cursor,
+Copilot or another tool that reads these files — can carry out the installation,
+describe a step of the workflow, state the meaning and typical range of a
+parameter, and inspect the current state of a sample folder.
 
-Things people actually ask, that now have an answer:
+| File | Contents |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Repository layout, installation, the three-environment design, the headless testing pattern, and the conventions the code follows. Read by Claude Code through the one-line `CLAUDE.md`. |
+| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | The seven analysis steps control by control, how to read each output, the known failure modes with the check that identifies each, and installation notes. |
 
-> *"Install this and open Calculate FLIM-S."*
-> *"What should Pulse Frequency be for my microscope?"*
-> *"Where am I in the workflow, and what do I do next?"*
-> *"Why does my FLIM-S.xlsx contain rows I did not compute?"*
-> *"Is this segmentation good enough to go on?"*
+Parameter descriptions in the skill are extracted from the widget tooltips in
+the source, so the documentation and the interface remain consistent.
 
-### Where am I? — answered from the data, not from memory
+### Reporting the state of a sample folder
+
+`Napari_plugin/scripts/workflow_status.py` inspects a sample folder and reports
+which analysis steps have been completed, quality-control measurements on their
+outputs, and what remains outstanding. It is read-only and requires neither
+napari nor a GPU.
 
 ```bash
 python Napari_plugin/scripts/workflow_status.py <sample folder>
 ```
 
-Read-only, no napari, no GPU. It reports which of the seven steps have run and
-how much each produced, then quality checks with the actual numbers, then what
-is outstanding:
+Representative output:
 
 ```
   [   done] 3 Calculate FLIM-S   rows=834, fovs=1, localisations={'N': 418, 'P': 416}
@@ -115,18 +118,16 @@ is outstanding:
   - Steps 5-7 (biosensor) have not run. They need the confocal B/G/Y stacks.
 ```
 
-`--json` for scripting; exit status 1 when a check fails, so it also works as a
-gate in a pipeline.
+The checks cover the decay stacks expected per field of view, empty masks, the
+phasor coordinates against the universal semicircle, the fitted lifetime range,
+the declined fraction against the outlier-detection setting, class sizes, and
+the barcode-to-biosensor registration. For the registration the script
+evaluates all four rotations and reports both the fraction of cells assigned a
+class and the purity of that assignment within each cell, because coverage
+alone does not distinguish a correct alignment from an incorrect one.
 
-### What the assistant reads
-
-| File | For |
-|---|---|
-| [`AGENTS.md`](AGENTS.md) | Coding agents — layout, install, conventions, the headless testing pattern, and the traps that have cost real time. Claude Code picks it up through the one-line `CLAUDE.md`. |
-| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | Usage — the seven steps control by control, how to read a result, the failure modes with the check that distinguishes each, and installation. |
-
-The parameter descriptions in the skill are extracted from the widgets' own
-tooltips, so the documentation and the interface cannot drift apart.
+`--json` gives machine-readable output; the exit status is 1 when a check
+fails, so the script can also be used as a gate in a pipeline.
 
 ## 📜 License
 BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.

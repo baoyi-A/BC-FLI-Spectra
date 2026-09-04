@@ -1,4 +1,4 @@
-# Installing BC-FLIM-Spectra
+# Installing SLIC
 
 ## Minimum: the analysis half, one environment
 

@@ -1,11 +1,11 @@
-# 🔬 BC‑FLIM‑Spectra (NaCha) — a napari plugin
+# 🔬 SLIC — the napari plugin
 
-BC‑FLIM‑Spectra (aka **NaCha**) is a napari plugin that supports an end‑to‑end
+**SLIC** (Spectral‑Lifetime Indexing of Cells) is a napari plugin that supports an end‑to‑end
 workflow for FLIM and barcode analysis, from raw **`.ptu`** ingestion through
 segmentation, classification, tracking and final alignment / visualisation.
 
 It exposes **seven widgets** under the napari menu
-**`Plugins → BC‑FLIM‑Spectra`**:
+**`Plugins → bc-flim-spectra`** (the package name, kept for compatibility):
 
 1. 📥 **PTU Reader** — import and decode FLIM `.ptu` files into usable image
    stacks / metadata.

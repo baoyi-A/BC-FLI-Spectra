@@ -1,13 +1,14 @@
 ---
 name: bc-flim-spectra
-description: Guide a user through the BC-FLIM-Spectra (NaCha) napari plugin for barcoded FLIM imaging - installing it, running the seven-step workflow from .ptu files to per-barcode biosensor readouts, choosing parameters, and diagnosing the failures that actually happen. Use whenever someone is working with this plugin, a barcoded FLIM sample folder (flim_stack/, intensity/, FLIM-S.xlsx, clustered.xlsx), PTU decoding, phasor G/S per cell, seeded K-Means barcode classification, or Cellpose N/P segmentation in this context.
+description: Guide a user through SLIC (Spectral-Lifetime Indexing of Cells), the napari plugin for barcoded FLIM imaging distributed as the bc-flim-spectra package - installing it, running the seven-step workflow from .ptu files to per-barcode biosensor readouts, choosing parameters, and diagnosing the failures that actually happen. Use whenever someone is working with this plugin, a barcoded FLIM sample folder (flim_stack/, intensity/, FLIM-S.xlsx, clustered.xlsx), PTU decoding, phasor G/S per cell, seeded K-Means barcode classification, or Cellpose N/P segmentation in this context.
 license: BSD-3-Clause
 ---
 
-# BC-FLIM-Spectra (NaCha)
+# SLIC — Spectral-Lifetime Indexing of Cells
 
 A napari plugin that turns raw PicoQuant `.ptu` FLIM acquisitions into
-per-barcode biosensor measurements. Seven widgets, run in order, each writing
+per-barcode biosensor measurements. It is installed as the `bc-flim-spectra`
+package and listed under that name in napari; *NaCha* is its final widget. Seven widgets, run in order, each writing
 files the next one picks up automatically.
 
 Use this skill to answer "how do I do step N", "what should this number be",
