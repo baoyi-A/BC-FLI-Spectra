@@ -25,16 +25,31 @@ python -m napari -w bc-flim-spectra "PTU Reader"
 
 ## Adding segmentation
 
-The two Cellpose widgets need `cellpose` and `torch`:
+The two Cellpose widgets need `cellpose` and `torch`.
+
+**Install a CUDA build of torch FIRST if the machine has an NVIDIA GPU.** The
+default torch wheel on PyPI is CPU-only, so `pip install -e ".[segmentation]"`
+on its own gives you a CPU install even on a machine with a good GPU — and
+nothing fails, it just runs about ten times slower (tens of minutes for one
+2k×2k field instead of under a minute). Take the command for your CUDA version
+from <https://pytorch.org/get-started/locally/>, for example:
 
 ```bash
-pip install -e ".[segmentation]"
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -e ".[segmentation]"      # will not replace the torch you just installed
 ```
 
-Install `torch` first from <https://pytorch.org/get-started/locally/> if you
-need a particular CUDA build — the extra will not replace one that is already
-there. CPU-only torch works; Cellpose falls back to CPU automatically and is
-roughly 10× slower on 2k×2k images.
+On a machine with no GPU, `pip install -e ".[segmentation]"` alone is correct.
+
+Check what you actually got — and note that the answer that matters is the one
+from the environment Cellpose runs in, not from napari's:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+The segmentation widgets show the same thing in their header as a
+**Compute:** line, per Cellpose environment.
 
 ## One environment is usually enough
 

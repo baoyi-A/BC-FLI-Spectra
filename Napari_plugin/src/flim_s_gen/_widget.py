@@ -9923,6 +9923,62 @@ def _has_v2_env() -> bool:
     return _CELLPOSE_V2_PYTHON.is_file()
 
 
+_TORCH_CUDA_CACHE: dict = {}
+
+
+def _env_has_cuda(py_path) -> "bool | None":
+    """Does the torch in THIS interpreter see a GPU? None if it cannot be asked.
+
+    Cellpose runs in a child interpreter, so asking our own torch would answer
+    the wrong question. Result is cached per path: the probe costs a process
+    start, and the answer does not change while napari is open.
+    """
+    key = str(py_path)
+    if key in _TORCH_CUDA_CACHE:
+        return _TORCH_CUDA_CACHE[key]
+    ans = None
+    try:
+        p = Path(key)
+        if p.is_file():
+            import subprocess as _sp
+            out = _sp.run(
+                [key, '-c', 'import torch; print(torch.cuda.is_available())'],
+                capture_output=True, text=True, timeout=60,
+            )
+            txt = (out.stdout or '').strip().splitlines()
+            if txt:
+                ans = txt[-1].strip() == 'True'
+    except Exception as e:
+        _log.debug('cuda probe failed for %s: %s', key, e)
+    _TORCH_CUDA_CACHE[key] = ans
+    return ans
+
+
+def _cuda_status_html() -> str:
+    """One line naming, per configured Cellpose env, whether torch sees a GPU."""
+    bits = []
+    for tag, py in (('v2', _CELLPOSE_V2_PYTHON), ('v4', _CELLPOSE_V4_PYTHON)):
+        if not Path(str(py)).is_file():
+            continue
+        cuda = _env_has_cuda(py)
+        if cuda is True:
+            bits.append(f'<span style="color:#1B5E20">{tag} GPU ✓</span>')
+        elif cuda is False:
+            bits.append(f'<span style="color:#B71C1C">{tag} CPU-only ✗</span>')
+        else:
+            bits.append(f'<span style="color:#B71C1C">{tag} torch not importable</span>')
+    if not bits:
+        return ''
+    line = '<b>Compute:</b> ' + ' · '.join(bits)
+    if any('CPU-only' in b for b in bits):
+        line += ('<br><span style="font-size:10px">A CPU-only torch segments a '
+                 '2k×2k field roughly 10× slower (tens of minutes instead of '
+                 'under a minute). PyPI\'s default torch wheel has no CUDA — '
+                 'install a CUDA build from https://pytorch.org/get-started/locally/ '
+                 'into that env.</span>')
+    return line + '<br>'
+
+
 def _describe_cellpose_envs() -> str:
     """Short HTML status string suitable for a Label widget.
 
@@ -9962,6 +10018,7 @@ def _describe_cellpose_envs() -> str:
         f'<b>Cellpose envs:</b> '
         f'<span style="color:{v2_color}">{v2_mark} v2</span> · '
         f'<span style="color:{v4_color}">{v4_mark} v4</span><br>'
+        f'{_cuda_status_html()}'
         f'<b>Model root:</b> '
         f'<span style="color:{root_color}">{root_mark} '
         f'{_BARCODE_MODEL_ROOT}</span> '
@@ -11391,8 +11448,12 @@ class BarcodeSeg(Container):
             'Show diameter circle toggle is on, a cyan ring shows how '
             'big a "min-area" cell would look at this setting.')
         _tt(self.use_gpu,
-            'Uses CUDA if available; falls back to CPU automatically. '
-            'GPU is ~10× faster on 2k×2k images.')
+            'Uses CUDA if the Cellpose environment has a CUDA build of '
+            'torch, and falls back to CPU otherwise — silently, so check '
+            'the "Compute:" line in the header above before starting a big '
+            'run. On a 2k×2k field that is tens of minutes on CPU versus '
+            'under a minute on GPU. The default torch wheel on PyPI is '
+            'CPU-only; a CUDA build comes from pytorch.org.')
         _tt(self.run_btn,
             'Builds the FastFLIM render grayscale (Leica blue→green→red, '
             '30/85 percentile auto-range, CLAHE on, gamma 0.55) from this '
@@ -13737,7 +13798,12 @@ class BiosensorSeg(Container):
             'Approximate cell diameter in pixels. Set 0 for Cellpose '
             'auto-detect (slower).')
         _tt(self.use_gpu,
-            'Uses CUDA if available; falls back to CPU automatically.')
+            'Uses CUDA if the Cellpose environment has a CUDA build of '
+            'torch, and falls back to CPU otherwise — silently, so check '
+            'the "Compute:" line in the header above before starting a big '
+            'run. On a 2k×2k field that is tens of minutes on CPU versus '
+            'under a minute on GPU. The default torch wheel on PyPI is '
+            'CPU-only; a CUDA build comes from pytorch.org.')
         _tt(self.seg_btn,
             'Runs the selected Cellpose model in a subprocess and saves '
             'the mask to seg_image_seg.npy next to the seg image.')

@@ -74,6 +74,17 @@ something else when you trained it, set the same override when you use it.
 
 ---
 
+## Segmentation is extremely slow
+
+Look at the **Compute:** line in the widget header. `CPU-only ✗` means that
+Cellpose environment has a torch without CUDA, which is what `pip install
+torch` gives you by default — the run still completes, roughly ten times
+slower. Install a CUDA build into that environment from
+<https://pytorch.org/get-started/locally/>.
+
+The environment that matters is the one the child process uses, named on the
+`v2 →` / `v4 →` lines of the same header, not the one running napari.
+
 ## Segmentation starts and never finishes, with no error
 
 Fixed 2026-09-04; if you see it, the plugin is older than that. A Cellpose child
