@@ -72,35 +72,50 @@ need to be downloaded and the network speed.
 
 ---
 
-## Machine-readable documentation
+## 🤖 SLIC works with an AI assistant
 
-The repository includes documentation written for coding assistants, following
-the [agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
-conventions. An assistant given the repository — Claude Code, Codex, Cursor,
-Copilot or another tool that reads these files — can carry out the installation,
-describe a step of the workflow, state the meaning and typical range of a
-parameter, and inspect the current state of a sample folder.
+Seven steps are easy to run and easy to forget. So the repository also carries
+its documentation in a form coding assistants read — the
+[agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
+conventions, used by Claude Code, Codex, Cursor, Copilot and others. Point one
+at this repository and it can install SLIC, walk you through a step, tell you
+what a parameter means, and look at your data to say where you are.
 
-| File | Contents |
+### ✅ We tried it, and it works
+
+We gave **Claude Code** nothing but the address of this repository and asked it
+to install SLIC and process one dataset. Working only from the files here, it
+built a fresh environment, installed the plugin, and ran the workflow through
+on a real acquisition:
+
+| Step | What came out |
 |---|---|
-| [`AGENTS.md`](AGENTS.md) | Repository layout, installation, the three-environment design, the headless testing pattern, and the conventions the code follows. Read by Claude Code through the one-line `CLAUDE.md`. |
-| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | The seven analysis steps control by control, how to read each output, the known failure modes with the check that identifies each, and installation notes. |
+| 📥 PTU Reader | a 1.5 GB `.ptu` decoded into four spectral channels, the decay stacks and a lifetime map |
+| 🔬 Barcode Seg | 418 nuclei and 416 cytoplasm masks on the full 2048 × 2048 field |
+| 🌀 Calculate FLIM-S | 834 cells, each reduced to its 5‑D fingerprint |
+| 🧩 Seeded K-Means | 373 cells sorted into 10 barcodes; 45 declined as outliers |
+| 🟡 Biosensor Seg | 342 cells in the confocal channel, against 349 in our own stored result |
+| 📈 NaCha | one signal curve per barcode across 101 frames |
 
-Parameter descriptions in the skill are extracted from the widget tooltips in
-the source, so the documentation and the interface remain consistent.
+The registration was checked rather than assumed: with the correct 90°
+rotation, 96 % of biosensor cells carry a barcode class at 99 % purity, and the
+three wrong rotations were run as controls and fall apart, as they should.
 
-### Reporting the state of a sample folder
+Two honest notes. Steps 1–4 above used a public Cellpose model, because our
+fine-tuned weights are distributed separately from the code. And the exercise
+was worth doing for its own sake: it turned up a dozen real defects — including
+a packaging error that stopped `pip install` outright, and a failed
+segmentation that hung the interface with no message — all fixed here.
 
-`Napari_plugin/scripts/workflow_status.py` inspects a sample folder and reports
-which analysis steps have been completed, quality-control measurements on their
-outputs, and what remains outstanding. It is read-only and requires neither
-napari nor a GPU.
+### 🔍 "Where am I in the workflow?"
+
+`Napari_plugin/scripts/workflow_status.py` reads a sample folder and reports
+which steps have run, quality checks on what they produced, and what is left.
+Read-only; no napari, no GPU.
 
 ```bash
 python Napari_plugin/scripts/workflow_status.py <sample folder>
 ```
-
-Representative output:
 
 ```
   [   done] 3 Calculate FLIM-S   rows=834, fovs=1, localisations={'N': 418, 'P': 416}
@@ -118,16 +133,22 @@ Representative output:
   - Steps 5-7 (biosensor) have not run. They need the confocal B/G/Y stacks.
 ```
 
-The checks cover the decay stacks expected per field of view, empty masks, the
-phasor coordinates against the universal semicircle, the fitted lifetime range,
-the declined fraction against the outlier-detection setting, class sizes, and
-the barcode-to-biosensor registration. For the registration the script
-evaluates all four rotations and reports both the fraction of cells assigned a
-class and the purity of that assignment within each cell, because coverage
-alone does not distinguish a correct alignment from an incorrect one.
+The checks cover the decay stacks expected per field, empty masks, the phasor
+coordinates against the universal semicircle, the lifetime range, the declined
+fraction against the outlier setting, class sizes, and the registration — for
+which it tries all four rotations and reports coverage *and* purity, since
+coverage alone cannot tell a correct alignment from a wrong one. `--json` for
+scripting; exit status 1 when a check fails, so it works as a gate too.
 
-`--json` gives machine-readable output; the exit status is 1 when a check
-fails, so the script can also be used as a gate in a pipeline.
+### 📚 What the assistant reads
+
+| File | Contents |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Repository layout, installation, the three-environment design, the headless testing pattern, and the conventions the code follows. Claude Code picks it up through the one-line `CLAUDE.md`. |
+| [`.claude/skills/bc-flim-spectra/`](.claude/skills/bc-flim-spectra/) | The seven steps control by control, how to read each output, the failure modes with the check that identifies each, and installation notes. |
+
+Parameter descriptions in the skill are pulled from the widget tooltips in the
+source, so the documentation and the interface cannot drift apart.
 
 ## 📜 License
 BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
