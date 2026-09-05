@@ -56,13 +56,18 @@ returning to the menu.
 - 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single- or multi-folder fine-tuning.
 - 🌀 **Calculate FLIM-S** — lifetime / phasor computation.
 - 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture and Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
+
+
+[![Whitened seeded K-means](docs/method_kmeans_poster.jpg)](docs/method_kmeans.mp4)
+
+*How the classifier places a cell: seeds carried from another batch, whitening by
+each barcode's own cluster spread, then seeded K-means refining the centres.
+Click to play.*
 - 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
 - 🎬 **B&P Tracker** — barcode / object tracking (built on Track-Anything / XMem).
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
 
-<video src="https://github.com/baoyi-A/BC-FLI-Spectra/raw/main/docs/demo.mp4" poster="https://github.com/baoyi-A/BC-FLI-Spectra/raw/main/docs/demo_poster.jpg" controls muted loop playsinline width="100%"></video>
-
-<sub>If the player does not load: [demo.mp4](docs/demo.mp4) · [poster](docs/demo_poster.jpg)</sub>
+[![SLIC demo](docs/demo_poster.jpg)](docs/demo.mp4)
 
 *Sixteen barcoded populations in one dish, read out one at a time: each column
 is a barcode, its biosensor, the three confocal channels, and that population's
