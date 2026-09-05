@@ -33,7 +33,7 @@ code shared between them.
 
 | | |
 |---|---|
-| 🧩 **[`Napari_plugin/`](Napari_plugin/README.md)** | **SLIC** — the napari plugin. Seven widgets take you from a raw `.ptu` to one biosensor readout per barcode. *NaCha* is the last of the seven. |
+| 🧩 **[`Napari_plugin/`](Napari_plugin/README.md)** | **SLIC**, the napari plugin — also known as **NaCha**, which is its final widget and the name the hosted demo goes by. Seven widgets take you from a raw `.ptu` to one biosensor readout per barcode. Installs as `bc-flim-spectra`. |
 | 🧠 **[`LUMINA_classification/`](LUMINA_classification/README.md)** | **LUMINA** — the dual-anchor classifier, for cells carrying two barcodes at once. |
 | 🤖 [`.claude/skills/`](.claude/skills/) | One agent skill per tool, so a coding assistant can install and drive either of them. See [below](#-slic-works-with-an-ai-assistant). |
 

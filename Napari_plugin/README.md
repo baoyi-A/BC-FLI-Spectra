@@ -1,4 +1,9 @@
-# 🔬 SLIC — the napari plugin
+# 🔬 SLIC — the napari plugin (NaCha)
+
+*Three names, one thing: the science is **SLIC**, the pip package and the napari
+menu entry are **`bc-flim-spectra`**, and **NaCha** is the final widget — the name
+the [hosted demo](https://baoyi-a.github.io/nacha-demo/) goes by. This folder is
+`Napari_plugin/`.*
 
 *One of the two tools in [SLIC](../README.md). For dual-anchor barcodes, see
 [LUMINA](../LUMINA_classification/README.md).*
@@ -197,23 +202,15 @@ import flim_s_gen   # logs: v2 python: …, v4 python: …, scoring decisions
 
 ---
 
-## 🧩 Per‑model config (BYO model)
+## 🧩 Bring your own Cellpose model
 
-Finetuned Cellpose models need different inputs and inference parameters.
-Instead of forking the widget per model, the plugin reads an optional
-**`config.json`** next to the model weight — beside the weight file, in its
-parent dir, or one level up, first hit wins — and applies it transparently.
-A model without one keeps its legacy behaviour.
-
-```json
-{ "input_kind": "intensity_sum", "diameter": 30, "cellprob_threshold": -6.0 }
-```
-
-Pick the model in BarcodeSeg: the diameter spinbox auto‑fills, inference uses
-the declared thresholds, and the status hint gains a `📄cfg` tag so you know
-the override took effect. Full key list in the skill reference
-[`references/workflow.md`](../.claude/skills/slic-napari/references/workflow.md),
-under *Barcode Seg*; a worked example ships in [`examples/`](examples/).
+Drop a `config.json` beside the model weight (or in its parent dir, or one level
+up — first hit wins) and the plugin applies it: input kind, diameter, Cellpose
+thresholds, post-processing. The status hint gains a `📄cfg` tag when one took
+effect. Fine-tuning from inside the plugin writes one for you, so this is only
+something to hand-author for a model trained elsewhere.
+[Full key list](../.claude/skills/slic-napari/references/workflow.md) ·
+[worked example](examples/).
 
 ---
 
