@@ -18,13 +18,11 @@ from a single mixed dish.
 
 ### 🌐 Try it in a browser — nothing to install
 
-A hosted instance of the napari plugin runs at
-**<https://baoyi-a.github.io/nacha-demo/>**. It opens the plugin on the demo
-dataset with no local setup, so the whole workflow can be walked through before
-installing anything. The page starts a cloud machine on demand and shuts it
-down again once idle; a GPU can be requested for the segmentation steps. The
-instance re-installs from this repository's `main` on every cold start, so it
-runs the code published here rather than a snapshot.
+**<https://baoyi-a.github.io/nacha-demo/>** runs the plugin on the demo dataset
+in a browser, with no local setup. The page starts a cloud machine on demand,
+optionally with a GPU for the segmentation steps, and shuts it down when idle.
+It re-installs from this repository's `main` on every cold start, so it runs the
+published code rather than a snapshot.
 
 ## What is in here
 
@@ -129,12 +127,11 @@ wheels need to be downloaded and the network speed.
 
 ## 🤖 SLIC works with an AI assistant
 
-Seven steps are easy to run and easy to forget. So the repository also carries
-its documentation in a form coding assistants read — the
-[agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
-conventions, used by Claude Code, Codex, Cursor, Copilot and others. Point one
-at this repository and it can install either tool, walk you through a step,
-tell you what a parameter means, and look at your data to say where you are.
+The repository carries its documentation in a form coding assistants read, to
+the [agents.md](https://agents.md) and [Agent Skills](https://agentskills.io)
+conventions used by Claude Code, Codex, Cursor and Copilot. Pointed at this
+repository, an assistant can install either tool, explain a parameter, and read
+a sample folder to report which steps have run and whether they look right.
 
 ### ✅ Validation — an assistant reproduced our curated result
 
