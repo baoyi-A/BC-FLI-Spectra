@@ -7,8 +7,14 @@ while the network's decision boundaries stay where they were.
 
 This page describes the adaptation protocol that has been used to move a
 checkpoint onto a new cell line, and the script in this repository that runs it:
-**`LUMINA_classification/Finetune_LUMINA.py`**. It is the one script here with a
-command line — see the last section for why, and for what it does *not* cover.
+**`LUMINA_classification/Finetune_LUMINA.py`**. All five scripts in the folder
+take flags, so that is not what sets this one apart. What does is that it is the
+only one implementing *this* protocol — *K*-shot support sampling, a confidence
+gate, the within/cross-batch split and seed averaging — and that here the flags
+*are* the experimental design rather than plumbing: a number from this script
+means nothing without the *K*, the seed, the held-out set and the curation that
+produced it, which is why each is a flag and each is echoed into
+`finetune_run_config.csv`. See the last section for what it does *not* cover.
 
 ## What actually shifts between cell lines
 
@@ -345,10 +351,19 @@ Everything it writes, under `--out`:
 | `finetune_run_config.csv` | every run | every flag and its resolved value, so a results directory says what produced it without the shell history |
 | `best_model_fewshot_K<k>_seed<s>.pth` | with `--save-heads` | the adapted checkpoint, loadable by `Test_LUMINA.py` |
 
-**This is the one script in the folder with an argument parser.** Everywhere
-else the correct answer is "edit line N"; here it is a flag. Say so rather than
-sending someone to edit a constant that does not exist. `--help` is authoritative
-for the flag list.
+**Never send someone to edit a line in it, or in any of the other four.** All
+five are flag-driven and none has an editable constant left; `--help` is
+authoritative for the flag list on each.
+
+What is different here is what the flags *mean*. In the other four a flag is
+mostly plumbing — a path, a device, a batch size — and the defaults reproduce
+what the committed file did. In this one the flags are the experiment: `--k`,
+`--seed`/`--seeds`, `--eval-root`, `--confidence-threshold`, `--min-px`,
+`--min-max` and `--drop-list` each move the number that comes out, and several
+move the *denominator* rather than the score. So a figure from this script is
+uninterpretable without them, which is why every one is written to
+`finetune_run_config.csv` and why the answer to "what accuracy does LUMINA get on
+my cells" is a command line and its config file, not a number.
 
 Two things it does *not* ship, both of which are data, not code:
 
@@ -361,17 +376,25 @@ Two things it does *not* ship, both of which are data, not code:
   of numbers was produced with one, the list has to travel with the numbers, or
   the numbers have to be reported without it as well.
 
-`Train_LUMINA.py` also has a `use_finetune` path. It is **not** this protocol,
-and is disabled in the shipped configuration:
+`Train_LUMINA.py` also has a `--finetune` flag, and the name collides. It is
+**not** this protocol, and it is off by default:
 
-- `freeze_conv_layers()` freezes only `model.input_heads`; the backbone freeze
-  is commented out — so it trains the backbone as well as the heads.
-- It uses AdamW, 800 epochs, batch size 128 and early stopping.
+- `freeze_conv_layers()` freezes only the six input stems — so under
+  `--finetune` it trains the shared backbone as well as the heads, where
+  `--ft-mode heads` here freezes everything but `fc_nu` / `fc_mito`.
+- It uses AdamW at `--lr 1e-3`, `--finetune-epochs 800`, `--batch-size 128` and
+  an `--early-stop-patience` that never fires at its default.
 - It has no *K*-shot support-set sampling, no confidence gate and no
-  within/cross-batch evaluation.
+  within/cross-batch evaluation — it trains on a `--val-split` of the same dual-
+  anchor folders it validates on, splitting cells rather than acquisitions.
 
-If someone says "I fine-tuned it with `Train_LUMINA.py`", they did something
-else. Point them at `Finetune_LUMINA.py`.
+Also note `--seed` means different things in the two scripts: in
+`Train_LUMINA.py` it is the `random_state` of both train/validation splits, here
+it draws the support set. And `--confidence-threshold` defaults to 0.9 here
+against 0.6 in `Test_LUMINA.py` — same scale, different measurement, not a typo.
+
+If someone says "I fine-tuned it with `Train_LUMINA.py --finetune`", they did
+something else. Point them at `Finetune_LUMINA.py`.
 
 ## How a run here differs from the runs the manuscript reports
 

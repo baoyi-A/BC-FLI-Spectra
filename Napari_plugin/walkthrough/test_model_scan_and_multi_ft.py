@@ -5,9 +5,8 @@
 2. Multi-folder fine-tune subprocess: the runner accepts imgs/masks lists
    and trains jointly on cyto2.
 
-Run with:
-    D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe \
-        walkthrough/test_model_scan_and_multi_ft.py
+Run with the interpreter that has napari + the plugin installed:
+    python walkthrough/test_model_scan_and_multi_ft.py
 """
 from __future__ import annotations
 

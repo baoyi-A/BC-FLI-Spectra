@@ -3732,11 +3732,10 @@ class SeededKMeans(Container):
         self.append(row)
 
         # --- Whiten by the within-cluster spread of this acquisition (before the outlier pass) ---
-        # Ported 2026-09-02 from the research fork (python_code/BC-FLIM-S/BC-FLIM-Spectra/
-        # SPEC_selfwhiten_260831.md). The diagonal 5D weights cannot describe a cluster that is
-        # long, thin and tilted, so the two closest barcodes can swap when a saved seed set is
-        # reused on a new acquisition. Whitening by the pooled covariance of the clusters found
-        # in the first pass (no labels involved) fixes that; see _self_whiten for the guard.
+        # The diagonal 5D weights cannot describe a cluster that is long, thin and tilted, so the
+        # two closest barcodes can swap when a saved seed set is reused on a new acquisition.
+        # Whitening by the pooled covariance of the clusters found in the first pass (no labels
+        # involved) fixes that; see _self_whiten for the reasoning and the guard.
         row = Container(layout='horizontal')
         self.selfwhiten_enable = _CheckBox(text='Whiten by within-cluster spread', value=True)
         row.append(self.selfwhiten_enable)
@@ -3847,8 +3846,7 @@ class SeededKMeans(Container):
             'unit of distance means "one cluster width", and cluster once '
             'more from the same seeds. Uses no labels. Stops the two closest '
             'barcodes swapping when a seed set saved on one acquisition is '
-            'reused on another (measured on the twelve-barcode HEK '
-            'reference series; see the Supplementary Note of the paper). '
+            'reused on another (see the Supplementary Note of the paper). '
             'While ticked, the 5D weight spin '
             'boxes below carry almost nothing. Skipped automatically when '
             'fewer than 8 clusters are populated (e.g. a dish carrying one '
@@ -3918,21 +3916,17 @@ class SeededKMeans(Container):
         self.harmony_enable = CheckBox(
             text='Use Harmony calibration instead of manual seeds', value=False,
         )
-        # Reference CSV — auto-resolve: prefer a local copy of the spec's
-        # A549 14-class lasso (lab desktop has one at this path), fall
-        # back to the server path so the field is never empty. Users can
-        # override with any CSV that has the expected label column.
-        _harmony_ref_candidates = [
-            r'D:/PKU_STUDY/DeepLearining/BC-FLIM/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
-            r'/dfs/share/liubeiLab/WBY/BC-FLIM/results/cross_cellline_barcode_260602/references/A549_N_after_N11_manual_lasso_main.csv',
-        ]
-        _harmony_ref_default = next(
-            (p for p in _harmony_ref_candidates if Path(p).is_file()),
-            _harmony_ref_candidates[0],
-        )
+        # Reference CSV — no reference ships with the plugin, so there is
+        # no built-in default path. Resolution order, first hit wins:
+        #   1. BCFLIM_HARMONY_REF_CSV
+        #   2. 'harmony_ref_csv' in ~/.bc_flim_spectra_state.json, written
+        #      by the last successful calibration on this machine
+        #   3. empty — the user picks a CSV with the file browser
+        # Empty is a supported state: the calibrate button reports what is
+        # missing instead of failing on a path that is not there.
         self.harmony_ref_csv = FileEdit(
             label='Reference CSV', mode='r', filter='*.csv',
-            value=_harmony_ref_default,
+            value=_resolve_harmony_ref_default(),
         )
         # Label column — A549 uses NLabelDisplay (NOT NLabel); other
         # references vary, so we expose this rather than hard-coding it.
@@ -3975,10 +3969,12 @@ class SeededKMeans(Container):
             'clustered.xlsx. Default OFF — the legacy seeded-KMeans flow '
             'is unchanged.')
         _tt(self.harmony_ref_csv,
-            'Per-cell labelled reference. Default is the A549 14-class '
-            'lasso CSV (label column NLabelDisplay). Pick a different '
-            'reference + matching label column for HEK / MDA / SKOV3 '
-            '(see the SPEC notes for which column each one uses).')
+            'Per-cell labelled reference CSV — one row per cell, with the '
+            '5-D feature columns and a barcode label column. None ships '
+            'with the plugin: pick your own, or set BCFLIM_HARMONY_REF_CSV. '
+            'The label column differs per reference (A549 -> NLabelDisplay, '
+            'HEK / MDA -> NLabel, SKOV3 -> CorrectedBarcode), so set the '
+            'next control to match whichever CSV you pick.')
         _tt(self.harmony_label_col,
             'Which column on the reference holds the barcode label. '
             'A549 → NLabelDisplay (NOT NLabel — NLabel has stale numbers). '
@@ -5151,9 +5147,36 @@ class SeededKMeans(Container):
             )
             return
         ref_csv = str(self.harmony_ref_csv.value).strip()
-        if not ref_csv or not Path(ref_csv).is_file():
+        # "Nothing picked" has three spellings in magicgui's FileEdit: an
+        # empty value reads back as '.', a cleared box resolves to the
+        # process CWD, and mode='r' only ever yields a *file* once the user
+        # really picks one — so any directory means unset too.
+        _ref_unset = (
+            not ref_csv
+            or ref_csv in ('.', '..')
+            or Path(ref_csv).is_dir()
+        )
+        if _ref_unset:
+            self._notify(
+                "No reference CSV selected. Harmony calibration needs a "
+                "labelled reference: one row per cell, the 5-D feature "
+                "columns, and a barcode label column. Pick one in the "
+                "'Reference CSV' field above, or set BCFLIM_HARMONY_REF_CSV "
+                "to its path so it is pre-filled next time."
+            )
+            return
+        if not Path(ref_csv).is_file():
             self._notify(f"Reference CSV not found: {ref_csv}")
             return
+        # Remember this reference for the next session (see
+        # _resolve_harmony_ref_default). GUI convenience only.
+        try:
+            _st = _load_persisted_state()
+            if _st.get('harmony_ref_csv') != ref_csv:
+                _st['harmony_ref_csv'] = ref_csv
+                _save_persisted_state(_st)
+        except Exception as _e:
+            _log.debug('could not persist harmony_ref_csv: %s', _e)
         # Make sure the test df has the expected 5D columns.
         missing = [c for c in FEATURE_COLS if c not in self.df_test.columns]
         if missing:
@@ -5329,20 +5352,23 @@ class SeededKMeans(Container):
         Returns (X_whitened, seeds_whitened, labels), or None if the guard refuses.
 
         WHY THIS AND NOT A RIGID RE-ALIGNMENT
-            A seed set reused across acquisitions fails on the closest pair of barcodes: the widget
-            calls an entire class as its neighbour, worst single barcode 0.2 % across six measured
-            reference-to-query pairs. The first fix tried was an orthogonal Procrustes onto the
-            seeds. It works (99.7 %, worst class 97.6 %) but it is a patch for the real problem, which
-            is that the diagonal weights cannot express a correlated cluster shape. Whitening by the
-            measured cluster shape fixes it outright and needs no seed-file change:
-                                        macro     worst single barcode
-                widget before            97.8              0.2 %
-                + rigid re-alignment     99.7             97.6 %
-                + this                  100.0             99.7 %
-            Measured in python_code/leica_separation_260726/readout_all_260831.py.
-            These are internal development measurements taken in the plugin's
-            diagonal-weight space; the manuscript's Supplementary Note reports its
-            own protocol and numbers, which are the citable ones.
+            The 5D weights scale each axis on its own, so they can describe a cluster that is wide
+            in G and narrow in S, but not one that is long, thin and tilted across both. Real
+            barcode clusters are tilted, and the closest pair of them sits closer together than
+            either is wide. A seed set reused across acquisitions therefore fails on that pair
+            first, and it fails completely: the widget can call an entire class as its neighbour.
+            A macro average hides this, because one class among many is a small share of the
+            cells; only the worst single class shows it.
+            The first fix tried was an orthogonal Procrustes re-alignment of the data onto the
+            seeds. That repairs the macro figure and rescues most of the lost class, but it is a
+            patch: it moves the data to suit a shape description that still cannot express the
+            correlation. Whitening by the cluster shape this acquisition itself shows removes the
+            cause instead, and needs no seed-file change. In development runs across several
+            reference-to-query pairs the ordering was consistent — on the macro figure, rigid
+            re-alignment and whitening are close and both well ahead of the diagonal weights
+            alone; on the worst single class, only whitening recovers it. The manuscript's
+            Supplementary Note reports its own protocol and its own numbers, which are the
+            citable ones.
 
         Transductive: it needs a batch of cells whose composition is not badly skewed, because the
         spread is measured on the cells being classified.
@@ -5530,8 +5556,9 @@ class SeededKMeans(Container):
         # thin and tilted. That is exactly the shape these clusters have, so the two closest barcodes
         # end up separated by less than their own width and an entire class can be called as its
         # neighbour when a seed set is reused across acquisitions. Measuring the spread of the
-        # clusters just found, and rescaling by it, fixes that (worst single barcode 0.2 % -> 99.7 %
-        # over six reference-to-query pairs). No label is used. See _self_whiten.
+        # clusters just found, and rescaling by it, fixes that: the class that was being lost
+        # comes back, which a macro average alone would not have shown. No label is used.
+        # See _self_whiten.
         want_sw = bool(
             seeds_required and init_seeds is not None
             and getattr(self, 'selfwhiten_enable', None) and self.selfwhiten_enable.value
@@ -9554,11 +9581,12 @@ def _save_seg_npy(dest_path: Path, masks: np.ndarray) -> None:
 
 
 # ---- BarcodeSeg N/P model configuration ----
-# Shared lab model store (where _cellpose_finetune_* / _cellpose4_finetune_*
-# folders live). Override on a per-machine basis with BCFLIM_MODEL_ROOT;
-# the original lab path stays as fallback so internal users don't have to
-# set anything. External users without that drive just see empty globs and
-# rely on the per-sample _finetune/ folder + ~/.cellpose cache.
+# Where the shared model store lives (the folder holding the
+# _cellpose_finetune_* / _cellpose4_finetune_* directories). There is no
+# built-in path: point the plugin at yours with BCFLIM_MODEL_ROOT, or with
+# flim_s_gen.set_barcode_model_root(path), which remembers the choice.
+# Without either, the plugin falls back to the ~/.cellpose cache and relies
+# on the per-sample _finetune/ folder for custom weights.
 import logging as _logging
 import os as _os_init
 _log = _logging.getLogger("bc_flim_spectra")
@@ -9568,22 +9596,44 @@ if not _log.handlers:
     _log.addHandler(_h)
     _log.setLevel(_logging.INFO)
     _log.propagate = False
-# Legacy lab location, kept only as one candidate among several. It was the
-# hardcoded default until 2026-09; the drive has since moved, so on every other
-# machine the plugin was resolving custom models against a path that does not
-# exist — silently, because a missing root just produces empty globs.
-# Where a FileEdit starts when nothing has been used yet. The plugin used to
-# open on a lab sample folder (J:/Mix16-...) that exists on one machine; on any
-# other install the picker started on a path that is not there. The real value
+# Where a FileEdit starts when nothing has been used yet. The home directory
+# is the only location guaranteed to exist on every install; the useful value
 # comes from the remembered last-used folder anyway.
 _DEFAULT_SAMPLE_DIR = str(Path.home())
 
 
-_LEGACY_LAB_MODEL_ROOTS = (
-    r"G:/BC-FLIM-S/LYH",
-    r"J:/BC-FLIM-S/LYH",
+# Extra directories to try as the shared model store, in order, before
+# giving up and using the Cellpose cache. Empty by design — a machine-specific
+# store belongs in BCFLIM_MODEL_ROOT or in ~/.bc_flim_spectra_state.json,
+# not baked into the source. Set BCFLIM_MODEL_ROOTS to a path-separated list
+# (os.pathsep) to hand a whole site a search order without editing code.
+_EXTRA_MODEL_ROOTS = tuple(
+    p for p in _os_init.environ.get('BCFLIM_MODEL_ROOTS', '').split(_os_init.pathsep)
+    if p.strip()
 )
 _MODEL_ROOT_SOURCE = 'fallback'
+
+
+def _resolve_harmony_ref_default() -> str:
+    """Starting value for the SeededKMeans 'Reference CSV' field.
+
+    No labelled reference ships with the plugin, so this is empty unless the
+    machine says otherwise: ``BCFLIM_HARMONY_REF_CSV`` first, then
+    ``harmony_ref_csv`` in ``~/.bc_flim_spectra_state.json`` (written after a
+    successful calibration). An empty value is a supported state — the
+    calibrate button explains what to pick rather than failing on a path
+    that is not there.
+    """
+    env = _os_init.environ.get('BCFLIM_HARMONY_REF_CSV', '').strip()
+    if env:
+        return env
+    try:
+        saved = str(_load_persisted_state().get('harmony_ref_csv', '')).strip()
+        if saved and Path(saved).is_file():
+            return saved
+    except Exception:
+        pass
+    return ''
 
 
 def _resolve_barcode_model_root() -> "Path":
@@ -9595,7 +9645,8 @@ def _resolve_barcode_model_root() -> "Path":
        typo is visible rather than silently replaced.
     2. ``model_root`` in ``~/.bc_flim_spectra_state.json`` — set once per machine
        without touching the environment.
-    3. The first legacy lab path that actually exists on this machine.
+    3. The first entry of ``BCFLIM_MODEL_ROOTS`` that actually exists on this
+       machine (empty unless the site sets it).
     4. ``~/.cellpose`` — always present once Cellpose has run, and already one of
        the places individual models are searched for, so a plain user gets a
        working root instead of a dangling drive letter.
@@ -9618,11 +9669,11 @@ def _resolve_barcode_model_root() -> "Path":
                 return Path(saved)
     except Exception:
         pass
-    for cand in _LEGACY_LAB_MODEL_ROOTS:
+    for cand in _EXTRA_MODEL_ROOTS:
         try:
             p = Path(cand)
             if p.is_dir():
-                _MODEL_ROOT_SOURCE = 'lab default'
+                _MODEL_ROOT_SOURCE = 'BCFLIM_MODEL_ROOTS'
                 return p
         except Exception:
             continue
@@ -9742,8 +9793,8 @@ def _scan_conda_envs():
     candidates += [
         home / 'anaconda3' / 'envs',
         home / 'miniconda3' / 'envs',
-        Path(r'D:/Softwares/Anaconda/Anaconda3/envs'),
         Path(r'C:/ProgramData/Anaconda3/envs'),
+        Path(r'C:/ProgramData/miniconda3/envs'),
         Path('/opt/conda/envs'),
     ]
     seen = set()
@@ -9990,8 +10041,8 @@ def _describe_cellpose_envs() -> str:
     the plugin is currently looking for custom models. That last bit
     matters because BCFLIM_MODEL_ROOT only propagates to processes
     started AFTER it's set system-wide — a desktop-shortcut napari
-    launched before the env var was set can silently fall back to the
-    hardcoded G:/BC-FLIM-S/LYH default and find zero models.
+    launched before the env var was set silently falls back to the
+    Cellpose cache and finds zero custom models.
     """
     v2_ok = _has_v2_env()
     v4_ok = _has_v4_env()
@@ -12087,8 +12138,9 @@ class BarcodeSeg(Container):
         # main thread mid-refresh).
         try:
             import datetime as _dt
-            with open(r'C:/Users/admin/AppData/Local/Temp/bcflim_diag.log', 'a',
-                      encoding='utf-8') as _lf:
+            import tempfile as _tf_diag
+            _diag_log = os.path.join(_tf_diag.gettempdir(), 'bcflim_diag.log')
+            with open(_diag_log, 'a', encoding='utf-8') as _lf:
                 _lf.write(
                     f'{_dt.datetime.now().isoformat()} '
                     f'[BarcodeSeg] dropdowns refreshed: '
@@ -13458,10 +13510,10 @@ _BIOSENSOR_MODEL_DEFAULT = _first_available_model(_BIOSENSOR_MODEL_FALLBACKS)
 _BIOSENSOR_DEFAULT_DIAM = 45.0
 _BARCODE_ASSIST_ROTATE_K = 3  # 90° * k clockwise; matches BS-BC-assist training
 
-# Biosensor BGY render parameters — MUST match
-# biosensor_track_sum_seg_review_260402._enhance_bgy_channel_for_rgb so
-# inference sees the same input distribution as
-# biosensor_finetune_bs_bgy_cls_260426 used at training time.
+# Biosensor BGY render parameters — MUST match the render used to build the
+# BS-BC-assist training set, so inference sees the same input distribution the
+# model was fine-tuned on. Changing any of these silently retunes the model's
+# input; re-fine-tune if you do.
 _BS_RENDER_USE_CLAHE = True
 _BS_RENDER_CLAHE_TILE = 64
 _BS_RENDER_CLIP_PCT = 99.8

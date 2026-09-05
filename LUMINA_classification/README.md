@@ -3,6 +3,8 @@
 *One of the two tools in [SLIC](../README.md). For the single-anchor workflow,
 see the [napari plugin](../Napari_plugin/README.md).*
 
+> 🤖 This repository ships an agent skill for LUMINA, [`.claude/skills/lumina-network/`](../.claude/skills/lumina-network/), so a coding assistant can drive these scripts — see the [root README](../README.md#-slic-works-with-an-ai-assistant).
+
 ![LUMINA network](../docs/lumina_network.png)
 
 LUMINA classifies cells carrying **two** barcodes at once, one fluorophore on a
@@ -50,12 +52,98 @@ with it, so the two can be installed in either order or on their own.
 Run the scripts in this order. Preprocessing must finish before training or
 inference.
 
-| Script | What it does |
-|---|---|
-| 🧹 `Data_Prep.py` | Preprocess the raw dataset into the training format. |
-| 🏋️ `Train_LUMINA.py` | Train the classification model, two-stage as above. |
-| 🔍 `Test_LUMINA.py` | Run inference on new data. |
-| 🔥 `Visualize_heatmap.py` | Render the classification results as heatmaps. |
+Every script is driven by command-line flags — `--help` on any of them lists the
+full set with its defaults. The input and output roots are **required** and carry
+no default, because there is no path that would be right on someone else's
+machine; optional extras such as a second root are empty until you pass them. So
+is the choice of which sample folders to touch, in the two scripts that write into
+them — see `--samples` / `--all-samples` under steps 1 and 3. Every other flag
+defaults to the value the script was developed with, so a run passing only the
+required flags reproduces the reference configuration. Each run
+also writes a `*_run_config.csv` beside its output recording every flag it
+resolved, so a directory of results says what produced it.
+
+### 1. 🧹 `Data_prep.py` — build the per-cell crops
+
+```bash
+python Data_prep.py --data-root /path/to/dataset --samples sampleA,sampleB
+```
+
+Expects `<root>/<sample>/` holding `raw/`, `flim_stack/<fov>-sum.tif`,
+`intensity/<fov>-{1..4}.tif` and `intensity/<fov>-sum_seg.npy`, and writes one
+six-plane `cell<id>_5D.tif` per segmented cell into `<sample>/seg_5D_calib/`.
+
+Which sample folders it touches is never a default. Name them with `--samples`,
+or pass `--all-samples` for every sample folder under `--data-root` that has a
+`raw/`; passing neither is an error. The distinction matters because writing a
+sample **clears** its output folder first, so `--all-samples` clears and
+regenerates every one of them. The resolved list is printed one path per line
+before the first deletion.
+
+The calibration flags — `--calibration-factors`, `--phi-calib`, `--m-calib`,
+`--rep-rate-mhz`, `--tau-resolution` — describe **your microscope**, not the
+sample. Their defaults are the values this dataset was prepared with; check each
+against your own acquisition metadata before trusting the phasor coordinates.
+
+### 2. 🏋️ `Train_LUMINA.py` — train the classifier
+
+```bash
+python Train_LUMINA.py \
+    --data-root /path/to/single_anchor \
+    --single-anchor-manifest single_anchor.csv \
+    --dual-root /path/to/dual_anchor \
+    --dual-samples-file dual_samples.txt \
+    --checkpoint best_model_fine-tune.pth \
+    --out ./train_out
+```
+
+`--single-anchor-manifest` is a CSV of `class,folder` saying which folder holds
+which barcode. Give `--dual-samples` (comma-separated) or `--dual-samples-file`
+(one name per line), and `--checkpoint` or `--from-scratch`. Note that
+`Train_LUMINA.py` reads `--seg-folder seg_5D` while `Data_prep.py` writes
+`seg_5D_calib`, so pass the matching name to one of the two.
+
+**To reproduce a training run you need the dual-anchor list in the same order,
+not just the same names.** The folders are loaded in the order you give them and
+the validation split is taken by row position, so the same set of samples in a
+different order holds out different cells at the same `--seed` — and therefore
+produces a different `val_df.xlsx` and a different checkpoint. Keep the
+`--dual-samples-file` beside the results; the resolved order is printed at
+startup and recorded as `resolved_dual_samples` in `train_run_config.csv`.
+
+### 3. 🔍 `Test_LUMINA.py` — run inference
+
+```bash
+python Test_LUMINA.py \
+    --checkpoint ./train_out/best_model_fine-tune.pth \
+    --data-root /path/to/dataset --samples sampleA,sampleB
+```
+
+Writes `predict_class_confident_<threshold>.xlsx` and
+`predict_class_uncertain_<threshold>.xlsx` back into each sample folder. Add
+`--out` to redirect them, `--device cpu` on a machine without a GPU.
+
+Which sample folders it touches is never a default, for the same reason as in
+`Data_prep.py`: name them with `--samples`, or pass `--all-samples` for every
+folder under the root(s) that holds a `clustered.xlsx` or a folder of crops;
+passing neither is an error. Without `--out` the two workbooks are written back
+into each sample folder and overwrite the ones already there, so `--all-samples`
+overwrites them everywhere. The resolved list of destinations is printed one per
+line before the first workbook is written.
+
+### 4. 🔥 `Visualize_heatmap.py` — plot the combination heatmap
+
+```bash
+python Visualize_heatmap.py --data-root /path/to/dataset --no-gui
+```
+
+Drop `--no-gui` for the interactive window, in which clicking a cell prints its
+per-sample breakdown; the PDF is written either way. **Run it with the same
+`--confidence-threshold` as `Test_LUMINA.py`** — the threshold is part of the
+workbook filename, so a mismatch means no file is found.
+
+Both axes of the figure are *predictions*, so it is a co-occurrence table, not a
+confusion matrix.
 
 `Finetune_LUMINA.py` is optional and sits between training and inference — see
 below.
@@ -95,10 +183,11 @@ crops it read for each sample (`seg_5D` or `seg_5D_calib`, see `--seg-folder`)
 and where each sample's labels came from. Read those three lines before reading
 the numbers.
 
-Unlike the four scripts above, this one takes command-line arguments. That is
-deliberate: the numbers only mean something alongside the support set, the
-held-out set and the seed that produced them, so each is a flag and each is
-recorded in the output CSV.
+All five scripts take command-line arguments, but here the flags *are* the
+experiment rather than plumbing: `--k`, `--seed`, `--eval-root` and the curation
+flags each move the number that comes out, and several move the denominator
+rather than the score. A result from this script means nothing without them,
+which is why every one is recorded in `finetune_run_config.csv`.
 
 ### The two numbers it prints
 
@@ -140,8 +229,12 @@ the network is deposited on Zenodo.
 ## 📝 Notes
 
 - Check that your GPU and CUDA drivers are configured before training.
-- Adjust the hyperparameters in the training script to your dataset size and
-  GPU memory.
+  `Train_LUMINA.py` and `Test_LUMINA.py` default to `--device cuda:0` with no
+  CPU fallback, so they fail immediately rather than running unusably slowly.
+- Adjust the hyperparameters to your dataset size and GPU memory with flags —
+  `--batch-size`, `--crop-size`, `--epochs`, `--finetune-epochs`, `--lr` — not by
+  editing the script. The defaults are the reference configuration, and the flags
+  you passed are recorded in `train_run_config.csv`.
 - The manuscript describing the method has been submitted but is not yet
   published. The schematic above is a figure panel from it.
 

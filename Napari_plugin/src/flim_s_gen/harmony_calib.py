@@ -4,8 +4,8 @@ OPTIONAL classifier path for SeededKMeans. The default seeded-KMeans flow
 is unchanged — this is only invoked when the user toggles the Harmony
 section on and clicks the calibrate button.
 
-Pipeline (matches spec at
-/dfs/share/liubeiLab/WBY/BC-FLIM/Code/mix_overlay/HARMONY_CALIBRATE_SPEC_260606.md):
+Pipeline (the parameter defaults below are the ones the calibration
+spec fixes; they are reproduced here so this module stands alone):
 
   1. Load a labelled reference CSV (per-cell rows; label column varies
      by reference — A549 uses ``NLabelDisplay``, NOT ``NLabel``).

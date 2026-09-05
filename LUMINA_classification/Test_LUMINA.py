@@ -1,19 +1,172 @@
+"""Inference with a trained LUMINA dual-anchor checkpoint.
+
+Reads the per-cell crops `Data_prep.py` wrote (`<root>/<sample>/<seg folder>/
+cell<id>_5D.tif`), pushes each one through a `DualHeadConvNet` checkpoint, gates both
+head calls on the LUMINA composite confidence score, and writes two workbooks per
+sample folder:
+
+    predict_class_confident_<threshold>.xlsx   both heads cleared the gate
+    predict_class_uncertain_<threshold>.xlsx   at least one head did not
+
+The threshold is part of the file name, and `Visualize_heatmap.py` rebuilds that same
+name from its own threshold flag, so the two must be run with the same value.
+
+Every path and every knob is a command-line flag, the same convention
+`Finetune_LUMINA.py` uses; the resolved value of each one is written once per run to
+`test_run_config.csv` so a directory of workbooks says what produced it.
+
+WHICH SAMPLE FOLDERS IT TOUCHES IS NEVER A DEFAULT
+    Unless `--out` redirects them, those two workbooks are written back INTO each sample
+    folder and overwrite any file of the same name already there, so the set of folders is
+    asked for explicitly: either name them with `--samples`, or say `--all-samples` to mean
+    every qualifying sample folder under the root(s). Passing neither is an error. The
+    resolved list is printed in full, one destination per line, before anything is
+    written. Same rule and same wording as `Data_prep.py`.
+
+This module is import-safe: nothing outside a function touches a path, a device or
+argv. `Finetune_LUMINA.py` imports `DualHeadConvNet` and `pad_image` from here and
+relies on that.
+
+Usage:
+    python Test_LUMINA.py --checkpoint /path/to/best_model_fine-tune.pth \
+        --data-root /path/to/dish --samples sampleA,sampleB --confidence-threshold 0.6
+    python Test_LUMINA.py --checkpoint /path/to/best_model_fine-tune.pth \
+        --data-root /path/to/dish --all-samples
+"""
+
+import argparse
 import glob
 import torch.nn as nn
 import os
 import pandas as pd
 import tifffile as tiff
 import numpy as np
-import cv2
 from torch.utils.data import DataLoader, Dataset
 import torch
 
 
-def resize_image(image, height, width):
-    resized_image = np.zeros((image.shape[0], height, width), dtype=image.dtype)
-    for i in range(image.shape[0]):
-        resized_image[i] = cv2.resize(image[i], (width, height), interpolation=cv2.INTER_LINEAR)
-    return resized_image
+# Class name -> class index. Written out explicitly on purpose. This file used to derive
+# the same mapping from two dicts of lab folder names whose entries were half commented
+# out, so uncommenting one line renumbered every class after it. The checkpoint stores no
+# mapping, so that failure is silent. Train_LUMINA.py, Visualize_heatmap.py and
+# Finetune_LUMINA.py each restate this same order; if you change the panel, change it in
+# all four places.
+NU_CLASS_MAP = {'N10': 1, 'N13': 2, 'N4': 3, 'N14': 4, 'N16': 5, 'N8': 6, 'N1': 7}
+MITO_CLASS_MAP = {'M10': 1, 'M13': 2, 'M4': 3, 'M14': 4, 'M16': 5, 'M8': 6, 'M1': 7}
+
+CROP_SIZE = 256          # the canvas the loader pads to; a larger crop is skipped
+
+# Which folder of prepared crops to read, in preference order. "auto" is the rule this
+# script has always used: seg_5D_calib when it is there, seg_5D otherwise. The two are
+# NOT interchangeable -- seg_5D_calib holds spectrally calibrated crops -- so on a dish
+# that has both, "auto" feeds the network a different input distribution than seg_5D.
+SEG_FOLDER_ORDER = {
+    'auto': ('seg_5D_calib', 'seg_5D'),
+    'seg_5D': ('seg_5D',),
+    'seg_5D_calib': ('seg_5D_calib',),
+}
+
+
+def comma_list(value):
+    """Split a comma-separated flag value into a list of non-empty, stripped strings."""
+    return [s.strip() for s in value.split(',') if s.strip()]
+
+
+def require_dir(path, flag):
+    """Fail with the flag's name rather than with a bare OSError from deep inside a loader."""
+    if not os.path.isdir(path):
+        raise SystemExit(
+            '%s does not exist or is not a folder: %s\n'
+            'It must be the root that holds one folder per sample, i.e. '
+            '<root>/<sample>/seg_5D/cell<id>_5D.tif as written by Data_prep.py.'
+            % (flag, path))
+
+
+def require_file(path, flag):
+    """Same, for a file."""
+    if not os.path.isfile(path):
+        raise SystemExit(
+            '%s does not exist or is not a file: %s\n'
+            'Give the full path to the checkpoint itself, e.g. '
+            '<run folder>/best_model_fine-tune.pth.' % (flag, path))
+
+
+def discover_samples(base_folder, base_folder2, seg_order):
+    """Immediate subfolders of the root(s) that hold something this script can read.
+
+    A folder qualifies when it has a clustered.xlsx (labelled dish) or one of the
+    --seg-folder candidates (unlabelled dish) -- the same two branches
+    load_finetuning_data() takes below. Used only for --all-samples.
+    """
+    found = []
+    for root in (base_folder, base_folder2):
+        if not root:
+            continue
+        for name in sorted(os.listdir(root)):
+            sample_dir = os.path.join(root, name)
+            if not os.path.isdir(sample_dir) or name in found:
+                continue
+            if os.path.exists(os.path.join(sample_dir, 'clustered.xlsx')):
+                found.append(name)
+                continue
+            if any(os.path.isdir(os.path.join(sample_dir, seg)) for seg in seg_order):
+                found.append(name)
+    return found
+
+
+def resolve_samples(base_folder, base_folder2, seg_order, seg_flag, samples, all_samples):
+    """The sample folder names to score, in the order they will be scored.
+
+    Exactly one of --samples and --all-samples decides the set, and neither of them has a
+    default. Unless --out redirects them, scoring a sample writes two workbooks INTO its
+    folder, on top of any predict_class_confident_/uncertain_<threshold>.xlsx already
+    there, so "every folder under the root" is something you ask for by name rather than
+    something you get by typing the shorter command. Same rule as Data_prep.py, whose
+    resolve_samples() this mirrors.
+    """
+    roots = [r for r in (base_folder, base_folder2) if r]
+
+    if samples and all_samples:
+        raise SystemExit(
+            '--samples and --all-samples contradict each other.\n'
+            '--all-samples scores EVERY qualifying sample folder under the root(s), which '
+            'is not the subset --samples names. Drop one.')
+    if not samples and not all_samples:
+        raise SystemExit(
+            'Give --samples or --all-samples; there is no default.\n'
+            '  --samples sampleA,sampleB   score exactly these sample folders\n'
+            '  --all-samples               score every sample folder under the root(s) '
+            'that holds a clustered.xlsx or a %s subfolder\n'
+            'Unless --out redirects them, scoring a sample OVERWRITES '
+            'predict_class_confident_<threshold>.xlsx and '
+            'predict_class_uncertain_<threshold>.xlsx inside its folder, so the wider of '
+            'the two is deliberately not what you get for leaving a flag off.'
+            % ' or '.join(seg_order))
+
+    if samples:
+        names = comma_list(samples)
+        missing = [s for s in names
+                   if not any(os.path.isdir(os.path.join(r, s)) for r in roots)]
+        if missing:
+            raise SystemExit(
+                'These --samples are not folders under %s: %s\n'
+                'A name that does not exist would otherwise be scored as zero cells and '
+                'reported as "Total predictions: 0", which reads like a data problem.'
+                % (' or '.join(roots), ', '.join(missing)))
+        return names
+
+    names = discover_samples(base_folder, base_folder2, seg_order)
+    if not names:
+        raise SystemExit(
+            '--all-samples: no sample folder under %s holds a clustered.xlsx or a %s '
+            'subfolder (--seg-folder %s).\n'
+            'Expected layout: <root>/<sample>/seg_5D/cell<id>_5D.tif  (as written by '
+            'Data_prep.py).\n'
+            'Point --data-root at the folder that HOLDS the sample folders, not at one '
+            'sample, or name them with --samples.'
+            % (' or '.join(roots), ' or '.join(seg_order), seg_flag))
+    return names
+
 
 def normalize_intensity(image):
     intensity_channel = image[-1]
@@ -30,7 +183,8 @@ def pad_image(image, height, width):
     return padded_image
 
 class FluorescenceDataset(Dataset):
-    def __init__(self, df, base_dir, base_dir2, max_height, max_width, transform=None, is_test=False):
+    def __init__(self, df, base_dir, base_dir2, max_height, max_width, transform=None,
+                 is_test=False, seg_order=SEG_FOLDER_ORDER['auto']):
         self.df = df
         self.base_dir = base_dir
         self.base_dir2 = base_dir2
@@ -38,6 +192,7 @@ class FluorescenceDataset(Dataset):
         self.max_width = max_width
         self.transform = transform
         self.is_test = is_test
+        self.seg_order = seg_order
 
     def __len__(self):
         return len(self.df)
@@ -52,11 +207,13 @@ class FluorescenceDataset(Dataset):
             if self.is_test:
                 cell_label = int(row['Cell_Label'])
                 test_dir = row['Directory']
-                # seg_dir = os.path.join(self.base_dir, test_dir, 'seg_5D')
-                seg_dir = os.path.join(self.base_dir, test_dir, 'seg_5D_calib')
-                if not os.path.exists(seg_dir):
-                    # seg_dir = os.path.join(self.base_dir2, test_dir, 'seg_5D')
-                    seg_dir = os.path.join(self.base_dir, test_dir, 'seg_5D')
+                # Folder preference only; this loader never switches root, and never has.
+                seg_dir = os.path.join(self.base_dir, test_dir, self.seg_order[-1])
+                for seg_name in self.seg_order:
+                    candidate = os.path.join(self.base_dir, test_dir, seg_name)
+                    if os.path.exists(candidate):
+                        seg_dir = candidate
+                        break
                 img_path = os.path.join(seg_dir, f'cell{cell_label}_5D.tif')
                 nu_label = int(row['Nu_cluster'])
                 mito_label = int(row['Mito_cluster'])
@@ -180,11 +337,12 @@ class DualHeadConvNet(nn.Module):
 
 
 
-def load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map, mito_class_map):
+def load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map, mito_class_map,
+                         seg_order=SEG_FOLDER_ORDER['auto']):
     data = []
     for test_dir in test_dirs:
         excel_path = os.path.join(base_folder, test_dir, 'clustered.xlsx')
-        if not os.path.exists(excel_path):
+        if not os.path.exists(excel_path) and base_folder2:
             excel_path = os.path.join(base_folder2, test_dir, 'clustered.xlsx')
         if os.path.exists(excel_path):
             # If clustered.xlsx exists, process it as before
@@ -202,10 +360,16 @@ def load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map, mit
                     'Mito_cluster': mito_class_num
                 })
         else:
-            # If clustered.xlsx doesn't exist, process the seg_5D folder
-            seg_5d_path = os.path.join(base_folder, test_dir, 'seg_5D_calib')
-            if not os.path.exists(seg_5d_path):
-                seg_5d_path = os.path.join(base_folder2, test_dir, 'seg_5D')
+            # If clustered.xlsx doesn't exist, process the seg_5D folder.
+            # This fallback is asymmetric on purpose and always has been: the first
+            # candidate is the preferred folder under the FIRST root, the second is the
+            # last-choice folder under the SECOND root. Under --seg-folder auto that is
+            # exactly (--data-root, seg_5D_calib) then (--data-root-2, seg_5D). A dish
+            # whose crops sit in seg_5D under --data-root alone is therefore NOT found
+            # here; pass --seg-folder seg_5D for that layout.
+            seg_5d_path = os.path.join(base_folder, test_dir, seg_order[0])
+            if not os.path.exists(seg_5d_path) and base_folder2:
+                seg_5d_path = os.path.join(base_folder2, test_dir, seg_order[-1])
             if os.path.exists(seg_5d_path):
                 tiff_files = glob.glob(os.path.join(seg_5d_path, 'cell*_5D.tif'))
                 for tiff_file in tiff_files:
@@ -224,10 +388,11 @@ def load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map, mit
 
 
 def test_model(model, test_dirs, base_folder, base_folder2, nu_class_map, mito_class_map, device,
-               confidence_threshold=0.5, out_pred=False):
+               confidence_threshold, seg_order=SEG_FOLDER_ORDER['auto'], crop_size=CROP_SIZE,
+               out_root='', out_pred=False):
     model.eval()
-    max_height = 256
-    max_width = 256
+    max_height = crop_size
+    max_width = crop_size
 
     def calculate_confidence_score(predictions):
         """
@@ -263,24 +428,31 @@ def test_model(model, test_dirs, base_folder, base_folder2, nu_class_map, mito_c
 
         return confidence_score, confidence_score >= confidence_threshold
 
-    test_df_all = load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map, mito_class_map)
-    # _, test_df_all = train_test_split(test_df_all, test_size=0.2, random_state=42)
-    # read test df all from excel
-    # excel_path = r'/gpfs/share/home/2301112465/BC_FLIM/Hek293T/Dual_241105/val_df.xlsx'
-    # test_df_all = pd.read_excel(excel_path)
+    test_df_all = load_finetuning_data(test_dirs, base_folder, base_folder2, nu_class_map,
+                                       mito_class_map, seg_order)
     for test_dir in test_dirs:
         results = []
         uncertain_results = []
         out_folder = os.path.join(base_folder, test_dir)
-        if not os.path.exists(out_folder):
+        if not os.path.exists(out_folder) and base_folder2:
             out_folder = os.path.join(base_folder2, test_dir)
-
-        # test_df = load_finetuning_data([test_dir], base_folder, base_folder2, nu_class_map, mito_class_map)
-        # split the test_df into 20% for validation by random state 42
-        # _, test_df = train_test_split(test_df, test_size=0.2, random_state=42)
+        if out_root:
+            out_folder = os.path.join(out_root, test_dir)
+            os.makedirs(out_folder, exist_ok=True)
 
         test_df = test_df_all[test_df_all['Directory'] == test_dir]
-        test_dataset = FluorescenceDataset(test_df, base_folder, base_folder2, max_height, max_width, is_test=True)
+
+        # Say what was read, so a run is never ambiguous about which crops it scored.
+        read_from = None
+        for seg_name in seg_order:
+            if os.path.isdir(os.path.join(base_folder, test_dir, seg_name)):
+                read_from = seg_name
+                break
+        print('  [%s] seg folder: %-13s cells: %d'
+              % (test_dir, read_from if read_from else 'not under --data-root', len(test_df)))
+
+        test_dataset = FluorescenceDataset(test_df, base_folder, base_folder2, max_height, max_width,
+                                           is_test=True, seg_order=seg_order)
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
         with torch.no_grad():
@@ -342,204 +514,151 @@ def test_model(model, test_dirs, base_folder, base_folder2, nu_class_map, mito_c
                 print(f"Uncertain predictions: {len(uncertain_results)} ({len(uncertain_results) / total * 100:.1f}%)")
 
 def main():
-    # Define file paths and parameters
-    base_folder = r'G:\BC-FLIM-S\WBY\Hek293T-BJMU-Dual'
-    base_folder2 = r'I:\BC-FLIM\Hek293T-BJMU-Dual'
-    # model_folder = r'E:\BC-FLIM\Hek293T-BJMU\Dual_class\Dual_class_0804_6-2heads_FTBN'
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241104-classweight'
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241127'
-    model_folder = r'G:\BC-FLIM-S\WBY\Hek293T-BJMU-Dual\Dual_241127'
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241128-2'
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241202'
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241203-2' # without 241117 mix7 to train
-    # model_folder = r'I:\BC-FLIM\Hek293T-BJMU-Dual\Dual_241203-1'
-    model_path = os.path.join(model_folder, 'best_model_fine-tune.pth')
+    ap = argparse.ArgumentParser(
+        description='Score prepared per-cell crops with a trained LUMINA checkpoint and '
+                    'write the confident and uncertain predictions per sample folder.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    max_height = 256
-    max_width = 256
-    batchsize = 128
-    num_epochs = 180 # seems enough
-    early_stop_patience = 1000
-    gpu_id = 0
-    device = torch.device(f'cuda:{gpu_id}')
-    use_finetune = True
-    confidence_threshold = 0.6
+    ap.add_argument('--checkpoint', required=True,
+                    help='Trained LUMINA state_dict, e.g. best_model_fine-tune.pth. Give the '
+                         'full path to the file: a stage-1 checkpoint '
+                         '(best_model_initial.pth) is just a different path, not a code edit.')
+    ap.add_argument('--data-root', required=True,
+                    help='Root holding one folder per sample: <root>/<sample>/<seg folder>/'
+                         'cell<id>_5D.tif, see --seg-folder. Unless --out is given, the two '
+                         'result workbooks are written back into each sample folder.')
+    ap.add_argument('--data-root-2', default='',
+                    help='Optional second root, searched after --data-root. It steers where '
+                         'clustered.xlsx and the unlabelled crop glob are looked for and '
+                         'where results land, but NOT the image loader, which only ever '
+                         'reads --data-root. That asymmetry is long-standing behaviour and '
+                         'is preserved: a sample found only under the second root is '
+                         'enumerated and then fails to load. Prefer keeping one root '
+                         'complete over splitting a dataset across two.')
+    ap.add_argument('--samples', default='',
+                    help='Comma-separated sample folder names to score. Required unless '
+                         '--all-samples is given; there is no default, because unless --out '
+                         'redirects them the workbooks are written INTO each sample folder '
+                         'and overwrite the ones already there. The shipped script scored a '
+                         'hand-edited list of folder names, so naming the folders here is '
+                         'the direct equivalent of editing that list.')
+    ap.add_argument('--all-samples', action='store_true',
+                    help='Score every immediate subfolder of the root(s) that holds a '
+                         'clustered.xlsx or a --seg-folder candidate, instead of naming '
+                         'them with --samples. Unless --out redirects the output, this '
+                         'OVERWRITES predict_class_confident_<threshold>.xlsx and '
+                         'predict_class_uncertain_<threshold>.xlsx in every one of those '
+                         'folders, including folders you were not thinking about. The '
+                         'resolved list of destinations is printed in full before the first '
+                         'workbook is written, so check it there.')
+    ap.add_argument('--seg-folder', default='auto',
+                    choices=['auto', 'seg_5D', 'seg_5D_calib'],
+                    help='Which folder of prepared crops to read under each sample. "auto" '
+                         'takes seg_5D_calib when present and seg_5D otherwise, which is '
+                         'what this script has always done. Data_prep.py writes '
+                         'seg_5D_calib and Train_LUMINA.py reads seg_5D, so pass the name '
+                         'explicitly when a dish has both and you care which one was '
+                         'scored. The folder actually read is printed per sample.')
+    ap.add_argument('--out', default='',
+                    help='Optional output root. Default: empty, meaning the workbooks are '
+                         'written in place, into each sample folder beside its crops, which '
+                         'is where Visualize_heatmap.py looks for them. If you redirect, '
+                         'results land in <out>/<sample>/ and the heatmap must be pointed '
+                         'at <out> instead of at --data-root.')
 
-    # test_dirs = [
-        # 'NLS-NTOM-Mix39-240618-1',
-        # 'NLS-NTOM-Mix39-240618-2', # those kept for testing
-        # 'NLS-NTOM-Mix39-240618-3', # those kept for testing
-        # 'NTOM-4-10-13-14-NLS-8-240602-1', # those are not sure about the gt
-        # 'NTOM-4-10-13-14-NLS-8-240602-2', # those are not sure about the gt
-        # 'NTOM1-4-8-14-16-NLS-13-240618',
-        # 'NTOM1-8-10-13-14-16-NLS-4-240618',
-        # 'NTOM1-4-8-10-13-14-NLS-16-240618',
-        # 'NTOM-14-16-NLS-1-240602-1',
-        # 'NTOM-14-16-NLS-1-240602-2',
-        # 'NTOM-1-13-14-NLS-4-240602-1',
-        # 'NTOM-1-13-14-NLS-4-240602-2', # those are not processed yet
-        #     'NTOM-1-4-13-NLS-10-240602-1',
-        #     'NTOM-1-4-13-NLS-10-240602-2',
-        # 'NTOM-1-4-16-NLS-13-240602',
-        # 'NTOM-1-4-10-NLS-14-240602',
-        # 'NTOM1-4-8-10-13-NLS-14-240618', # not so sure about the gt
-        # 'NTOM-1-4-NLS-16-240602'
+    ap.add_argument('--num-classes', type=int, default=8,
+                    help='Output units per head. Must match the checkpoint, or '
+                         'load_state_dict fails on fc_nu.6.weight / fc_mito.6.weight. Index '
+                         '0 is reserved for "no anchor" and is never a class name.')
+    ap.add_argument('--crop-size', type=int, default=CROP_SIZE,
+                    help='Canvas each crop is centre-padded onto. A crop LARGER than this '
+                         'is not resized: the loader skips it by advancing to the next row, '
+                         'which shifts every following Cell_Label in that folder. Leave it '
+                         'at the value the checkpoint was trained with.')
+    ap.add_argument('--device', default='cuda:0',
+                    help='Torch device string: cuda:0, cuda:1, cpu. There is no automatic '
+                         'fallback -- cuda on a machine without a GPU fails rather than '
+                         'silently running slowly on the CPU.')
 
-        # 'NLS1-NTOM-Mix6-240719'
-        # 'NLS16-NTOM-Mix6-240722-1',
-        # 'NLS16-NTOM-Mix6-240722-2',
-        # 'Mix6-1-241009-1'
+    ap.add_argument('--confidence-threshold', type=float, default=0.6,
+                    help='A cell is confident when BOTH heads score at least this on the '
+                         'composite score. It is also part of the output file name '
+                         '(predict_class_confident_<threshold>.xlsx), so Visualize_heatmap.py '
+                         'must be run with the same value or it finds no file. '
+                         'Finetune_LUMINA.py defaults the same flag to 0.9; that is not a '
+                         'typo, they are different measurements on the same scale.')
 
-        # 'Mix6-2-241009-1'
-        # 'Mix6-2-241009-2'
-    # ]
-    test_dirs = [
-        # 'NTOM1-4-8-14-16-NLS-13-240618', 'NTOM1-8-10-13-14-16-NLS-4-240618',
-        # 'NTOM1-4-8-10-13-14-NLS-16-240618', 'NTOM-14-16-NLS-1-240602-1',
-        # 'NTOM-14-16-NLS-1-240602-2', 'NTOM-1-13-14-NLS-4-240602-1',
-        # 'NTOM-1-13-14-NLS-4-240602-2', 'NTOM-1-4-13-NLS-10-240602-1',
-        # 'NTOM-1-4-13-NLS-10-240602-2', 'NTOM-1-4-16-NLS-13-240602',
-        # # 'NTOM-1-4-10-NLS-14-240602',
-        # 'NTOM1-4-8-10-13-NLS-14-240618',
-        # 'NTOM-1-4-NLS-16-240602', 'NLS1-NTOM-Mix6-240719',
-        # 'NTOM-4-10-13-14-NLS-8-240602-1', 'NTOM-4-10-13-14-NLS-8-240602-2',
-        # 'NTOM1-4-10-13-14-NLS-8-240618', 'NLS16-NTOM-Mix6-240722-1',
-        # 'NLS16-NTOM-Mix6-240722-2', 'NLS14-NTOM-Mix6-240722-1',
-        # 'NLS14-NTOM-Mix6-240722-2',
-        # 'NTOM1-4-8-13-14-16-NLS-10-240618',
-        # 'NTOM4-8-10-13-14-16-NLS-1-240618', 'NLS1-NTOM8-240922-1',
-        # 'NLS1-NTOM8-240922-2', 'NLS4-NTOM8-240922-1', 'NLS4-NTOM8-240922-2',
-        # 'NLS10-NTOM8-240922-1', 'NLS10-NTOM8-240922-2', 'NLS13-NTOM10-240922-1',
-        # 'NLS13-NTOM10-240922-2', 'NLS10-NTOM16-240924-1', 'NLS10-NTOM16-240924-2',
-        # 'NLS8-NTOM16-240924-1', 'NLS8-NTOM16-240924-2', 'NLS4-NTOM16-240924-1',
-        # 'NLS4-NTOM16-240924-2', 'NLS10-NTOM14-240924-1', 'NLS10-NTOM14-240924-2',
-        # 'NLS8-NTOM13-240924-1', 'NLS8-NTOM13-240924-2', 'NLS8-NTOM13-240924-3',
-        # 'NLS8-NTOM4-240929-1', 'NLS8-NTOM4-240929-2',
-        # 'NLS16-NTOM10-240929-1',
-        # 'NLS16-NTOM10-240929-2',
-        # 'NLS4-NTOM10-240924', 'NLS4-NTOM14-240926',
-        # 'NLS1-NTOM14-240926', 'NLS1-NTOM4-240926', 'NLS8-NTOM1-240926-1',
-        # 'NLS8-NTOM1-240926-2', 'NLS14-NTOM10-240926-1', 'NLS14-NTOM10-240926-2',
-        # 'NLS10-NTOM13-240929-1', 'NLS10-NTOM13-240929-2', 'NLS16-NTOM8-240926-1',
-        # 'NLS16-NTOM8-240926-2', 'NLS1-NTOM13-240922',
-        # 'NLS16-NTOM13-240929-1', 'NLS16-NTOM13-240929-2',
-        # 'NLS14-NTOM16-241020-1',
-        # 'NLS14-NTOM16-241020-2',
-        # 'NLS14-NTOM16-241020-3',
-        # 'NLS4-Mix6-240719',
-        # 'NLS10-Mix6-240719',
-        # 'NLS13-Mix6-240719',
-        # 'NLS14-Mix6-240719',
-        # 'NLS16-Mix6-240719-2',
-        # 'NLS16-Mix6-240719-1',
+    args = ap.parse_args()
 
-        # 'Mix6-1-241009-1',
-        # 'Mix6-1-241009-2',
-        # 'Mix6-1-241009-3',
+    if args.num_classes < 1:
+        raise SystemExit('--num-classes must be at least 1.')
+    if args.crop_size < 1:
+        raise SystemExit('--crop-size must be at least 1.')
 
+    require_dir(args.data_root, '--data-root')
+    if args.data_root_2:
+        require_dir(args.data_root_2, '--data-root-2')
+    require_file(args.checkpoint, '--checkpoint')
 
-        # 'Mix6-2-241009-1',
-        # 'Mix6-2-241009-2',
+    seg_order = SEG_FOLDER_ORDER[args.seg_folder]
+    device = torch.device(args.device)
+    confidence_threshold = args.confidence_threshold
 
-        # 'Mix7-1-241117',
-        # 'Mix7-2-241117',
-        # 'Mix7-3-241117',
+    test_dirs = resolve_samples(args.data_root, args.data_root_2, seg_order,
+                                args.seg_folder, args.samples, args.all_samples)
 
-        # 'Mix6-1-241020-1',
-        # 'Mix6-1-241020-2',
-        # 'Mix6-1-241020-3',
+    print('nu_class_map: %s' % NU_CLASS_MAP)
+    print('mito_class_map: %s' % MITO_CLASS_MAP)
+    print('device: %s   seg-folder: %s   crop: %d   classes: %d'
+          % (device, args.seg_folder, args.crop_size, args.num_classes))
+    print('confidence threshold: %.2f   samples: %d   output: %s'
+          % (confidence_threshold, len(test_dirs), args.out or 'in place, beside the crops'))
 
-        # 'NLS-NTOM-Mix39-240618-1',
-        # 'NLS-NTOM-Mix39-240618-2',
-        # 'NLS-NTOM-Mix39-240618-3',
+    # Printed BEFORE the model is even built, which is well before the first workbook is
+    # written, and printed as one line per folder rather than as a summary: --all-samples
+    # resolves its list from a scan of the disk, so this is the only chance to see a
+    # mistake while the files it would overwrite are still there.
+    print('samples: %d folder(s), from %s'
+          % (len(test_dirs), '--samples' if args.samples
+             else '--all-samples (every folder under the root(s) with a clustered.xlsx or '
+                  'a %s)' % ' or '.join(seg_order)))
+    for name in test_dirs:
+        dest = os.path.join(args.data_root, name)
+        if not os.path.isdir(dest) and args.data_root_2:
+            dest = os.path.join(args.data_root_2, name)
+        if args.out:
+            dest = os.path.join(args.out, name)
+        print('    %s' % dest)
+    print('writing: <destination>/predict_class_{confident,uncertain}_%s.xlsx'
+          % confidence_threshold)
+    if not args.out:
+        print('NOTE: those two workbooks are written into every folder listed above, on '
+              'top of any file of the same name already there. Nothing has been written '
+              'yet. Pass --out to send them somewhere else instead.')
 
-        # 'Mix30-1-240719',
-        # 'Mix30-2-240719',
-        # 'Mix30-3-240719',
-
-        # 'Mix7-241205-1',
-        # 'Mix7-241205-2',
-
-        # 'Mix7-241205-40X-3',
-        # 'Mix7-241205-40X-4',
-    # 'Mix7-2-250103-1',
-    # 'Mix7-2-250103-2',
-    # 'Mix7-1-250103-1',
-    # 'Mix7-1-250103-2',
-    #     'Mix42-250601-1',
-    #     'Mix42-250601-2',
-    #     'Mix42-250602-1',
-    #     'Mix42-250602-2',
-    #     'Mix42-250602-3',
-        # 'Mix42-250602-4',
-        # 'Mix42-250602-5',
-        # 'Mix42-250602-6',
-        # 'Mix35-250616-1',
-        # 'Mix35-250616-2',
-        # 'Mix35-250616-3',
-        # 'Mix35-250616-4',
-        # 'Mix35-250616-5',
-        # 'Mix35-250616-6',
-        # 'Mix36-250624-1',
-        # 'Mix36-250624-2',
-        # 'Mix36-250624-3',
-        'Mix36-250624-4',
-        # 'Mix36-250624-5',
-        # 'Mix36-250624-6',
-        # 'Mix36-250624-7',
-        # 'Mix36-250624-8',
-        # 'Mix36-250624-9',
-        # 'Mix36-250624-10',
-        # 'Mix36-250624-11',
-        'Mix36-250624-12',
-        # 'Mix36-250624-13',
-        # 'Mix36-250624-14',
-        # 'Mix36-250624-15',
-        # 'Mix36-250624-16',
-        # 'Mix36-250624-17',
-    ]
-    nu_files = {
-        # 'N10': ['NLS-mScarlet3-240222-1', 'NLS-mScarlet3-240222-2'],
-        # 'N13': ['NLS-mScarlet-I3-240222-1', 'NLS-mScarlet-I3-240222-2'],
-        # 'N4': ['NLS-mScarlet-I-240229-1', 'NLS-mScarlet-I-240229-2'],
-        # 'N14': ['NLS-mApple-240229-1', 'NLS-mApple-240229-2'],
-        # 'N16': ['NLS-FR-MQ-240308-1', 'NLS-FR-MQ-240308-2'],
-        # 'N8': ['NLS-mCherry-240222-1', 'NLS-mCherry-240222-2'],
-        # 'N1': ['NLS-mScarlet-H-240222-1', 'NLS-mScarlet-H-240222-2'],
-        'N10': ['NLS-N10-240623'],
-        'N13': ['NLS-N13-240623'],
-        'N4': ['NLS-N4-240623'],
-        'N14': ['NLS-N14-240623'],
-        'N16': ['NLS-N16-240623'],
-        'N8': ['NLS-N8-240623'],
-        # 'N1': [ 'NLS-N1-240623-1', 'NLS-N1-240623-2', 'NLS-N1-240622'],
-        'N1': ['NLS-N1-240623-1'],
-    }
-
-    mito_files = {
-        'M10': ['NTOM-M10-240629'],
-        'M13': ['NTOM-M13-240629'],
-        'M4': ['NTOM-M4-240629'],
-        'M14': ['NTOM-M14-240629'],
-        'M16': ['NTOM-M16-240629'],
-        'M8': ['NTOM-M8-240629'],
-        'M1': ['NTOM-M1-240629'],
-
-    }
-
-
-    nu_class_map = {key: idx + 1 for idx, key in enumerate(nu_files.keys())}
-    mito_class_map = {key: idx + 1 for idx, key in enumerate(mito_files.keys())}
-    print(f'nu_class_map: {nu_class_map}')
-    print(f'mito_class_map: {mito_class_map}')
+    # Every flag, resolved, written once, so a directory of workbooks is self-describing.
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+    cfg = {k: v for k, v in sorted(vars(args).items())}
+    cfg['resolved_device'] = str(device)
+    cfg['resolved_seg_order'] = ','.join(seg_order)
+    cfg['resolved_samples'] = ','.join(test_dirs)
+    # Exactly how the threshold was spelled into the file names, which is what
+    # Visualize_heatmap.py has to match.
+    cfg['workbook_suffix'] = '_%s.xlsx' % confidence_threshold
+    config_path = os.path.join(args.out or args.data_root, 'test_run_config.csv')
+    pd.DataFrame([{'flag': k, 'value': v} for k, v in cfg.items()]).to_csv(config_path, index=False)
+    print('run configuration: %s' % config_path)
 
     # Initial training
-    num_classes = 8
+    num_classes = args.num_classes
     model = DualHeadConvNet(num_classes).to(device)
 
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     # Add this after the fine-tuning section
-    test_model(model, test_dirs, base_folder, base_folder2, nu_class_map, mito_class_map, device, out_pred=True, confidence_threshold=confidence_threshold)
+    test_model(model, test_dirs, args.data_root, args.data_root_2, NU_CLASS_MAP, MITO_CLASS_MAP,
+               device, out_pred=True, confidence_threshold=confidence_threshold,
+               seg_order=seg_order, crop_size=args.crop_size, out_root=args.out)
 
 if __name__ == '__main__':
     main()

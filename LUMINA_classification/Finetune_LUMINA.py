@@ -103,12 +103,18 @@ except ImportError as exc:
     )
 
 
-# Class name -> class index. Written out explicitly here on purpose. Train_LUMINA.py
-# (lines 564-591), Test_LUMINA.py (lines 501-528) and Visualize_heatmap.py (lines 214-215)
-# each derive or restate this same order from a folder-name dict whose entries are half
-# commented out, so uncommenting one line there renumbers every class after it. The
-# checkpoint stores no mapping, so that failure is silent. If you change the panel, change
-# it in all four places.
+# Class name -> class index. Written out explicitly here on purpose, and now the same
+# literal in all four places: Train_LUMINA.py, Test_LUMINA.py and Visualize_heatmap.py each
+# hold their own NU_CLASS_MAP / MITO_CLASS_MAP, character for character these ones. None of
+# them derives the mapping any more. They used to: each built it from a folder-name dict
+# whose entries were half commented out, so uncommenting one line there renumbered every
+# class after it. Writing the map out is what removed that failure mode, not a style choice.
+#
+# The warning it was making still stands, because the reason it was silent has not changed:
+# a checkpoint stores no mapping. Nothing writes these indices into a .pth and nothing
+# checks them when one is loaded, so a checkpoint read back under a different order
+# mislabels every cell and raises nothing. If you change the panel, change it in all four
+# places at once, and do not point an existing checkpoint at the new order.
 NU_CLASS_MAP = {'N10': 1, 'N13': 2, 'N4': 3, 'N14': 4, 'N16': 5, 'N8': 6, 'N1': 7}
 MITO_CLASS_MAP = {'M10': 1, 'M13': 2, 'M4': 3, 'M14': 4, 'M16': 5, 'M8': 6, 'M1': 7}
 NU_REV = {v: k for k, v in NU_CLASS_MAP.items()}
@@ -124,7 +130,8 @@ INTENSITY_PLANE = 5
 # ----------------------------------------------------------------------------------
 
 def calculate_confidence_score(predictions):
-    """Composite confidence, transcribed from Test_LUMINA.py lines 242-262.
+    """Composite confidence, transcribed from the calculate_confidence_score() nested
+    inside Test_LUMINA.py's test_model().
 
     Kept bit-identical to that function on purpose, including the two quirks:
     `max_entropy` is normalised against SEVEN classes while the softmax has eight, so a
@@ -133,7 +140,8 @@ def calculate_confidence_score(predictions):
     this exact scale -- "fixing" either quirk moves every detection rate ever reported.
 
     Returns the bare score. The caller applies the gate, because a cell counts as detected
-    only when BOTH heads clear it (Test_LUMINA.py line 318).
+    only when BOTH heads clear it -- Test_LUMINA.py's `if nu_reliable and mito_reliable:`,
+    which is what sorts a cell into the confident workbook rather than the uncertain one.
 
     float32, not float64, and deliberately so: Test_LUMINA.py computes this on
     `predictions.cpu().numpy()` of a float32 softmax, so it accumulates the entropy sum in
@@ -236,13 +244,14 @@ SEG_FOLDER_ORDER = {
 def find_seg_folder(sample_dir, preference='auto'):
     """Locate the folder of prepared crops under one sample folder.
 
-    "auto" tries seg_5D_calib and falls back to seg_5D, which is the rule Test_LUMINA.py
-    uses (lines 56-59) and therefore the rest of this repository's behaviour. The two are
-    NOT interchangeable: seg_5D_calib holds crops that have been spectrally calibrated and
-    seg_5D holds the uncalibrated ones, so on a dish that has both, "auto" feeds the
-    network a different input distribution than seg_5D would. The measured adaptation runs
-    read seg_5D only. --seg-folder pins the choice; the chosen folder is printed for every
-    sample so a run can never be ambiguous about which one it read.
+    "auto" tries seg_5D_calib and falls back to seg_5D, which is the rule encoded in
+    Test_LUMINA.py's SEG_FOLDER_ORDER and therefore the rest of this repository's
+    behaviour. The two are NOT interchangeable: seg_5D_calib holds crops that have been
+    spectrally calibrated and seg_5D holds the uncalibrated ones, so on a dish that has
+    both, "auto" feeds the network a different input distribution than seg_5D would. The
+    measured adaptation runs read seg_5D only. --seg-folder pins the choice; the chosen
+    folder is printed for every sample so a run can never be ambiguous about which one it
+    read.
     """
     for name in SEG_FOLDER_ORDER[preference]:
         p = os.path.join(sample_dir, name)

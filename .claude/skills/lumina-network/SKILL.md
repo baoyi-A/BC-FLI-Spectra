@@ -1,6 +1,6 @@
 ---
 name: lumina-network
-description: Guide a user through LUMINA, the standalone PyTorch classifier for dual-anchor barcodes that ships in this repository alongside the SLIC napari plugin - preparing per-cell crops with Data_prep.py, the two-stage recipe in Train_LUMINA.py, inference and confidence scoring in Test_LUMINA.py, few-shot adaptation to a new cell line with Finetune_LUMINA.py, and the co-occurrence figure from Visualize_heatmap.py. Use whenever someone is working with cell<id>_5D.tif crops, seg_5D / seg_5D_calib folders, a DualHeadConvNet checkpoint (best_model_initial.pth, best_model_fine-tune.pth), predict_class_confident_*.xlsx, or asks about dual-anchor barcodes, per-pixel phasor G/S maps as network input, the two independent nuclear and mitochondrial heads, the weight-balanced dual cross-entropy loss, or adapting a trained checkpoint to a new cell line / new domain by few-shot fine-tuning of the heads. Four of the five scripts take no command-line arguments - every path and hyperparameter is a constant edited in the source; Finetune_LUMINA.py is the exception and is driven entirely by flags.
+description: Guide a user through LUMINA, the standalone PyTorch classifier for dual-anchor barcodes that ships in this repository alongside the SLIC napari plugin - preparing per-cell crops with Data_prep.py, the two-stage recipe in Train_LUMINA.py, inference and confidence scoring in Test_LUMINA.py, few-shot adaptation to a new cell line with Finetune_LUMINA.py, and the co-occurrence figure from Visualize_heatmap.py. Use whenever someone is working with cell<id>_5D.tif crops, seg_5D / seg_5D_calib folders, a DualHeadConvNet checkpoint (best_model_initial.pth, best_model_fine-tune.pth), predict_class_confident_*.xlsx, or asks about dual-anchor barcodes, per-pixel phasor G/S maps as network input, the two independent nuclear and mitochondrial heads, the weight-balanced dual cross-entropy loss, or adapting a trained checkpoint to a new cell line / new domain by few-shot fine-tuning of the heads. All five scripts are driven by command-line flags; --help is authoritative on each, and no script has editable constants left in it.
 license: BSD-3-Clause
 ---
 
@@ -10,8 +10,8 @@ A PyTorch classifier for cells carrying **two** barcodes at once: one
 fluorescent protein on a nuclear anchor (`NLS…`) and one on a mitochondrial
 anchor (`NTOM…`). It lives in `LUMINA_classification/`, is independent of the
 napari plugin — its own conda env, its own `requirements.txt`, nothing imports
-it — and consists of four scripts run by hand, in order, plus an optional fifth
-for moving a checkpoint onto a new cell line.
+it — and consists of four scripts run in order, plus an optional fifth for
+moving a checkpoint onto a new cell line.
 
 Use this skill to answer "how do I run it on my data", "what does this number
 mean", and "why did it do that". For editing the repository's code, see
@@ -38,18 +38,77 @@ sit on different pixels of the same cell, one forward pass reads both.
 
 ## The five scripts
 
-Scripts 1–4 have no argument parser. Every path, every hyperparameter and the
-list of samples to process are module-level or `main()`-level constants, and most
-sample lists are shipped with all but one or two entries commented out. Script 5
-is the exception: it takes flags and nothing else.
+**All five are driven by argparse.** Every path and every hyperparameter that
+scripts 1–4 once held as a module-level or `main()`-level literal is now a flag
+carrying *that same literal* as its default, so a run that passes no optional
+flag computes what the committed file computed. The deliberate exception is the
+paths: the lab drive letters and cluster directories did not become defaults,
+they became **required** flags, because a default nobody outside the lab can
+reach is worse than no default. `--help` on each script is authoritative for the
+flag list and for the defaults.
 
-| # | Script | Reads | Writes |
-|---|---|---|---|
-| 1 | `Data_prep.py` | `<sample>/raw/`, `flim_stack/<fov>-sum.tif`, `intensity/<fov>-{1..4}.tif`, `intensity/<fov>-sum_seg.npy` | `<sample>/seg_5D_calib/cell<id>_5D.tif` — one 6×h×w float64 crop per cell |
-| 2 | `Train_LUMINA.py` | single-anchor folders' `seg_5D/`, dual-anchor folders' `clustered.xlsx` + crops | `best_model_<phase>.pth`, `combination_accuracies_<phase>.xlsx`, `test_train_val_log.xlsx`, `val_df.xlsx` |
-| 3 | `Test_LUMINA.py` | a checkpoint + crops for each listed sample | `<sample>/predict_class_confident_<thr>.xlsx`, `predict_class_uncertain_<thr>.xlsx` |
-| 4 | `Visualize_heatmap.py` | those two workbooks | `heatmap_nu_mito.pdf` in the **current working directory**, plus a Tk window |
-| 5 | `Finetune_LUMINA.py` **(flags, not constants)** | a checkpoint + crops under `--data-root`, optionally a second dish under `--eval-root`, an optional `--drop-list` | under `--out`: `finetune_predictions_K<k>_seed<s>.csv`, `finetune_summary_K<k>_seed<s>.csv`, `support_cells_K<k>_seed<s>.csv`, `finetune_per_seed_K<k>.csv`, `finetune_run_config.csv`, plus `finetune_across_seeds_K<k>.csv` when more than one seed was run, and with `--save-heads` a `best_model_fewshot_K<k>_seed<s>.pth` |
+| # | Script | Required flags | Reads | Writes |
+|---|---|---|---|---|
+| 1 | `Data_prep.py` | `--data-root`, and one of `--samples` / `--all-samples` | `<sample>/raw/`, `flim_stack/<fov>-sum.tif`, `intensity/<fov>-{1..4}.tif`, `intensity/<fov>-sum_seg.npy` | `<sample>/<--seg-folder>/cell<id>_5D.tif` — one 6×h×w float64 crop per cell — plus `<sample>/data_prep_run_config.csv` |
+| 2 | `Train_LUMINA.py` | `--data-root`, `--single-anchor-manifest`, `--dual-root`, `--out`, and one of `--dual-samples` / `--dual-samples-file`, and one of `--checkpoint` / `--from-scratch` | single-anchor folders' crops, dual-anchor folders' `clustered.xlsx` + crops | under `--out`: `best_model_<phase>.pth`, `combination_accuracies_<phase>.xlsx`, `test_train_val_log.xlsx`, `val_df.xlsx`, `train_run_config.csv` |
+| 3 | `Test_LUMINA.py` | `--checkpoint`, `--data-root`, and one of `--samples` / `--all-samples` | a checkpoint + crops for each sample | `<sample>/predict_class_confident_<thr>.xlsx`, `predict_class_uncertain_<thr>.xlsx`, plus `test_run_config.csv` |
+| 4 | `Visualize_heatmap.py` | `--data-root` | those two workbooks | `--out-pdf` (default `heatmap_nu_mito.pdf`, a **relative** path), `visualize_heatmap_run_config.csv`, and a Tk window unless `--no-gui` |
+| 5 | `Finetune_LUMINA.py` | `--checkpoint`, `--out`, and a population from `--data-root` or `--manifest` | a checkpoint + crops under `--data-root`, optionally a second dish under `--eval-root`, an optional `--drop-list` | under `--out`: `finetune_predictions_K<k>_seed<s>.csv`, `finetune_summary_K<k>_seed<s>.csv`, `support_cells_K<k>_seed<s>.csv`, `finetune_per_seed_K<k>.csv`, `finetune_run_config.csv`, plus `finetune_across_seeds_K<k>.csv` when more than one seed was run, and with `--save-heads` a `best_model_fewshot_K<k>_seed<s>.pth` |
+
+A minimal run of each, in order:
+
+```bash
+python Data_prep.py --data-root /path/to/dataset --samples sampleA,sampleB
+
+python Train_LUMINA.py --data-root /path/to/single_anchor \
+    --single-anchor-manifest single_anchor.csv \
+    --dual-root /path/to/dual_anchor --dual-samples-file dual_samples.txt \
+    --checkpoint best_model_fine-tune.pth --out ./train_out
+
+python Test_LUMINA.py --checkpoint ./train_out/best_model_fine-tune.pth \
+    --data-root /path/to/dataset --samples sampleA,sampleB
+
+python Visualize_heatmap.py --data-root /path/to/dataset --no-gui
+```
+
+**`--samples` is not optional in scripts 1 and 3, and has no default.** Name the
+folders, or ask for every one of them with `--all-samples`; passing neither exits
+1 with a message naming both, and passing both exits 1 as well. That is
+deliberate, because those two scripts write into the folders they are given:
+`Data_prep.py` **clears** a sample's `--seg-folder` before writing it, and
+`Test_LUMINA.py` **overwrites** the two workbooks inside it unless `--out`
+redirects them. Each prints its resolved list, one destination per line, before
+the first deletion or the first write — with a line saying nothing has happened
+yet — so a wrong `--all-samples` is visible while it is still reversible.
+`Visualize_heatmap.py` is the exception: it only reads, so its `--samples` still
+defaults to scanning, and it has no `--all-samples`.
+
+**The dual-anchor list is ordered, and the order is part of the split.**
+`Train_LUMINA.py` loads the folders in the order `--dual-samples` /
+`--dual-samples-file` gives them, and the stage-2 validation split is taken by row
+position, so the same names in a different order hold out different cells at the
+same `--seed` — a different `val_df.xlsx` and a different checkpoint. A rerun has
+to pass the same list in the same order, not merely the same names. The resolved
+order is printed at startup and recorded as `resolved_dual_samples` in
+`train_run_config.csv`.
+
+**Every script writes its resolved configuration beside its output** — one
+`flag,value` CSV per run, named in the table above. That is the record of what
+produced a directory of results; ask for it before trusting a number whose
+provenance is in doubt.
+
+**Three flags have to agree across scripts, and nothing enforces it:**
+
+- `--seg-folder`. `Data_prep.py` writes `seg_5D_calib` by default,
+  `Train_LUMINA.py` reads `seg_5D` only, and `Test_LUMINA.py` /
+  `Finetune_LUMINA.py` default to `auto` (prefer `seg_5D_calib`, fall back to
+  `seg_5D`). Preparing crops for training means
+  `Data_prep.py --seg-folder seg_5D`, not renaming a folder afterwards.
+- `--confidence-threshold`. Test writes the threshold **into the workbook file
+  name**; `Visualize_heatmap.py` rebuilds that name from its own flag. Run the
+  two with different values and the heatmap silently finds nothing.
+- `--num-classes`, and the class order. It has to match the checkpoint, which
+  records neither.
 
 Script 5 is optional and only needed when a checkpoint is being moved to a cell
 line it was not trained on. It fine-tunes `fc_nu` and `fc_mito` on a few labelled
@@ -79,44 +138,51 @@ Read the one you need; do not read them all.
 
 | File | Read it when |
 |---|---|
-| `references/data-and-prep.md` | **Start here for any "will it find my data" question.** The exact folder and file names each script expects, the six planes and their order, array shapes and dtypes, the spreadsheet columns, and every constant in `Data_prep.py`. |
-| `references/training.md` | Training from scratch, or `Train_LUMINA.py`'s own two-stage fine-tune: which checkpoint feeds which, what is frozen when, the loss weighting, the LR schedule, and what the committed switch values actually do. Not the same thing as adapting to a new cell line — for that, read `domain-adaptation.md`. |
+| `references/data-and-prep.md` | **Start here for any "will it find my data" question.** The exact folder and file names each script expects, the six planes and their order, array shapes and dtypes, the spreadsheet columns, and every flag of `Data_prep.py` with its default. |
+| `references/training.md` | Training from scratch, or `Train_LUMINA.py`'s own two-stage fine-tune: which checkpoint feeds which, what is frozen when, the loss weighting, the LR schedule, and what the default switch values actually do. Not the same thing as adapting to a new cell line — for that, read `domain-adaptation.md`. |
 | `references/inference-and-heatmap.md` | Running `Test_LUMINA.py` or reading its output: the confidence score formula, the two workbooks, and what the heatmap does and does not show. |
 | `references/troubleshooting.md` | Something hung, crashed, or produced a result that cannot be right. |
 | `references/domain-adaptation.md` | **Someone wants to use LUMINA on a different cell line.** Why a checkpoint degrades across cell lines, the few-shot head-only recipe that fixes it, how to run `Finetune_LUMINA.py`, how many cells they need to label, the triage gate that precedes it, and the two traps in reading the result. |
 
 ## Answering well here
 
-**For scripts 1–4 there is no command line. Name the line to edit.** "Set
-`base_folder` on line 346 of `Test_LUMINA.py`" is an answer; "pass `--input`" is
-wrong, and there is no flag to pass. Every default quoted in these files is a
-literal in the source, with its line number.
+**Name the flag, never a line to edit.** "Pass `--data-root`" is the answer;
+"set `base_folder` near the top of `main()`" is now wrong, because no such
+constant exists in any of the five scripts. If you are unsure of a flag name or a
+default, read the `add_argument` block rather than guessing — `--help` is
+authoritative and cheap to run.
 
-**`Finetune_LUMINA.py` is the opposite.** It has no editable constants worth
-naming: `--checkpoint` and `--out` are required, the support population must
-come from either `--data-root` (a folder of sample folders) or `--manifest` (a
-CSV listing the cells) — one or the other, not both required — everything else
-is a flag with a default, and `--help` is authoritative. Do not send someone to
-edit a line in that file, and do not tell a user asking about domain adaptation
-that they have to write the loop themselves — they no longer do.
+**A flag's default is the value the script shipped with.** That is the whole
+point of the conversion, so "what does it do by default" and "what did the
+original file do" have the same answer for every optional flag. There are two
+kinds of exception. The required path flags have no default at all. And the
+sample lists of `Data_prep.py` and `Test_LUMINA.py` have none either — those two
+write into the folders they are handed, so the choice is `--samples` or
+`--all-samples` and neither is assumed. `Visualize_heatmap.py`'s `--samples` is
+the one that is deliberately *wider* than the shipped file: empty means every
+folder already holding a confident workbook at this threshold, where the shipped
+file plotted whatever short list was left uncommented. Tell a user to pass
+`--samples` explicitly when they want to reproduce a particular figure.
 
-**Class indices come from dictionary order, not from the class name.**
-`nu_class_map = {key: idx + 1 for idx, key in enumerate(nu_files.keys())}`, so
-with the shipped literal `N10` is class 1 and `N1` is class 7. Index 0 means *no
-anchor / unknown* and is never a training target. A checkpoint stores no mapping,
-so reordering `nu_files` or `mito_files` between training and testing silently
-permutes every label. Check that the dicts in `Train_LUMINA.py` (lines 564–591)
-and `Test_LUMINA.py` (lines 501–528) are character-for-character the same.
-`Finetune_LUMINA.py` sidesteps the derivation and writes `NU_CLASS_MAP` /
-`MITO_CLASS_MAP` out as literals near the top of the file — the same order, but
-stated rather than inferred. It is a fourth place to keep in sync, and the one to
-read when you want to know what the order currently is.
+**Class indices are module constants now, in four places.**
+`NU_CLASS_MAP` / `MITO_CLASS_MAP` are written out as module-level literals in
+`Train_LUMINA.py`, `Test_LUMINA.py`, `Visualize_heatmap.py` and
+`Finetune_LUMINA.py` — `grep -n 'NU_CLASS_MAP = ' *.py` finds all four — and they
+are character-for-character identical: `N10` is class 1 and `N1` is class 7.
+Index 0 means *no anchor / unknown* and is never a training target. There is
+deliberately **no flag** to permute them — a checkpoint stores no mapping, so a
+way to reorder them would be a silent way to mislabel every cell. `--num-classes`
+sets only the *width* of the heads, not the order. If you change the panel,
+change it in all four files; the three that a run touches each print their map at
+startup, so a mismatch is visible in the console log of the run that produced a
+checkpoint.
 
 **"5D" means six planes.** The folder is `seg_5D` / `seg_5D_calib` and the file
 is `cell<id>_5D.tif`, but the stack is `[G, S, ratio1, ratio2, ratio3,
 intensity]` — the five-dimensional fingerprint plus the intensity plane the
-network normalises. The stale comment on `Data_prep.py` line 227 lists eight
-names for the six planes it writes; the `np.stack` on line 228 is authoritative.
+network normalises. The `np.stack([c_gc, c_sc, ci1, ci2, ci3, isum], axis=0)`
+that builds `cell_stack` in `Data_prep.py` is authoritative, and the numbered
+comment directly above it now names those same six.
 
 **Only the last plane is normalised.** `normalize_intensity` divides
 `image[-1]` by its max and touches nothing else. G, S and the ratios go into the
@@ -130,7 +196,7 @@ correct, never a per-anchor accuracy.
 
 **Do not invent numbers.** No accuracy, dataset size or runtime appears in these
 files unless the source states it. If you do not know a valid range for a
-parameter, say so and point at the constant.
+parameter, say so and quote the flag's default.
 
 **Two anchors, two vocabularies.** Nuclear classes are written `N…`
 (`N10 N13 N4 N14 N16 N8 N1`) and mitochondrial classes `M…`
@@ -152,8 +218,9 @@ print([float(a[i].max()) for i in range(a.shape[0])])
 Anything but 6 in the first position will either crash the forward pass or be
 silently truncated to the first six planes — see `references/troubleshooting.md`.
 
-How many cells are prepared, and how many are too big for the 256×256 canvas
-the loaders pad to:
+How many cells are prepared, and how many are too big for the canvas the loaders
+pad to (`--crop-size`, default 256 in both `Train_LUMINA.py` and
+`Test_LUMINA.py`):
 
 ```python
 import glob, tifffile as tiff
@@ -171,6 +238,16 @@ print(len(sd), 'tensors')
 print(sd['fc_nu.6.weight'].shape, sd['fc_mito.6.weight'].shape)  # (num_classes, 256)
 ```
 
-The last line is the only record of how many classes the model was built with;
-`num_classes = 8` is hardcoded in both scripts (`Train_LUMINA.py` line 618,
-`Test_LUMINA.py` line 537).
+The last line is the only record of how many classes the model was built with.
+`--num-classes` defaults to 8 in both `Train_LUMINA.py` and `Test_LUMINA.py` —
+read the `add_argument('--num-classes', ...)` block in either, or run `--help` —
+and a checkpoint built with a different width fails to load rather than loading
+wrongly.
+
+What a finished run was actually given — the file to read before quoting any
+number back to a user:
+
+```python
+import pandas as pd
+print(pd.read_csv('test_run_config.csv').to_string(index=False))
+```

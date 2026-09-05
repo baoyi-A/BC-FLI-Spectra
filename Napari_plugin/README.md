@@ -3,6 +3,8 @@
 *One of the two tools in [SLIC](../README.md). For dual-anchor barcodes, see
 [LUMINA](../LUMINA_classification/README.md).*
 
+> 🤖 This repository ships an agent skill for the plugin, [`.claude/skills/slic-napari/`](../.claude/skills/slic-napari/), so a coding assistant can walk you through these steps — see the [root README](../README.md#-slic-works-with-an-ai-assistant).
+
 **SLIC** (Spectral‑Lifetime Indexing of Cells) is a napari plugin that supports an end‑to‑end
 workflow for FLIM and barcode analysis, from raw **`.ptu`** ingestion through
 segmentation, classification, tracking and final alignment / visualisation.
@@ -40,46 +42,15 @@ viewer layers on transition, keeping the session clean.
 
 ## ✨ What's new
 
-**2026‑04 major update**
-
-- 🆕 **Two Cellpose‑based segmentation widgets** (Barcode Seg, Biosensor Seg)
-  with on‑the‑fly manual editing (right‑click polygon draw, Ctrl+click
-  delete, Z/X toggle, S cycle contrast).
-- 🎓 **Online fine‑tuning** of Cellpose directly from the edited mask —
-  both single‑image (the currently edited sample) and a new
-  **multi‑folder dialog**: pick any number of sample folders, per‑row
-  auto‑detection of the required image / mask pair with ✓ ⚠ ✗ status,
-  trains jointly in one subprocess call.
-- 🧵 **Subprocess isolation for PyTorch / CUDA**: all Cellpose training
-  and inference runs in a child process (`_finetune_runner.py`), so
-  torch and CUDA state are never loaded into the napari main process.
-  This fixes a family of vispy access‑violation crashes on Windows.
-- 🔍 **Persistent custom‑model discovery**: fine‑tuned models are
-  auto‑discovered from the per‑sample `_finetune/` folder, the shared
-  plugin model root, and the `~/.cellpose` cache, **and re‑scanned when
-  the sample folder changes**. Ordering places target‑matching names
-  first, then sorts by modification time.
-- 🎯 **Seeded K-Means classifier** (renamed from "KMeans Cluster" for
-  clarity): explicitly the semi-supervised **Seeded-KMeans** algorithm of
-  Basu et al. 2002 — seeds initialise the class centroids, then the
-  K-Means EM loop refines them. Added alternative methods (K-Means++,
-  MiniBatchKMeans, Gaussian Mixture, Spectral), per-class outlier
-  flagging (Isolation Forest), an optional **whiten by within-cluster
-  spread** pass for seed K-Means (rescales the 5D space by the pooled
-  covariance of the first-pass clusters, no labels used, so a seed set
-  saved on one acquisition transfers to another without the two closest
-  barcodes swapping), and save / load of **class distribution
-  overlays** (convex hulls) with a user-adjustable expansion factor that
-  serve as prior knowledge for manual seeding.
-- 🎉 **NaCha finalise**: auto‑broadcasts single‑frame masks to the full
-  biosensor stack length, Shift‑click per‑cell signal inspection in
-  Revise Mode, and a celebration dialog on final Calculate that reports
-  the total elapsed time from PTU Reader open.
-- 🛠 **vispy 0x1C crash fix**: a backport of napari PR #8122 is applied
-  at plugin load (see `_widget.py` → `_install_vispy_0x1c_patch`), so
-  removing layers on Windows / NVIDIA no longer corrupts the shared GL
-  context. Self‑tests in `walkthrough/` reproduce the add → remove →
-  add pattern stress‑free.
+The current version segments with Cellpose in two dedicated widgets
+(Barcode Seg, Biosensor Seg) with in‑viewer mask editing and online
+fine‑tuning, single‑image or multi‑folder; runs every Cellpose train and
+inference call in an isolated subprocess, so torch and CUDA never load
+into the napari process; ships the classifier as **Seeded K‑Means** with
+alternative methods, per‑class outlier flagging, whitening and saved
+class distribution overlays; and carries a fix for the Windows / NVIDIA
+vispy access‑violation crash. Release‑by‑release detail is in the
+[Changelog](#-changelog) at the bottom of this file.
 
 ---
 
@@ -228,51 +199,21 @@ import flim_s_gen   # logs: v2 python: …, v4 python: …, scoring decisions
 
 ## 🧩 Per‑model config (BYO model)
 
-Different finetuned Cellpose models often need different inputs and
-inference parameters. Instead of forking the widget per model, the
-plugin reads an optional **`config.json`** sitting next to the model
-weight and applies its settings transparently:
-
-| Key                       | Effect                                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------------- |
-| `input_kind`              | `intensity_sum` (raw `_sum.tif`), `barcode_seg_grayscale` (FastFLIM luminance, default), or `barcode_seg_rgb` (FastFLIM 3‑channel render) |
-| `diameter`                | Pre‑fills the BarcodeSeg diameter spinbox when the model is selected                       |
-| `cellprob_threshold`      | Forwarded to `model.eval(...)` — needed for sparse / membrane models                       |
-| `flow_threshold`          | Forwarded to `model.eval(...)`                                                            |
-| `channels`                | Cellpose v2 channel indices                                                                |
-| `post_process.method`     | `merge_fragments` (morph close + min‑area filter) or `none`                                |
-| `post_process.merge_gap`  | Closing radius in pixels                                                                    |
-| `post_process.min_merged_px` | Drop connected components smaller than this after closing                                 |
-| `notes`                   | Free text shown in the status hint when the model is picked                                |
-
-**Discovery**: when the user picks a model in the dropdown, the plugin
-looks for `config.json` (a) right next to the weight file, (b) in the
-weight's parent dir, or (c) one level up (the `…/<model_name>/models/<model_name>` layout `git` checkouts use). First hit wins. Missing
-→ legacy behaviour (FastFLIM grayscale input, cellpose defaults, no
-post‑proc). All existing user models keep working unchanged.
-
-**Example** — the JQW NBL2 cell‑membrane model
-(`Napari_plugin/examples/jqw_nbl2_membrane_v7.config.json`):
+Finetuned Cellpose models need different inputs and inference parameters.
+Instead of forking the widget per model, the plugin reads an optional
+**`config.json`** next to the model weight — beside the weight file, in its
+parent dir, or one level up, first hit wins — and applies it transparently.
+A model without one keeps its legacy behaviour.
 
 ```json
-{
-  "input_kind": "intensity_sum",
-  "diameter": 30,
-  "cellprob_threshold": -6.0,
-  "flow_threshold": 1.5,
-  "channels": [0, 0],
-  "post_process": {
-    "method": "merge_fragments", "merge_gap": 3, "min_merged_px": 400
-  },
-  "notes": "Trained on raw uint16 sum.tif; cellprob heavily negative because membrane signal is sparse."
-}
+{ "input_kind": "intensity_sum", "diameter": 30, "cellprob_threshold": -6.0 }
 ```
 
-Drop that JSON next to the weight, restart napari, pick the model in
-BarcodeSeg → diameter auto‑fills to 30, inference uses the right
-thresholds, output is post‑processed before showing up as a labels
-layer. The status hint shows a `📄cfg` tag so you know the override
-took effect.
+Pick the model in BarcodeSeg: the diameter spinbox auto‑fills, inference uses
+the declared thresholds, and the status hint gains a `📄cfg` tag so you know
+the override took effect. Full key list in the skill reference
+[`references/workflow.md`](../.claude/skills/slic-napari/references/workflow.md),
+under *Barcode Seg*; a worked example ships in [`examples/`](examples/).
 
 ---
 
@@ -347,6 +288,51 @@ Napari_plugin/
 - 📦 **External model files** (Track‑Anything weights) — if the automatic
   download fails, follow the Track‑Anything official docs for manual
   checkpoint placement.
+
+---
+
+## 📜 Changelog
+
+**2026‑04 major update**
+
+- 🆕 **Two Cellpose‑based segmentation widgets** (Barcode Seg, Biosensor Seg)
+  with on‑the‑fly manual editing (right‑click polygon draw, Ctrl+click
+  delete, Z/X toggle, S cycle contrast).
+- 🎓 **Online fine‑tuning** of Cellpose directly from the edited mask —
+  both single‑image (the currently edited sample) and a new
+  **multi‑folder dialog**: pick any number of sample folders, per‑row
+  auto‑detection of the required image / mask pair with ✓ ⚠ ✗ status,
+  trains jointly in one subprocess call.
+- 🧵 **Subprocess isolation for PyTorch / CUDA**: all Cellpose training
+  and inference runs in a child process (`_finetune_runner.py`), so
+  torch and CUDA state are never loaded into the napari main process.
+  This fixes a family of vispy access‑violation crashes on Windows.
+- 🔍 **Persistent custom‑model discovery**: fine‑tuned models are
+  auto‑discovered from the per‑sample `_finetune/` folder, the shared
+  plugin model root, and the `~/.cellpose` cache, **and re‑scanned when
+  the sample folder changes**. Ordering places target‑matching names
+  first, then sorts by modification time.
+- 🎯 **Seeded K-Means classifier** (renamed from "KMeans Cluster" for
+  clarity): explicitly the semi-supervised **Seeded-KMeans** algorithm of
+  Basu et al. 2002 — seeds initialise the class centroids, then the
+  K-Means EM loop refines them. Added alternative methods (K-Means++,
+  MiniBatchKMeans, Gaussian Mixture, Spectral), per-class outlier
+  flagging (Isolation Forest), an optional **whiten by within-cluster
+  spread** pass for seed K-Means (rescales the 5D space by the pooled
+  covariance of the first-pass clusters, no labels used, so a seed set
+  saved on one acquisition transfers to another without the two closest
+  barcodes swapping), and save / load of **class distribution
+  overlays** (convex hulls) with a user-adjustable expansion factor that
+  serve as prior knowledge for manual seeding.
+- 🎉 **NaCha finalise**: auto‑broadcasts single‑frame masks to the full
+  biosensor stack length, Shift‑click per‑cell signal inspection in
+  Revise Mode, and a celebration dialog on final Calculate that reports
+  the total elapsed time from PTU Reader open.
+- 🛠 **vispy 0x1C crash fix**: a backport of napari PR #8122 is applied
+  at plugin load (see `_widget.py` → `_install_vispy_0x1c_patch`), so
+  removing layers on Windows / NVIDIA no longer corrupts the shared GL
+  context. Self‑tests in `walkthrough/` reproduce the add → remove →
+  add pattern stress‑free.
 
 ---
 

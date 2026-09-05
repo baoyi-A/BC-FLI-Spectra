@@ -4,8 +4,8 @@ Reproduces the add-labels → del-layer → add-labels loop that our BarcodeSeg 
 BiosensorSeg widgets hit. If the fix is live, this should run for N cycles
 without the process dying.
 
-Run with:
-    D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe walkthrough/test_0x1c_patch.py
+Run with the interpreter that has napari + the plugin installed:
+    python walkthrough/test_0x1c_patch.py
 """
 from __future__ import annotations
 

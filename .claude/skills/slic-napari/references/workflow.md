@@ -74,6 +74,31 @@ fine-tuned on the RGB render, not on grayscale. Epochs 50–200 is typical for
 small corrections; more risks overfitting. The new model records its input form
 in a `config.json` beside the weights.
 
+**Bringing your own model: the `config.json` keys.** Different finetuned models
+often need different inputs and inference parameters. Rather than forking the
+widget per model, the plugin reads an optional `config.json` sitting next to the
+model weight and applies its settings transparently.
+
+| Key | What it does |
+|---|---|
+| `input_kind` | `intensity_sum` (raw `_sum.tif`), `barcode_seg_grayscale` (FastFLIM luminance, default), or `barcode_seg_rgb` (FastFLIM 3-channel render) |
+| `diameter` | Pre-fills the BarcodeSeg diameter spinbox when the model is selected |
+| `cellprob_threshold` | Forwarded to `model.eval(...)` — needed for sparse / membrane models |
+| `flow_threshold` | Forwarded to `model.eval(...)` |
+| `channels` | Cellpose v2 channel indices |
+| `post_process.method` | `merge_fragments` (morph close + min-area filter) or `none` |
+| `post_process.merge_gap` | Closing radius in pixels |
+| `post_process.min_merged_px` | Drop connected components smaller than this after closing |
+| `notes` | Free text shown in the status hint when the model is picked |
+
+**Discovery.** When the user picks a model in the dropdown, the plugin looks for
+`config.json` (a) right next to the weight file, (b) in the weight's parent dir,
+or (c) one level up — the `…/<model_name>/models/<model_name>` layout `git`
+checkouts use. First hit wins. Missing → legacy behaviour: FastFLIM grayscale
+input, cellpose defaults, no post-processing, so every model without one keeps
+working unchanged. A `📄cfg` tag appears in the status hint when an override
+took effect. A worked example ships under `Napari_plugin/examples/`.
+
 ---
 
 ## 3. Calculate FLIM-S — the 5-D fingerprint

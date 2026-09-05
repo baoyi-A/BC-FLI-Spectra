@@ -26,9 +26,20 @@ down again once idle; a GPU can be requested for the segmentation steps. The
 instance re-installs from this repository's `main` on every cold start, so it
 runs the code published here rather than a snapshot.
 
-This repository contains two independent tools. Each tagged release is archived
-on Zenodo; the DOI above always resolves to the most recent version, and the
-version DOI on the Zenodo record cites the exact version in the manuscript.
+## What is in here
+
+Two independent tools, each with its own README, its own environment, and no
+code shared between them.
+
+| | |
+|---|---|
+| 🧩 **[`Napari_plugin/`](Napari_plugin/README.md)** | **SLIC** — the napari plugin. Seven widgets take you from a raw `.ptu` to one biosensor readout per barcode. *NaCha* is the last of the seven. |
+| 🧠 **[`LUMINA_classification/`](LUMINA_classification/README.md)** | **LUMINA** — the dual-anchor classifier, for cells carrying two barcodes at once. |
+| 🤖 [`.claude/skills/`](.claude/skills/) | One agent skill per tool, so a coding assistant can install and drive either of them. See [below](#-slic-works-with-an-ai-assistant). |
+
+Each tagged release is archived on Zenodo; the DOI above always resolves to the
+most recent version, and the version DOI on the Zenodo record cites the exact
+version described in the manuscript.
 
 ---
 
@@ -57,7 +68,7 @@ returning to the menu.
 per class through a stimulation. A full step-by-step
 [instruction video](https://zenodo.org/records/17045806) is on Zenodo.*
 
-For details, see [Napari plugin/README](Napari_plugin/README.md).
+➡️ **Installation and full usage: [`Napari_plugin/README`](Napari_plugin/README.md)**
 
 ---
 
@@ -80,7 +91,7 @@ single-anchor data, then fine-tune on dual-anchor data.
 - 🔍 `Test_LUMINA.py` — inference on new data.
 - 🔥 `Visualize_heatmap.py` — visualize results.
 
-For details, see [LUMINA classification/README](LUMINA_classification/README.md).
+➡️ **Installation and full usage: [`LUMINA_classification/README`](LUMINA_classification/README.md)**
 
 ---
 
@@ -146,11 +157,9 @@ automatic run costs is coverage, not correctness — the stock nucleus model fin
 about three quarters of the nuclei our fine-tuned-and-curated reference has.
 Fine-tuning on your own cells is a widget in the plugin, and it closes that gap.
 
-It ran on **Claude Opus** in a single session, in an afternoon, for a few
-million tokens — tens of dollars of model usage. Most of that went on finding
-and fixing the installation problems it hit on the way, which are now fixed;
-a run that just follows these instructions is a fraction of it, and mostly GPU
-wait. *One field of one acquisition — a reproduction check, not a benchmark.*
+Our run took an afternoon on **Claude Opus**, most of it waiting on the GPU,
+and a few million tokens — tens of dollars of model usage.
+*One field of one acquisition — a reproduction check, not a benchmark.*
 
 ### 🔍 "Where am I in the workflow?"
 

@@ -5,7 +5,7 @@ Houses:
 * ``merge_fragments`` — morphological close + min-area filter, plus
   optional interior-hole closing and per-label erosion. Used when a
   finetuned model produces heavily over-segmented predictions (e.g. the
-  JQW NBL2 cell-membrane model) so neighbouring fragments belonging to
+  NBL2 cell-membrane model) so neighbouring fragments belonging to
   the same membrane curve get one label.
 
 * ``split_at_kinks`` — counterpart to ``merge_fragments``: split a label
@@ -15,7 +15,7 @@ Houses:
 
 * ``membrane_pipeline`` — convenience one-call entry that runs the full
   membrane post-proc chain (merge → split → close holes → erode → final
-  min-area filter) with sane defaults tuned for the JQW NBL2 model.
+  min-area filter) with sane defaults tuned for the NBL2 membrane model.
 
 The widget calls these via the per-model ``config.json``. Default
 behaviour is a no-op so legacy models keep working.
@@ -758,7 +758,7 @@ def membrane_pipeline(
       5. Drop labels whose final area is < ``min_final_px``. Erosion can
          leave tiny ghosts that this step removes.
 
-    All defaults are tuned for the JQW NBL2 cell-membrane model:
+    All defaults are tuned for the NBL2 cell-membrane model:
       * Raw cellpose predicts membranes ~21 px thick with many 1-pixel
         gaps between fragments belonging to the same curve.
       * GT skeleton-length 1st percentile is 45 px; GT area 1st percentile

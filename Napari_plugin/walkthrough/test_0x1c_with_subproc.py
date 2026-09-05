@@ -6,9 +6,8 @@ Reproduces the *exact* widget flow that was crashing:
 Uses the builtin Cellpose 'cyto2' model on a tiny 256x256 synthetic image so
 the subprocess finishes in a few seconds even on CPU.
 
-Run with:
-    D:/Softwares/Anaconda/Anaconda3/envs/BC-FLIM/python.exe \
-        walkthrough/test_0x1c_with_subproc.py
+Run with the interpreter that has napari + the plugin installed:
+    python walkthrough/test_0x1c_with_subproc.py
 """
 from __future__ import annotations
 

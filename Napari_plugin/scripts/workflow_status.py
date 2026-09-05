@@ -82,14 +82,14 @@ def inspect(folder: Path) -> Report:
            decay_stacks=len(stacks), tau_maps=len(taus),
            fov_names=[p.name for p in sums][:12])
     if not sums:
-        r.todo("Run PTU Reader on the raw/ folder — nothing is decoded yet.")
+        r.todo("Run PTU Reader on the raw/ folder -- nothing is decoded yet.")
         return r
     if stacks:
         r.check("every FOV has decay stacks", len(stacks) >= len(sums),
                 f"{len(stacks)} stack files for {len(sums)} FOV(s)")
     else:
         r.check("decay stacks present", False,
-                "flim_stack/ is empty — Calculate FLIM-S cannot run")
+                "flim_stack/ is empty -- Calculate FLIM-S cannot run")
 
     # ---- step 2 -----------------------------------------------------------
     n_masks = sorted(intensity.glob("*_seg_n.npy"))
@@ -98,7 +98,7 @@ def inspect(folder: Path) -> Report:
     r.step(STEPS[1], bool(n_masks or p_masks), n_masks=len(n_masks),
            p_masks=len(p_masks), objects=counts)
     if not (n_masks or p_masks):
-        r.todo("Run Barcode Seg — no *_seg_n.npy / *_seg_p.npy beside the intensity sums.")
+        r.todo("Run Barcode Seg -- no *_seg_n.npy / *_seg_p.npy beside the intensity sums.")
     else:
         if len(n_masks) < len(sums):
             r.todo(f"Barcode Seg: {len(sums) - len(n_masks)} of {len(sums)} FOV(s) "
@@ -142,13 +142,13 @@ def inspect(folder: Path) -> Report:
                     f"{np.nanmin(lt):.2f}-{np.nanmax(lt):.2f} ns")
         if len(by_fov) > len(sums):
             r.check("workbook holds only this folder's FOVs", False,
-                    f"{len(by_fov)} FOVs in FLIM-S.xlsx but {len(sums)} on disk — "
+                    f"{len(by_fov)} FOVs in FLIM-S.xlsx but {len(sums)} on disk -- "
                     f"rows from an earlier run were merged in; tick 'Fresh FLIM-S.xlsx'")
         if len(chans) not in (0, 1, 2, 3, 4):
             pass
     else:
         r.step(STEPS[2], False)
-        r.todo("Run Calculate FLIM-S — no FLIM-S.xlsx yet.")
+        r.todo("Run Calculate FLIM-S -- no FLIM-S.xlsx yet.")
 
     # ---- step 4 -----------------------------------------------------------
     cl = folder / "clustered.xlsx"
@@ -160,7 +160,7 @@ def inspect(folder: Path) -> Report:
         dist = (tag.value_counts().to_dict() if tag is not None else {})
         # Seeded K-Means runs ONE localisation at a time, so rows of the other
         # localisation are simply untouched. Counting those as "declined" turns
-        # a normal half-finished run into a scary number — the denominator has
+        # a normal half-finished run into a scary number -- the denominator has
         # to be the rows that were actually clustered.
         if tag is not None:
             considered = int(tag.notna().sum())
@@ -184,7 +184,7 @@ def inspect(folder: Path) -> Report:
                     f"{n_out} of {considered} clustered cells declined ({frac:.1%}); "
                     f"the default contamination is 0.10 per class")
         if untouched:
-            r.todo(f"Seeded K-Means: {untouched} row(s) were never clustered — it runs one "
+            r.todo(f"Seeded K-Means: {untouched} row(s) were never clustered -- it runs one "
                    f"localisation at a time and only {locs_done or 'none'} has been done. "
                    f"Select the other localisation, place its seeds and run again if you "
                    f"need it.")
@@ -197,7 +197,7 @@ def inspect(folder: Path) -> Report:
     else:
         r.step(STEPS[3], False)
         if fs.is_file():
-            r.todo("Run Seeded K-Means — FLIM-S.xlsx exists but there is no clustered.xlsx.")
+            r.todo("Run Seeded K-Means -- FLIM-S.xlsx exists but there is no clustered.xlsx.")
 
     # ---- step 5 -----------------------------------------------------------
     seg_imgs = sorted(folder.glob("*_seg_image.tif"))
@@ -214,7 +214,7 @@ def inspect(folder: Path) -> Report:
         r.todo("Biosensor Seg: a seg image exists but no *_seg_image_seg.npy was saved.")
     elif not bio_masks:
         if confocal:
-            r.todo(f"Run Biosensor Seg — {len(confocal)} confocal channel stack(s) are here "
+            r.todo(f"Run Biosensor Seg -- {len(confocal)} confocal channel stack(s) are here "
                    f"but nothing has been segmented on them yet.")
         elif cl.is_file():
             r.todo("Steps 5-7 (biosensor) have not run. They need the confocal B/G/Y stacks "
@@ -292,7 +292,7 @@ def render(r: Report) -> str:
     if r.checks:
         out.append("Quality checks")
         for label, ok, detail in r.checks:
-            out.append(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f" — {detail}" if detail else ""))
+            out.append(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f" -- {detail}" if detail else ""))
         out.append("")
     out.append("Next")
     if r.next:
