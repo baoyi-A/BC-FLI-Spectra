@@ -124,45 +124,33 @@ conventions, used by Claude Code, Codex, Cursor, Copilot and others. Point one
 at this repository and it can install either tool, walk you through a step,
 tell you what a parameter means, and look at your data to say where you are.
 
-### ✅ Validation — an assistant reproduced the curated result
+### ✅ Validation — an assistant reproduced our curated result
 
 We gave **Claude Code** nothing but the address of this repository and asked it
-to install SLIC and process one dataset. Working only from the files here, it
-built a fresh environment, installed the plugin and ran all seven steps on a
-real acquisition:
+to install SLIC and process one dataset. Working only from the files here it
+built a fresh environment, installed the plugin, and ran all seven steps on a
+real 1.5 GB acquisition — from `.ptu` decoding through to one signal curve per
+barcode.
 
-| Step | Result |
+Then the harder question: does a fully automatic run agree with the version a
+human checked and corrected?
+
+| Against our manual curation | |
 |---|---|
-| 📥 PTU Reader | a 1.5 GB `.ptu` decoded into four spectral channels, the decay stacks and a lifetime map |
-| 🔬 Barcode Seg | nucleus and cytoplasm masks over the full 2048 × 2048 field |
-| 🌀 Calculate FLIM-S | every cell reduced to its 5-D fingerprint |
-| 🧩 Seeded K-Means | cells sorted into the barcodes of the panel, with per-class outlier rejection |
-| 🟡 Biosensor Seg | cells segmented in the confocal channel |
-| 📈 NaCha | one signal curve per barcode across 101 frames |
+| 🧩 **Barcode identity** | **271 of 271 cells got the same barcode. None wrong.** Shuffling the labels drops it to 21–28 %, so the agreement is real. |
+| 🔬 **Segmentation** | F1 0.83 (nuclei) and 0.87 (cytoplasm) at IoU ≥ 0.5; 0 splits, 1 merge |
+| 📋 **End to end** | 77 % of curated cells got the correct barcode, 5 % were declined as outliers, 18 % were never segmented, **0 % got a wrong one** |
 
-**Then the harder question: does a fully automatic run agree with our own manual
-curation?** We compared it against the hand-curated masks and barcode calls for
-that acquisition — the version a human checked and corrected.
+Wherever it finds a cell, it calls the barcode exactly as we did. What a fully
+automatic run costs is coverage, not correctness — the stock nucleus model finds
+about three quarters of the nuclei our fine-tuned-and-curated reference has.
+Fine-tuning on your own cells is a widget in the plugin, and it closes that gap.
 
-| Against manual curation | Result |
-|---|---|
-| 🧩 **Barcode identity** | **271 of 271 cells received the same barcode. Zero disagreements.** Stable from IoU 0.3 to 0.8; shuffling the labels drops it to 21–28 %, so the agreement is not an artefact of the matching. |
-| 🔬 **Segmentation, nuclei** | F1 = 0.83 at IoU ≥ 0.5 (precision 0.96, recall 0.73), mean Dice 0.84 on matched cells |
-| 🔬 **Segmentation, cytoplasm** | F1 = 0.87 at IoU ≥ 0.5 (precision 0.82, recall 0.92), mean Dice 0.86 on matched cells |
-| 🧬 **Cell shapes** | 0 splits and 1 merge across both masks — disagreements are whole cells found or not found, never fragmented |
-| 📋 **End to end** | of the curated classified cells, **77 % received the correct barcode, 5 % were declined as outliers, 18 % were not segmented, and none received a wrong one** |
-
-So the classification reproduces the curated result exactly wherever it finds
-the cell. What a fully automatic run costs is coverage, not correctness: the
-stock nucleus model finds about three quarters of the curated nuclei, where the
-curated reference was produced with a sample-specific fine-tune plus hand
-editing. The cells it misses are ordinary-looking rather than dim or small, and
-the barcode composition shifts by at most 2 percentage points, so the
-population readout survives. Fine-tuning on your own cells is a widget in the
-plugin, and it closes that gap.
-
-*One field of one acquisition. This is a reproduction check against a curated
-reference, not a benchmark.*
+It ran on **Claude Opus** in a single session, in an afternoon, for a few
+million tokens — tens of dollars of model usage. Most of that went on finding
+and fixing the installation problems it hit on the way, which are now fixed;
+a run that just follows these instructions is a fraction of it, and mostly GPU
+wait. *One field of one acquisition — a reproduction check, not a benchmark.*
 
 ### 🔍 "Where am I in the workflow?"
 
@@ -190,12 +178,11 @@ python Napari_plugin/scripts/workflow_status.py <sample folder>
   - Steps 5-7 (biosensor) have not run. They need the confocal B/G/Y stacks.
 ```
 
-The checks cover the decay stacks expected per field, empty masks, the phasor
-coordinates against the universal semicircle, the lifetime range, the declined
-fraction against the outlier setting, class sizes, and the registration — for
-which it tries all four rotations and reports coverage *and* purity, since
-coverage alone cannot tell a correct alignment from a wrong one. `--json` for
-scripting; exit status 1 when a check fails, so it works as a gate too.
+It checks the decay stacks, the masks, the phasor coordinates against the
+universal semicircle, the lifetimes, the declined fraction, the class sizes, and
+the registration — for which it tries all four rotations and reports coverage
+*and* purity, since coverage alone cannot tell a correct alignment from a wrong
+one. `--json` for scripting; exit status 1 on a failed check, so it gates too.
 
 ### 📚 What the assistant reads
 
@@ -203,7 +190,7 @@ scripting; exit status 1 when a check fails, so it works as a gate too.
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Repository layout, installation, the three-environment design, the headless testing pattern, and the conventions the code follows. Claude Code picks it up through the one-line `CLAUDE.md`. |
 | [`.claude/skills/slic-napari/`](.claude/skills/slic-napari/) | The plugin: seven steps control by control, how to read each output, the failure modes with the check that identifies each, and installation notes. |
-| [`.claude/skills/lumina-network/`](.claude/skills/lumina-network/) | LUMINA: the four scripts, the data layout they expect, the training recipe, how to read the confidence outputs, and how to adapt a trained checkpoint to a new cell line. |
+| [`.claude/skills/lumina-network/`](.claude/skills/lumina-network/) | LUMINA: the scripts, the data layout they expect, the training recipe, how to read the confidence outputs, and how to adapt a trained checkpoint to a new cell line. |
 
 Parameter descriptions in the skills are pulled from the widget tooltips and
 argument parsers in the source, so the documentation and the interfaces cannot
