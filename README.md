@@ -3,20 +3,28 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
 
-**Many barcoded cell populations in one dish, each read out separately.**
+Software for **Spectral-Lifetime Indexing of Cells (SLIC)**, a single-cell
+barcoding strategy that combines fluorescence lifetime, spectral imprint and
+subcellular localization to identify many cell populations within one mixed
+sample, and to read a biosensor from each of them.
 
 ![SLIC workflow](docs/slic_workflow.png)
 
-Cells carry **barcodes**: fluorophore combinations that differ in fluorescence
-lifetime and emission spectrum. One FLIM acquisition gives every pixel a
-photon-arrival histogram in four spectral channels. Averaged over a segmented
-cell that becomes five numbers — phasor coordinates *G* and *S* plus three
-spectral intensity ratios. Cells sharing a barcode land in the same place in
-that 5-D space, so clustering assigns each cell its barcode. A biosensor
-channel is then read per class, giving one measurement per barcoded population
-from a single mixed dish.
+A barcode is a fluorophore whose lifetime and emission spectrum, together with
+the subcellular compartment it is targeted to, identify the cell carrying it. A
+single FLIM acquisition records a photon-arrival histogram per pixel in four
+spectral windows; averaged over a segmented cell, this yields five values — the
+phasor coordinates *G* and *S*, and three spectral intensity ratios. Cells
+sharing a barcode occupy the same region of that five-dimensional space, so
+clustering assigns each cell its barcode.
 
-### 🌐 Try it in a browser — nothing to install
+Decoding follows that principle: organelle-localized fluorescence images
+are segmented with a fine-tuned Cellpose model, cells are classified by
+five-dimensional clustering, and the biosensor module then segments and tracks
+cells in the time-lapse channels, aligns each with its barcode identity, and
+extracts its signal kinetics.
+
+### 🌐 Hosted instance
 
 **<https://baoyi-a.github.io/nacha-demo/>** runs the plugin on the demo dataset
 in a browser, with no local setup. The page starts a cloud machine on demand,
@@ -24,16 +32,16 @@ optionally with a GPU for the segmentation steps, and shuts it down when idle.
 It re-installs from this repository's `main` on every cold start, so it runs the
 published code rather than a snapshot.
 
-## What is in here
+## Repository contents
 
 Two independent tools, each with its own README, its own environment, and no
 code shared between them.
 
 | | |
 |---|---|
-| 🧩 **[`Napari_plugin/`](Napari_plugin/README.md)** | **SLIC**, the napari plugin — also known as **NaCha**, which is its final widget and the name the hosted demo goes by. Seven widgets take you from a raw `.ptu` to one biosensor readout per barcode. Installs as `bc-flim-spectra`. |
-| 🧠 **[`LUMINA_classification/`](LUMINA_classification/README.md)** | **LUMINA** — the dual-anchor classifier, for cells carrying two barcodes at once. |
-| 🤖 [`.claude/skills/`](.claude/skills/) | One agent skill per tool, so a coding assistant can install and drive either of them. See [below](#-slic-works-with-an-ai-assistant). |
+| 🧩 **[`Napari_plugin/`](Napari_plugin/README.md)** | **SLIC**, the napari plugin — also known as **NaCha**, which is its final widget and the name the hosted demo goes by. Seven widgets carry an acquisition from a raw `.ptu` to one biosensor readout per barcode. Installs as `bc-flim-spectra`. |
+| 🧠 **[`LUMINA_classification/`](LUMINA_classification/README.md)** | **LUMINA** (Lifetime-based Unmixing for Multiplexed ImagiNg and bArcoding) — the deep-learning classifier for dual-anchor barcodes, where one cell carries two fluorophores in two compartments. |
+| 🤖 [`.claude/skills/`](.claude/skills/) | One agent skill per tool, allowing a coding assistant to install and operate either of them. See [below](#-slic-works-with-an-ai-assistant). |
 
 Each tagged release is archived on Zenodo; the DOI above always resolves to the
 most recent version, and the version DOI on the Zenodo record cites the exact
@@ -64,7 +72,7 @@ https://github.com/user-attachments/assets/6cf57f24-9d2f-4016-8f8e-b53c3a3f4a1e
 each barcode's own cluster spread, then seeded K-means refining the centres.
 Click to play.*
 - 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
-- 🎬 **B&P Tracker** — barcode / object tracking (built on Track-Anything / XMem).
+- 🎬 **B&P Tracker** — multi-cell tracking in dense cultures, based on XMem with a short-horizon, periodically reset memory.
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
 
 https://github.com/user-attachments/assets/92455514-da5d-40f7-bbad-bfafc0d70a19
@@ -82,20 +90,26 @@ own response to the stimulus. A full step-by-step
 
 ![LUMINA network](docs/lumina_network.png)
 
-**LUMINA** classifies cells carrying **two** barcodes at once — one fluorophore
-on a nuclear anchor, one on a mitochondrial anchor. Averaging a whole cell into
-five numbers cannot separate two fluorophores sitting in two organelles, so
-LUMINA keeps the pixels: per segmented cell it builds a six-plane stack (the
-per-pixel phasor *G* and *S*, three spectral intensity ratios, and the
-intensity), gives each plane its own convolutional stem, fuses them in a shared
-trunk, and ends in **two independent heads** under a class-balanced loss. One
-forward pass reads both anchors. Training is two-stage: pre-train on
-single-anchor data, then fine-tune on dual-anchor data.
+**LUMINA** (Lifetime-based Unmixing for Multiplexed ImagiNg and bArcoding) is a
+deep-learning framework that integrates fluorescence lifetime, spectral features
+and subcellular localization to decode dual-anchor barcodes at single-cell
+resolution — one fluorophore on a nuclear anchor, a second on a mitochondrial
+anchor.
 
-- 🧹 `Data_Prep.py` — preprocess raw data.
-- 🏋️ `Train_LUMINA.py` — train the LUMINA model.
-- 🔍 `Test_LUMINA.py` — inference on new data.
-- 🔥 `Visualize_heatmap.py` — visualize results.
+Reducing a cell to five averaged values cannot separate two fluorophores in two
+compartments, so LUMINA operates on the pixels. Each segmented cell becomes a
+six-plane stack: the per-pixel phasor *G* and *S*, three spectral intensity
+ratios, and the intensity. Each plane has its own convolutional stem; the planes
+are fused in a shared trunk and read out by two independent classifier heads
+under a class-balanced loss, so one forward pass decodes both anchors. Training
+is two-stage: pre-training on single-anchor data, then fine-tuning on
+dual-anchor data.
+
+- 🧹 `Data_prep.py` — build the per-cell six-plane crops from decoded FLIM data.
+- 🏋️ `Train_LUMINA.py` — pre-training and fine-tuning.
+- 🔍 `Test_LUMINA.py` — inference, with per-cell confidence scoring.
+- 🔥 `Visualize_heatmap.py` — the nuclear-by-mitochondrial co-occurrence figure.
+- 🎯 `Finetune_LUMINA.py` — adapt a trained checkpoint to a new cell line.
 
 ➡️ **Installation and full usage: [`LUMINA_classification/README`](LUMINA_classification/README.md)**
 
@@ -157,7 +171,7 @@ Against the hand-curated version of the same field:
 Wherever it finds a cell, the barcode call matches ours. What a fully
 automatic run costs is coverage, not correctness — the stock nucleus model finds
 about three quarters of the nuclei our fine-tuned-and-curated reference has.
-Fine-tuning on your own cells is a widget in the plugin, and it closes that gap.
+The plugin provides fine-tuning on the user's own cells, which closes that gap.
 
 The run took an afternoon on **Claude Opus**, most of it GPU time, and a few
 million tokens — tens of dollars of model usage.

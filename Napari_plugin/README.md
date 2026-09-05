@@ -8,7 +8,7 @@ the [hosted demo](https://baoyi-a.github.io/nacha-demo/) goes by. This folder is
 *One of the two tools in [SLIC](../README.md). For dual-anchor barcodes, see
 [LUMINA](../LUMINA_classification/README.md).*
 
-> 🤖 This repository ships an agent skill for the plugin, [`.claude/skills/slic-napari/`](../.claude/skills/slic-napari/), so a coding assistant can walk you through these steps — see the [root README](../README.md#-slic-works-with-an-ai-assistant).
+> 🤖 An agent skill for this plugin ships at [`.claude/skills/slic-napari/`](../.claude/skills/slic-napari/); see the [root README](../README.md#-slic-works-with-an-ai-assistant).
 
 **SLIC** (Spectral‑Lifetime Indexing of Cells) is a napari plugin that supports an end‑to‑end
 workflow for FLIM and barcode analysis, from raw **`.ptu`** ingestion through
@@ -63,7 +63,7 @@ vispy access‑violation crash. Release‑by‑release detail is in the
 
 > 💡 The same workflow runs in a browser at
 > <https://baoyi-a.github.io/nacha-demo/>, on the demo dataset, with none of the
-> setup below. The three-environment install here is for your own data.
+> setup below. The three-environment install described here is for local data.
 
 The plugin runs Cellpose in **subprocess‑isolated child processes** (to
 keep CUDA / OpenGL state out of napari's main process), and Cellpose 2.x
