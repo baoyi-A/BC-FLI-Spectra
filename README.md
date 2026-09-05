@@ -133,31 +133,28 @@ conventions used by Claude Code, Codex, Cursor and Copilot. Pointed at this
 repository, an assistant can install either tool, explain a parameter, and read
 a sample folder to report which steps have run and whether they look right.
 
-### ✅ Validation — an assistant reproduced our curated result
+### ✅ Validation
 
-We gave **Claude Code** nothing but the address of this repository and asked it
-to install SLIC and process one dataset. Working only from the files here it
-built a fresh environment, installed the plugin, and ran all seven steps on a
-real 1.5 GB acquisition — from `.ptu` decoding through to one signal curve per
-barcode.
+Given only this repository, **Claude Code** builds an environment, installs the
+plugin and runs all seven steps on a 1.5 GB acquisition, from `.ptu` decoding to
+one signal curve per barcode.
 
-Then the harder question: does a fully automatic run agree with the version a
-human checked and corrected?
+Against the hand-curated version of the same field:
 
-| Against our manual curation | |
+| | |
 |---|---|
 | 🧩 **Barcode identity** | **271 of 271 cells got the same barcode. None wrong.** Shuffling the labels drops it to 21–28 %, so the agreement is real. |
 | 🔬 **Segmentation** | F1 0.83 (nuclei) and 0.87 (cytoplasm) at IoU ≥ 0.5; 0 splits, 1 merge |
 | 📋 **End to end** | 77 % of curated cells got the correct barcode, 5 % were declined as outliers, 18 % were never segmented, **0 % got a wrong one** |
 
-Wherever it finds a cell, it calls the barcode exactly as we did. What a fully
+Wherever it finds a cell, the barcode call matches ours. What a fully
 automatic run costs is coverage, not correctness — the stock nucleus model finds
 about three quarters of the nuclei our fine-tuned-and-curated reference has.
 Fine-tuning on your own cells is a widget in the plugin, and it closes that gap.
 
-Our run took an afternoon on **Claude Opus**, most of it waiting on the GPU,
-and a few million tokens — tens of dollars of model usage.
-*One field of one acquisition — a reproduction check, not a benchmark.*
+The run took an afternoon on **Claude Opus**, most of it GPU time, and a few
+million tokens — tens of dollars of model usage.
+*One field of one acquisition: a reproduction check, not a benchmark.*
 
 ### 🔍 "Where am I in the workflow?"
 
