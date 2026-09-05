@@ -58,7 +58,7 @@ returning to the menu.
 - 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture and Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
 
 
-[![Whitened seeded K-means](docs/method_kmeans_poster.jpg)](docs/method_kmeans.mp4)
+https://github.com/user-attachments/assets/6cf57f24-9d2f-4016-8f8e-b53c3a3f4a1e
 
 *How the classifier places a cell: seeds carried from another batch, whitening by
 each barcode's own cluster spread, then seeded K-means refining the centres.
@@ -67,7 +67,7 @@ Click to play.*
 - 🎬 **B&P Tracker** — barcode / object tracking (built on Track-Anything / XMem).
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
 
-[![SLIC demo](docs/demo_poster.jpg)](docs/demo.mp4)
+https://github.com/user-attachments/assets/92455514-da5d-40f7-bbad-bfafc0d70a19
 
 *Sixteen barcoded populations in one dish, read out one at a time: each column
 is a barcode, its biosensor, the three confocal channels, and that population's
