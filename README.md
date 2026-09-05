@@ -60,7 +60,9 @@ returning to the menu.
 - 🎬 **B&P Tracker** — barcode / object tracking (built on Track-Anything / XMem).
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
 
-![SLIC demo](docs/demo.gif)
+<video src="https://github.com/baoyi-A/BC-FLI-Spectra/raw/main/docs/demo.mp4" poster="https://github.com/baoyi-A/BC-FLI-Spectra/raw/main/docs/demo_poster.jpg" controls muted loop playsinline width="100%"></video>
+
+<sub>If the player does not load: [demo.mp4](docs/demo.mp4) · [poster](docs/demo_poster.jpg)</sub>
 
 *Sixteen barcoded populations in one dish, read out one at a time: each column
 is a barcode, its biosensor, the three confocal channels, and that population's
