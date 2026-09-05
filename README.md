@@ -64,8 +64,9 @@ returning to the menu.
 
 ![SLIC demo](docs/demo.gif)
 
-*Barcode classes assigned across a field, then the biosensor response followed
-per class through a stimulation. A full step-by-step
+*Sixteen barcoded populations in one dish, read out one at a time: each column
+is a barcode, its biosensor, the three confocal channels, and that population's
+own response to the stimulus. A full step-by-step
 [instruction video](https://zenodo.org/records/17045806) is on Zenodo.*
 
 ➡️ **Installation and full usage: [`Napari_plugin/README`](Napari_plugin/README.md)**
