@@ -242,3 +242,15 @@ the network is deposited on Zenodo.
 
 BSD 2-Clause, the same as the rest of the repository. See
 [`Napari_plugin/LICENSE`](../Napari_plugin/LICENSE).
+
+### Oversized crops, and results produced before this change
+
+A crop larger than the model's 256x256 input used to be skipped: the loader advanced to the
+next row and returned that cell's image instead, while the caller still labelled the row with
+the cell it had asked for. So some rows carried a label that did not belong to the data
+scored, some cells were never scored, and some were scored more than once. Which rows depends
+on where the oversized crops fall.
+
+Oversized crops are now scaled down to fit, keeping their aspect ratio, and every row is
+scored on the cell it names. Results produced before this change should be regenerated rather
+than audited.

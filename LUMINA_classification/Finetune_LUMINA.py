@@ -81,7 +81,6 @@ import hashlib
 import os
 import re
 
-import cv2
 import numpy as np
 import pandas as pd
 import tifffile as tiff
@@ -94,7 +93,7 @@ import torch.nn as nn
 # __main__ guard. Do NOT import Data_prep.py (it runs a loop and deletes folders at import
 # time) or Visualize_heatmap.py (it switches matplotlib to TkAgg at import time).
 try:
-    from Test_LUMINA import DualHeadConvNet, pad_image
+    from Test_LUMINA import DualHeadConvNet, fit_to_canvas, pad_image
 except ImportError as exc:
     raise SystemExit(
         'Could not import Test_LUMINA.py: %s\n'
@@ -717,12 +716,10 @@ def load_crop(path, oversize):
     """Read one cell crop and centre-pad it to 256x256 float32, or return None if it is
     oversized and the policy is to skip.
 
-    Neither of the obvious behaviours is safe by default. Test_LUMINA.py's dataset advances
-    to the NEXT row and returns that image instead, which silently shifts every downstream
-    Cell_Label. Downscaling to fit keeps the cell but changes its scale. This script does
-    one or the other, explicitly, on a flag, and counts what it did -- a few-shot run has to
-    know exactly which cells are in its support set. The measured adaptation runs
-    downscaled, which is why that is the default.
+    Downscaling keeps the cell but changes its scale, so a few-shot run -- which has to know
+    exactly which cells are in its support set -- chooses explicitly on a flag and counts
+    what it did. The downscale itself is Test_LUMINA.fit_to_canvas, shared so the two
+    scripts cannot drift apart.
     """
     img = tiff.imread(path)
     if img.ndim != 3 or img.shape[0] != N_PLANES:
@@ -736,12 +733,7 @@ def load_crop(path, oversize):
     if h > CROP_SIZE or w > CROP_SIZE:
         if oversize == 'skip':
             return None
-        scale = min(CROP_SIZE / h, CROP_SIZE / w)
-        nh = max(1, int(round(h * scale)))
-        nw = max(1, int(round(w * scale)))
-        img = np.stack([cv2.resize(img[i], (nw, nh), interpolation=cv2.INTER_LINEAR)
-                        for i in range(img.shape[0])])
-    return pad_image(img, CROP_SIZE, CROP_SIZE)
+    return fit_to_canvas(img, CROP_SIZE, CROP_SIZE)
 
 
 def load_crops(df, positions, oversize):

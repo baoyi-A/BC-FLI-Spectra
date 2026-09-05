@@ -411,3 +411,15 @@ name carries no phase, so a second run pointed at the same `--out` overwrites th
 first run's curve. `val_df.xlsx` is overwritten as well; only
 `combination_accuracies_<phase>.xlsx` accumulates. Point each run at its own
 `--out` if you want to keep both.
+
+### Oversized crops, and results produced before this change
+
+A crop larger than the model's 256x256 input used to be skipped: the loader advanced to the
+next row and returned that cell's image instead, while the caller still labelled the row with
+the cell it had asked for. So some rows carried a label that did not belong to the data
+scored, some cells were never scored, and some were scored more than once. Which rows depends
+on where the oversized crops fall.
+
+Oversized crops are now scaled down to fit, keeping their aspect ratio, and every row is
+scored on the cell it names. Results produced before this change should be regenerated rather
+than audited.

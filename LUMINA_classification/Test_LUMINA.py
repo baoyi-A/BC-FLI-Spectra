@@ -40,6 +40,7 @@ import torch.nn as nn
 import os
 import pandas as pd
 import tifffile as tiff
+import cv2
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 import torch
@@ -182,6 +183,28 @@ def pad_image(image, height, width):
     padded_image[:, y_start:y_start + h, x_start:x_start + w] = image
     return padded_image
 
+
+def fit_to_canvas(image, height, width):
+    """Bring one (C, h, w) crop onto a (C, height, width) canvas without dropping it.
+
+    A crop larger than the canvas is scaled down by the smaller of the two ratios, so its
+    aspect is kept, and then centred; a crop that already fits is only centred. Nothing is
+    resampled that does not have to be.
+
+    This exists because the alternative the loader used to take -- skipping an oversized
+    crop and serving the next row in its place -- silently detached the label from the
+    image: the row asking for that cell was scored on another cell's data. A loader must
+    return the item it was asked for.
+    """
+    h, w = image.shape[1], image.shape[2]
+    if h > height or w > width:
+        scale = min(height / h, width / w)
+        nh = max(1, int(round(h * scale)))
+        nw = max(1, int(round(w * scale)))
+        image = np.stack([cv2.resize(image[i], (nw, nh), interpolation=cv2.INTER_LINEAR)
+                          for i in range(image.shape[0])])
+    return pad_image(image, height, width)
+
 class FluorescenceDataset(Dataset):
     def __init__(self, df, base_dir, base_dir2, max_height, max_width, transform=None,
                  is_test=False, seg_order=SEG_FOLDER_ORDER['auto']):
@@ -198,44 +221,42 @@ class FluorescenceDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        while True:
-            if torch.is_tensor(idx):
-                idx = idx.tolist()
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
 
-            row = self.df.iloc[idx]
+        row = self.df.iloc[idx]
 
-            if self.is_test:
-                cell_label = int(row['Cell_Label'])
-                test_dir = row['Directory']
-                # Folder preference only; this loader never switches root, and never has.
-                seg_dir = os.path.join(self.base_dir, test_dir, self.seg_order[-1])
-                for seg_name in self.seg_order:
-                    candidate = os.path.join(self.base_dir, test_dir, seg_name)
-                    if os.path.exists(candidate):
-                        seg_dir = candidate
-                        break
-                img_path = os.path.join(seg_dir, f'cell{cell_label}_5D.tif')
-                nu_label = int(row['Nu_cluster'])
-                mito_label = int(row['Mito_cluster'])
-            else:
-                img_path = row['output_file']
-                nu_label = int(row['nu_class'])
-                mito_label = int(row['mito_class'])
+        if self.is_test:
+            cell_label = int(row['Cell_Label'])
+            test_dir = row['Directory']
+            # Folder preference only; this loader never switches root, and never has.
+            seg_dir = os.path.join(self.base_dir, test_dir, self.seg_order[-1])
+            for seg_name in self.seg_order:
+                candidate = os.path.join(self.base_dir, test_dir, seg_name)
+                if os.path.exists(candidate):
+                    seg_dir = candidate
+                    break
+            img_path = os.path.join(seg_dir, f'cell{cell_label}_5D.tif')
+            nu_label = int(row['Nu_cluster'])
+            mito_label = int(row['Mito_cluster'])
+        else:
+            img_path = row['output_file']
+            nu_label = int(row['nu_class'])
+            mito_label = int(row['mito_class'])
 
-            img = tiff.imread(img_path)
-            if img.shape[1] > self.max_height or img.shape[2] > self.max_width:
-                idx = (idx + 1) % len(self.df)
-                continue
-            img = np.nan_to_num(img)
-            resized_img = pad_image(img, self.max_height, self.max_width)
-            normalized_img = normalize_intensity(resized_img)
+        # float32 before the resize: cv2.resize is dtype-sensitive, and this is the dtype
+        # the rest of the project's loaders use. Crops that need no resize are affected
+        # only at rounding level.
+        img = np.nan_to_num(np.asarray(tiff.imread(img_path), dtype=np.float32))
+        resized_img = fit_to_canvas(img, self.max_height, self.max_width)
+        normalized_img = normalize_intensity(resized_img)
 
-            sample = (normalized_img, nu_label, mito_label)
+        sample = (normalized_img, nu_label, mito_label)
 
-            if self.transform:
-                sample = self.transform(sample)
+        if self.transform:
+            sample = self.transform(sample)
 
-            return sample
+        return sample
 
 
 class ResNetBlock(nn.Module):
