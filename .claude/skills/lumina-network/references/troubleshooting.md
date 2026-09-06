@@ -270,26 +270,21 @@ segmentation problem.
 
 ---
 
-## `seg_5D_calib` only contains the last field of view
+## Crops from more than one field of view
 
-**Cause.** `Data_prep.py` clears the output folder — the
-`for file in os.listdir(out_dir)` block that runs right after `out_dir` is built —
-**inside** the per-FOV loop, and names its output `cell<id>_5D.tif` with no FOV in
-the name.
-Two FOVs in one sample folder therefore collide on every id, and the clear
-removes the earlier FOV's cells entirely.
+`Data_prep.py` numbers crops with one counter across all the fields of a sample, so a
+sample with several fields keeps every cell: `cell1_5D.tif` upward, and
+`seg_5D_cell_map.tsv` beside them recording which field and which mask id each came from.
 
-**`--keep-existing` does not fix this.** It makes same-numbered cells from
-different fields of view overwrite each other instead of the earlier FOV being
-deleted wholesale — a different way to keep only the last one. The flag's own
-help says so. This is long-standing behaviour, left alone deliberately.
+It builds into `<seg folder>.partial` and moves that into place only once the sample has
+finished, so an unreadable field or an interrupt leaves the previous result untouched
+rather than half-replaced.
 
-**Check.** `len(os.listdir('seg_5D_calib'))` against the number of files in
-`raw/` times the cells per field. If the sample has more than one FOV, only the
-last survives. The startup line `[<sample>] raw/: N field(s) of view  ->  <seg
-folder>/`, printed once per sample, tells you N before the run finishes.
+Before this change the output folder was cleared once per field rather than once per
+sample, and crops were named by mask id, which restarts at 1 in every field -- so each
+field erased the one before it and only the last survived. A folder prepared before this
+change should be rebuilt.
 
----
 
 ## `AssertionError: Torch not compiled with CUDA enabled`
 

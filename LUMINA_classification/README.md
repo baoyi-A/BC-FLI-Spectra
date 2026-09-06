@@ -254,3 +254,11 @@ on where the oversized crops fall.
 Oversized crops are now scaled down to fit, keeping their aspect ratio, and every row is
 scored on the cell it names. Results produced before this change should be regenerated rather
 than audited.
+
+### Samples with more than one field of view
+
+`Data_prep.py` numbers crops with a single counter across all of a sample's fields and
+writes `seg_5D_cell_map.tsv` recording the field and mask id behind each one. It builds
+into a `.partial` folder and swaps it in only when the sample finishes, so a failure
+leaves the previous result as it was. Folders prepared before this change kept only the
+last field of view and should be rebuilt.

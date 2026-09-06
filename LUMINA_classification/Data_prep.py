@@ -50,6 +50,8 @@ Usage:
 
 import argparse
 import os
+import shutil
+import re
 
 import cv2
 import numpy as np
@@ -103,6 +105,12 @@ def calcu_phasor_info(roi_decay, total_intensity, peak_idx,
     s = np.sum(seg * np.sin(2*np.pi*freq*t)) / np.sum(seg)
 
     return g, s, tau, chi2, fast, total_intensity
+
+
+def parse_cell_serial(name):
+    """The integer in a `cell<N>_5D.tif` name, or 0 for anything else."""
+    m = re.match(r'cell(\d+)_5D\.tif$', name)
+    return int(m.group(1)) if m else 0
 
 def pad_image(img, bs):
     pad_h = (bs - img.shape[0]%bs)%bs
@@ -375,107 +383,138 @@ def main():
                 '--data-root %s: sample %s has no raw/ subfolder (looked in %s).\n'
                 'Expected layout: <root>/<sample>/raw/<fov>, with flim_stack/ and '
                 'intensity/ beside it.' % (args.data_root, cell_type, raw_dir))
-        fnames = os.listdir(raw_dir)
+        fnames = sorted(os.listdir(raw_dir))
         run_config.to_csv(
             os.path.join(args.data_root, cell_type, 'data_prep_run_config.csv'), index=False)
         print('  [%s] raw/: %d field(s) of view  ->  %s/' % (cell_type, len(fnames),
                                                              args.seg_folder))
-        for fname in fnames:
-            fov = os.path.splitext(fname)[0]
-            print(f"Processing {cell_type} / {fov} ...")
 
-            # load segmentation
-            seg_path = os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-sum_seg.npy')
-            masks = np.load(seg_path, allow_pickle=True).item()['masks']
+        # Build into a sibling folder and put it in place only once the whole sample has
+        # been written. The output folder is never emptied ahead of a run that might not
+        # finish, so a crash, an unreadable field or an interrupt leaves the previous
+        # result exactly as it was.
+        out_dir = os.path.join(args.data_root, cell_type, args.seg_folder)
+        build_dir = out_dir + '.partial'
+        if os.path.isdir(build_dir):
+            shutil.rmtree(build_dir)
+        os.makedirs(build_dir)
+        if args.keep_existing and os.path.isdir(out_dir):
+            for existing in os.listdir(out_dir):
+                src_existing = os.path.join(out_dir, existing)
+                if os.path.isfile(src_existing):
+                    shutil.copy2(src_existing, os.path.join(build_dir, existing))
+        # One counter across every field of this sample: mask ids restart at 1 in each
+        # field, so naming crops by mask id alone made the fields overwrite each other.
+        cell_counter = max(
+            [parse_cell_serial(n) for n in os.listdir(build_dir)] or [0])
+        map_rows = []
 
-            # load FLIM & intensity frames
-            stack_sum = tiff.imread(os.path.join(args.data_root, cell_type, 'flim_stack',  f'{fov}-sum.tif'))
-            I1 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-1.tif'), -1)
-            I2 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-2.tif'), -1)
-            I3 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-3.tif'), -1)
-            I4 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-4.tif'), -1)
+        try:
+            for fname in fnames:
+                fov = os.path.splitext(fname)[0]
+                print(f"Processing {cell_type} / {fov} ...")
 
-            # apply calibration factors
-            C1 = f1 * I1
-            C2 = f2 * I2
-            C3 = f3 * I3
-            C4 = f4 * I4
-            Csum = C1 + C2 + C3 + C4
+                # load segmentation
+                seg_path = os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-sum_seg.npy')
+                masks = np.load(seg_path, allow_pickle=True).item()['masks']
 
-            # calibrated ratios
-            int_ratio_1 = C1 / Csum
-            int_ratio_2 = C2 / Csum
-            int_ratio_3 = C3 / Csum
-            # (if you ever need the 4th: int_ratio_4 = C4/Csum)
+                # load FLIM & intensity frames
+                stack_sum = tiff.imread(os.path.join(args.data_root, cell_type, 'flim_stack',  f'{fov}-sum.tif'))
+                I1 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-1.tif'), -1)
+                I2 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-2.tif'), -1)
+                I3 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-3.tif'), -1)
+                I4 = cv2.imread(os.path.join(args.data_root, cell_type, 'intensity', f'{fov}-4.tif'), -1)
 
-            # binning
-            decay_data   = stack_sum
-            b_i_sum      = binning_2d(Csum, args.bin_size)
-            b_decay_data = binning_3d(decay_data, args.bin_size)
+                # apply calibration factors
+                C1 = f1 * I1
+                C2 = f2 * I2
+                C3 = f3 * I3
+                C4 = f4 * I4
+                Csum = C1 + C2 + C3 + C4
 
-            out_dir = os.path.join(args.data_root, cell_type, args.seg_folder)
-            # if exist, clear it
-            if os.path.exists(out_dir) and not args.keep_existing:
-                for file in os.listdir(out_dir):
-                    file_path = os.path.join(out_dir, file)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                print(f"Cleared existing files in {out_dir}")
-            os.makedirs(out_dir, exist_ok=True)
+                # calibrated ratios
+                int_ratio_1 = C1 / Csum
+                int_ratio_2 = C2 / Csum
+                int_ratio_3 = C3 / Csum
+                # (if you ever need the 4th: int_ratio_4 = C4/Csum)
 
-            for cid in tqdm(range(1, masks.max() + 1)):
-                # 1) extract this cell's binary mask
-                mask = (masks == cid)
-                if not mask.any():
-                    continue
+                # binning
+                decay_data   = stack_sum
+                b_i_sum      = binning_2d(Csum, args.bin_size)
+                b_decay_data = binning_3d(decay_data, args.bin_size)
 
-                # 2) bin that mask to match b_i_sum dimensions
-                mask_b = binning_2d(mask.astype(np.uint8), args.bin_size).astype(bool)
-
-                # 3) placeholder arrays for per-pixel phasors
-                c_g = np.zeros_like(b_i_sum, dtype=float)
-                c_s = np.zeros_like(b_i_sum, dtype=float)
-
-                # 4) loop ONLY over the mask pixels
-                ys, xs = np.where(mask_b)
-                for i, j in zip(ys, xs):
-                    tot = b_i_sum[i, j]
-                    if tot < intensity_threshold:
+                for cid in tqdm(range(1, masks.max() + 1)):
+                    # 1) extract this cell's binary mask
+                    mask = (masks == cid)
+                    if not mask.any():
                         continue
-                    roi = b_decay_data[:, i, j]
-                    pidx = np.argmax(roi)
-                    g, s, _, _, _, _ = calcu_phasor_info(
-                        roi, tot, pidx,
-                        tail_only, args.peak_offset, args.end_offset, smooth_option,
-                        args.calculate_lifetime, args.tau_resolution, args.rep_rate_mhz)
-                    c_g[i, j] = g
-                    c_s[i, j] = s
 
-                # 5) apply phasor-space calibration
-                phi = np.arctan2(c_s, c_g)
-                m = np.sqrt(c_g ** 2 + c_s ** 2)
-                phi_c = phi + args.phi_calib
-                m_c = m * args.m_calib
-                c_gc = m_c * np.cos(phi_c)
-                c_sc = m_c * np.sin(phi_c)
+                    # 2) bin that mask to match b_i_sum dimensions
+                    mask_b = binning_2d(mask.astype(np.uint8), args.bin_size).astype(bool)
 
-                # 6) binned intensity ratios (already computed)
-                ci1 = binning_2d(int_ratio_1, args.bin_size) * mask_b
-                ci2 = binning_2d(int_ratio_2, args.bin_size) * mask_b
-                ci3 = binning_2d(int_ratio_3, args.bin_size) * mask_b
-                isum = b_i_sum * mask_b  # already binned Csum
+                    # 3) placeholder arrays for per-pixel phasors
+                    c_g = np.zeros_like(b_i_sum, dtype=float)
+                    c_s = np.zeros_like(b_i_sum, dtype=float)
 
-                # 7) stack your channels: [g_cal, s_cal, int1, int2, int3, isum]
-                cell_stack = np.stack([c_gc, c_sc, ci1, ci2, ci3, isum], axis=0)
+                    # 4) loop ONLY over the mask pixels
+                    ys, xs = np.where(mask_b)
+                    for i, j in zip(ys, xs):
+                        tot = b_i_sum[i, j]
+                        if tot < intensity_threshold:
+                            continue
+                        roi = b_decay_data[:, i, j]
+                        pidx = np.argmax(roi)
+                        g, s, _, _, _, _ = calcu_phasor_info(
+                            roi, tot, pidx,
+                            tail_only, args.peak_offset, args.end_offset, smooth_option,
+                            args.calculate_lifetime, args.tau_resolution, args.rep_rate_mhz)
+                        c_g[i, j] = g
+                        c_s[i, j] = s
 
-                # 8) crop to ROI bounds and write
-                # get the crop bounds
-                y0, x0, y1, x1 = ys.min(), xs.min(), ys.max() + 1, xs.max() + 1
-                crop = cell_stack[:, y0:y1, x0:x1]
+                    # 5) apply phasor-space calibration
+                    phi = np.arctan2(c_s, c_g)
+                    m = np.sqrt(c_g ** 2 + c_s ** 2)
+                    phi_c = phi + args.phi_calib
+                    m_c = m * args.m_calib
+                    c_gc = m_c * np.cos(phi_c)
+                    c_sc = m_c * np.sin(phi_c)
 
-                tiff.imwrite(os.path.join(out_dir, f'cell{cid}_5D.tif'), crop)
+                    # 6) binned intensity ratios (already computed)
+                    ci1 = binning_2d(int_ratio_1, args.bin_size) * mask_b
+                    ci2 = binning_2d(int_ratio_2, args.bin_size) * mask_b
+                    ci3 = binning_2d(int_ratio_3, args.bin_size) * mask_b
+                    isum = b_i_sum * mask_b  # already binned Csum
 
-            print(f" -> Saved calibrated 5D cells for {fov}")
+                    # 7) stack your channels: [g_cal, s_cal, int1, int2, int3, isum]
+                    cell_stack = np.stack([c_gc, c_sc, ci1, ci2, ci3, isum], axis=0)
+
+                    # 8) crop to ROI bounds and write
+                    # get the crop bounds
+                    y0, x0, y1, x1 = ys.min(), xs.min(), ys.max() + 1, xs.max() + 1
+                    crop = cell_stack[:, y0:y1, x0:x1]
+
+                    cell_counter += 1
+                    crop_name = 'cell%d_5D.tif' % cell_counter
+                    tiff.imwrite(os.path.join(build_dir, crop_name), crop)
+                    map_rows.append({'file': crop_name, 'cell_id': cell_counter, 'fov': fov,
+                                     'mask_id': int(cid), 'y0': int(y0), 'x0': int(x0),
+                                     'y1': int(y1), 'x1': int(x1)})
+
+                print(f" -> Saved calibrated 5D cells for {fov}")
+
+            # the sample finished: record where every crop came from, then swap it in
+            pd.DataFrame(map_rows).to_csv(
+                os.path.join(build_dir, 'seg_5D_cell_map.tsv'), sep='	', index=False)
+            if os.path.isdir(out_dir):
+                shutil.rmtree(out_dir)
+            os.replace(build_dir, out_dir)
+            print('  [%s] %d cell(s) from %d field(s) of view  ->  %s'
+                  % (cell_type, len(map_rows), len(fnames), out_dir))
+        except BaseException:
+            # leave no half-written folder behind, and leave the previous
+            # result exactly as it was
+            shutil.rmtree(build_dir, ignore_errors=True)
+            raise
 
 
 if __name__ == '__main__':
