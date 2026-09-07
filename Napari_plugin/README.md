@@ -181,7 +181,7 @@ If the v4 env isn't installed the routing logs a warning and falls back
 to v2. The plugin's status panel in BarcodeSeg shows ✓/✗ per slot at a
 glance, with the resolved python paths and override hints.
 
-```python
+```powershell
 # Override at runtime via env vars (highest priority)
 $env:BCFLIM_CELLPOSE_V2_PYTHON = "D:\envs\my_cellpose2\python.exe"
 $env:BCFLIM_CELLPOSE_V4_PYTHON = "D:\envs\my_cellpose4\python.exe"
@@ -207,7 +207,8 @@ The plugin's default Cellpose models are archived at
 `plugin_defaults/`:
 
 ```bash
-export BCFLIM_MODEL_ROOT=/path/to/plugin_defaults
+export BCFLIM_MODEL_ROOT=/path/to/plugin_defaults          # bash / zsh
+$env:BCFLIM_MODEL_ROOT = "C:\path\to\plugin_defaults"     # PowerShell
 ```
 
 Without them the plugin falls back to a public Cellpose base model, which
