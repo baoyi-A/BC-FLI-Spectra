@@ -69,9 +69,9 @@ returning to the menu.
 https://github.com/user-attachments/assets/38b1ef57-20be-4ee5-bfb2-d6bd414d0390
 
 *How the classifier places a cell: seeds carried from another batch, whitening by
-each barcode's own cluster spread, seeded K-means refining the centres, then a
-per-cluster isolation forest that sets aside the tenth of cells it cannot place.
-Click to play.*
+each barcode's own cluster spread, seeded K-means refining the centres, then an
+isolation forest that sets aside the most anomalous tenth of each cluster rather
+than assign a cell it cannot place. Click to play.*
 - 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
 - 🎬 **B&P Tracker** — multi-cell tracking in dense cultures, based on XMem with a short-horizon, periodically reset memory.
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
