@@ -54,7 +54,8 @@ and the single `-sum_seg.npy` must be whichever mask you want cells cut from.
 ## 2. What `Data_prep.py` writes
 
 ```
-<--data-root>/<sample>/<--seg-folder>/cell<label>_5D.tif
+<--data-root>/<sample>/<--seg-folder>/cell<serial>_5D.tif
+<--data-root>/<sample>/<--seg-folder>/seg_5D_cell_map.tsv
 <--data-root>/<sample>/data_prep_run_config.csv
 ```
 
@@ -135,7 +136,7 @@ raising anything.
 |---|---|---|
 | `--no-tail-only` | off (tail-only **on**) | Start the phasor window at bin 0 instead of at the decay maximum plus `--peak-offset`. The two are not comparable: a full-decay phasor carries the instrument response. |
 | `--calculate-lifetime` | off | Fits a mono-exponential per pixel with `curve_fit` inside `calcu_phasor_info`. The caller discards τ and χ² — it unpacks `g, s, _, _, _, _` — so this **changes no output** and costs a great deal of time. Exposed only because the switch exists. |
-| `--keep-existing` | off (clear first) | Do not delete what is already in the output folder. Read the flag's own help before turning it off: the clear happens once per *field of view*, inside the loop — it is the `for file in os.listdir(out_dir)` block that runs right after `out_dir` is built — while the written names carry no FOV part, so a multi-FOV sample keeps only the last FOV either way — see `troubleshooting.md`. |
+| `--keep-existing` | off (replace) | Keep what is in the output folder and append to it. Either way the sample is built in a `.partial` folder and moved into place only when it finishes, so a crash leaves the previous result intact; the default then replaces the folder **once per sample**, not per field of view. With the flag on, the existing crops are copied into the build folder first and the cell counter continues from the highest serial already there, so nothing is overwritten — see `troubleshooting.md`. |
 
 **How the phasor is computed** (`calcu_phasor_info`), for a user
 who needs to know whether the numbers are comparable to the plugin's: per pixel,

@@ -245,15 +245,21 @@ BSD 2-Clause, the same as the rest of the repository. See
 
 ### Oversized crops, and results produced before this change
 
-A crop larger than the model's 256x256 input used to be skipped: the loader advanced to the
-next row and returned that cell's image instead, while the caller still labelled the row with
-the cell it had asked for. So some rows carried a label that did not belong to the data
-scored, some cells were never scored, and some were scored more than once. Which rows depends
-on where the oversized crops fall.
+A crop larger than the model's 256x256 input used to be skipped by `Test_LUMINA.py`: the
+loader advanced to the next row and returned that cell's image instead, while the caller
+still labelled the row with the cell it had asked for. So some rows carried a label that did
+not belong to the data scored, some cells were never scored, and some were scored more than
+once. Which rows depends on where the oversized crops fall.
 
-Oversized crops are now scaled down to fit, keeping their aspect ratio, and every row is
-scored on the cell it names. Results produced before this change should be regenerated rather
-than audited.
+`Test_LUMINA.py` and `Finetune_LUMINA.py` now scale an oversized crop down to fit, keeping
+its aspect ratio, and every row is scored on the cell it names. Inference results produced
+before this change should be regenerated rather than audited.
+
+`Train_LUMINA.py` still skips such a crop, and that is deliberate: it is the code that
+produced the published checkpoint, and changing which cells it feeds would make it no longer
+that code. The consequence there is also different in kind. Its loader re-reads the row after
+it advances, so the labels travel with the image and nothing is ever mislabelled — an
+oversized cell is dropped from the epoch and a neighbour takes its place.
 
 ### Samples with more than one field of view
 

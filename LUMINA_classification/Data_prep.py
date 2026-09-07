@@ -305,16 +305,16 @@ def main():
                          'costs a great deal of time for nothing. Left exposed because the '
                          'switch exists.')
     ap.add_argument('--keep-existing', action='store_true',
-                    help='Do not delete the files already in the output folder before '
-                         'writing. The default is to clear it, which is what makes a '
-                         're-run idempotent. Read this before turning it off: the clearing '
-                         'happens once per FIELD OF VIEW, inside the loop, while the '
-                         'written names (cell<id>_5D.tif) carry no field-of-view part, so '
-                         'a sample with more than one field of view keeps only the LAST '
-                         'one either way. --keep-existing does not fix that; it makes '
-                         'same-numbered cells from different fields of view overwrite each '
-                         'other instead. This is long-standing behaviour and is left '
-                         'alone deliberately.')
+                    help='Keep what is already in the output folder and append to it. '
+                         'The default is to replace the folder, which is what makes a '
+                         're-run idempotent. Either way the sample is built in a .partial '
+                         'folder and moved into place only once it finishes, so a crash '
+                         'leaves the previous result untouched. With this flag the '
+                         'existing crops are copied into the build folder first and the '
+                         'cell counter continues from the highest serial already there, '
+                         'so nothing is overwritten. Crop numbering runs across every '
+                         'field of view of the sample; seg_5D_cell_map.tsv records the '
+                         'field and mask id behind each crop.')
 
     args = ap.parse_args()
 
@@ -350,8 +350,9 @@ def main():
           % (args.seg_folder,
              'keeping existing files' if args.keep_existing else 'clearing it first'))
     if not args.keep_existing:
-        print('NOTE: every folder listed above is cleared -- every file in it removed -- '
-              'before its crops are written. Nothing has been deleted yet.')
+        print('NOTE: every folder listed above is replaced -- built fresh in a .partial '
+              'folder and swapped in when the sample finishes. Nothing has been '
+              'deleted yet; pass --keep-existing to append instead.')
     print('calibration factors: f1=%s f2=%s f3=%s f4=%s' % (f1, f2, f3, f4))
     print('phasor: phi_calib=%s   m_calib=%s   rep rate=%s MHz   tau resolution=%s ns'
           % (args.phi_calib, args.m_calib, args.rep_rate_mhz, args.tau_resolution))

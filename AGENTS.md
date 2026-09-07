@@ -58,9 +58,10 @@ Napari_plugin/src/flim_s_gen/
 ├── _finetune_runner.py   ← Cellpose fine-tune, run as a CHILD PROCESS
 ├── postproc.py           ← mask post-processing (merge/erode/close/carve)
 ├── harmony_calib.py      ← optional Harmony batch calibration
-├── napari.yaml           ← widget registration; names here must match the classes
-└── walkthrough/storyboard.md   ← the 7-step demo script, in prose
+└── napari.yaml           ← widget registration; names here must match the classes
 ```
+
+The 7-step demo script, in prose, is `Napari_plugin/walkthrough/storyboard.md`.
 
 `_widget.py` is large. **Do not read it whole** — `grep -n "    def name"` for
 the method, then `sed -n 'A,Bp'`. The seven widget classes, in workflow order:

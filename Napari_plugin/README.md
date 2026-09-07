@@ -172,10 +172,12 @@ on the model:
 | `cpsam` (the v4 builtin)                        | v4         | 3‑channel RGB render |
 | Anything else (incl. `cyto2`, `nuclei`, custom v2) | v2      | 1‑ or 2‑channel grayscale |
 
-The two BarcodeSeg defaults (N: `NinNC-cpsam-fastflimRGB-…`, P:
-`CinNC-cpsam-fastflimRGB-…`) are v4 → routed to the `cellpose4` env.
-BiosensorSeg's default (`BS-BC-assist-cls-bgy-260426`) is v2 → routed
-to the `cellpose2` env. **You don't pick the env, the model name does.**
+Each default is the first name on a candidate list that is actually present on
+this machine. BarcodeSeg tries `NinNC-260328-1` (N) and `CinNC-260328-1` (P)
+first; BiosensorSeg tries `BS-BC-assist-cls-260402-forDense`. Those three are
+the models published with the paper, and all three are v2 → routed to the
+`cellpose2` env. The `…-cpsam-…` names come next on the same lists and are
+v4 → `cellpose4`. **You don't pick the env, the model name does.**
 
 If the v4 env isn't installed the routing logs a warning and falls back
 to v2. The plugin's status panel in BarcodeSeg shows ✓/✗ per slot at a

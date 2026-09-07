@@ -593,9 +593,9 @@ def main():
                          '0 is reserved for "no anchor" and is never a class name.')
     ap.add_argument('--crop-size', type=int, default=CROP_SIZE,
                     help='Canvas each crop is centre-padded onto. A crop LARGER than this '
-                         'is not resized: the loader skips it by advancing to the next row, '
-                         'which shifts every following Cell_Label in that folder. Leave it '
-                         'at the value the checkpoint was trained with.')
+                         'is scaled down to fit, keeping its aspect ratio, and then centred, '
+                         'so every row is scored on the cell it names. Leave it at the '
+                         'value the checkpoint was trained with.')
     ap.add_argument('--device', default='cuda:0',
                     help='Torch device string: cuda:0, cuda:1, cpu. There is no automatic '
                          'fallback -- cuda on a machine without a GPU fails rather than '

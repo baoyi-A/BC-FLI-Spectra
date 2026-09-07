@@ -1,6 +1,6 @@
 ---
 name: lumina-network
-description: Guide a user through LUMINA, the standalone PyTorch classifier for dual-anchor barcodes that ships in this repository alongside the SLIC napari plugin - preparing per-cell crops with Data_prep.py, the two-stage recipe in Train_LUMINA.py, inference and confidence scoring in Test_LUMINA.py, few-shot adaptation to a new cell line with Finetune_LUMINA.py, and the co-occurrence figure from Visualize_heatmap.py. Use whenever someone is working with cell<id>_5D.tif crops, seg_5D / seg_5D_calib folders, a DualHeadConvNet checkpoint (best_model_initial.pth, best_model_fine-tune.pth), predict_class_confident_*.xlsx, or asks about dual-anchor barcodes, per-pixel phasor G/S maps as network input, the two independent nuclear and mitochondrial heads, the weight-balanced dual cross-entropy loss, or adapting a trained checkpoint to a new cell line / new domain by few-shot fine-tuning of the heads. All five scripts are driven by command-line flags; --help is authoritative on each, and no script has editable constants left in it.
+description: Guide a user through LUMINA, the standalone PyTorch classifier for dual-anchor barcodes that ships in this repository alongside the SLIC napari plugin - preparing per-cell crops with Data_prep.py, the two-stage recipe in Train_LUMINA.py, inference and confidence scoring in Test_LUMINA.py, few-shot adaptation to a new cell line with Finetune_LUMINA.py, and the co-occurrence figure from Visualize_heatmap.py. Use whenever someone is working with cell<id>_5D.tif crops, seg_5D / seg_5D_calib folders, a DualHeadConvNet checkpoint (best_model_initial.pth, best_model_fine-tune.pth), predict_class_confident_*.xlsx, or asks about dual-anchor barcodes, per-pixel phasor G/S maps as network input, the two independent nuclear and mitochondrial heads, the weight-balanced dual cross-entropy loss, or adapting a trained checkpoint to a new cell line / new domain by few-shot fine-tuning of the heads. All five scripts are driven by command-line flags and --help is authoritative on each.
 license: BSD-3-Clause
 ---
 
@@ -32,9 +32,9 @@ one for the nuclear anchor, one for the mitochondrial anchor — trained under a
 class-balanced cross-entropy on each head, summed 1:1. Because the two anchors
 sit on different pixels of the same cell, one forward pass reads both.
 
-> The repository README describes the input as "the phasor *G* map and the
-> intensity image". The code feeds **six** planes; `DualHeadConvNet.forward`
-> slices `x[:, i:i+1]` for `i in range(6)`. Believe the code.
+> Six planes, not two: `DualHeadConvNet.forward` slices `x[:, i:i+1]` for
+> `i in range(6)`, one stem each. The READMEs agree; older notes describing a
+> *G* map plus an intensity image do not.
 
 ## The five scripts
 

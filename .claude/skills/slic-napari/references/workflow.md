@@ -191,7 +191,7 @@ classes and must not be done without checking class preservation.
 | Stack B / G / Y + Use B/G/Y | The confocal channels. Untick a channel that was not acquired. |
 | Frame start / end | 1-based, inclusive. Default 1–1: the BGY-render models were trained on frame 1 only, so multi-frame averages deviate from the training distribution. |
 | Generate seg image | For a BGY-render model: each enabled channel is CLAHE + gamma corrected, stacked Y→R, G→G, B→B, then reduced to BT.601 luminance, matching training. Disabled channels are zeros. |
-| Model | Default `BS-BC-assist-cls-bgy-260426`, a v2 model taking the render grayscale **plus** the barcode class as a second channel. |
+| Model | Resolved from a candidate list — `BS-BC-assist-cls-260402-forDense` (published with the paper) if it is on the machine, otherwise `BS-BC-assist-cls-bgy-260426`. Both are v2 models taking the render grayscale **plus** the barcode class as a second channel. |
 | Barcode cls TIF | One class label per cell, from step 4. Auto-filled. |
 | Rotation | Leica tilescan barcodes are rotated 90° CW relative to the confocal stack — hence the default. Use 0° for a single FOV. |
 | Load / Confirm Barcode | Loads, rotates and resizes the barcode layer so you can **see** the registration before committing to a Cellpose run. Do this first with an assist model. |

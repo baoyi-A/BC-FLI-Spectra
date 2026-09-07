@@ -116,7 +116,7 @@ dual-anchor data.
 ---
 
 ## 🖥 Environment
-- Python >= 3.8 (tested on Python 3.10)
+- Python >= 3.9 (tested on Python 3.10)
 - Operating system:
   - Tested on: Windows 11
   - Expected to work on: Windows 10/11, Linux (Ubuntu 20.04)
@@ -189,13 +189,14 @@ python Napari_plugin/scripts/workflow_status.py <sample folder>
 
 ```
   [   done] 3 Calculate FLIM-S   rows=834, fovs=1, localisations={'N': 418, 'P': 416}
-  [   done] 4 Seeded K-Means     clustered=418, classified=373, declined=45, classes=10
-  [not run] 5 Biosensor Seg
-  [  check] registration         best=90 CW, coverage=0.966, purity=0.998
+  [   done] 4 Seeded K-Means   clustered=418, classified=373, declined=45, classes=10
+  [   done] 5 Biosensor Seg   seg_images=1, masks=1, confocal_stacks=3
+  [  check] registration   best=90 CW, 90CW coverage=0.966, purity=0.998
 
-  PASS  S stays under the semicircle apex (0.5) — max S = 0.4997
-  PASS  lifetimes are physical (0.1-10 ns) — 1.24-3.80 ns
-  PASS  barcode classes land on biosensor cells — 96.6% of cells, purity 99.8%
+Quality checks
+  PASS  S stays under the semicircle apex (0.5) -- max S = 0.4997
+  PASS  lifetimes are physical (0.1-10 ns) -- 1.24-3.80 ns
+  PASS  barcode classes land on biosensor cells -- 96.6% of cells, purity 99.8%
 
   Next
   - Seeded K-Means: 416 row(s) were never clustered — it runs one localisation
@@ -217,9 +218,9 @@ one. `--json` for scripting; exit status 1 on a failed check, so it gates too.
 | [`.claude/skills/slic-napari/`](.claude/skills/slic-napari/) | The plugin: seven steps control by control, how to read each output, the failure modes with the check that identifies each, and installation notes. |
 | [`.claude/skills/lumina-network/`](.claude/skills/lumina-network/) | LUMINA: the scripts, the data layout they expect, the training recipe, how to read the confidence outputs, and how to adapt a trained checkpoint to a new cell line. |
 
-Parameter descriptions in the skills are pulled from the widget tooltips and
-argument parsers in the source, so the documentation and the interfaces cannot
-drift apart.
+Parameter descriptions in the skills were written against the widget tooltips
+and the argument parsers in the source. Nothing keeps them in step
+automatically, so where the two disagree the source is what runs.
 
 ## 📜 License
 BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.

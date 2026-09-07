@@ -9,16 +9,14 @@ cells from the new domain, then evaluating on the cells that were not used.
 It is the trainer for the protocol described in
 `.claude/skills/lumina-network/references/domain-adaptation.md`.
 
-WHY THIS SCRIPT TAKES COMMAND-LINE ARGUMENTS
-    The other four scripts in this folder do not: every path and hyperparameter is a
-    constant you edit in `main()`. This one is deliberately different. Adaptation is run
-    many times over -- several support-set seeds, several dishes, a support dish and a
-    different evaluation dish -- and the whole point of the protocol is that the numbers
-    are only meaningful when the support set, the held-out set and the seed are stated
-    together. Editing a constant between runs makes that impossible to record. Every knob
-    is therefore a flag. The flags that change a number are echoed into every row of the
-    prediction CSV; the complete command line, every flag and its resolved value, is
-    written once per run to `finetune_run_config.csv`.
+WHY EVERY KNOB HERE IS A FLAG
+    Adaptation is run many times over -- several support-set seeds, several dishes, a
+    support dish and a different evaluation dish -- and the whole point of the protocol
+    is that the numbers are only meaningful when the support set, the held-out set and
+    the seed are stated together. Editing a constant between runs makes that impossible
+    to record. Every knob is therefore a flag. The flags that change a number are
+    echoed into every row of the prediction CSV; the complete command line, every flag
+    and its resolved value, is written once per run to `finetune_run_config.csv`.
 
 WHAT IT DOES
     1. Enumerates the cells of a *support* population and, if you give one, a separate
