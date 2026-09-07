@@ -66,11 +66,11 @@ returning to the menu.
 - 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture and Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
 
 
-https://github.com/user-attachments/assets/6cf57f24-9d2f-4016-8f8e-b53c3a3f4a1e
+https://github.com/user-attachments/assets/38b1ef57-20be-4ee5-bfb2-d6bd414d0390
 
 *How the classifier places a cell: seeds carried from another batch, whitening by
-each barcode's own cluster spread, then seeded K-means refining the centres.
-Click to play.*
+each barcode's own cluster spread, seeded K-means refining the centres, and the
+per-cluster outlier gate that declines the cells it cannot place. Click to play.*
 - 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
 - 🎬 **B&P Tracker** — multi-cell tracking in dense cultures, based on XMem with a short-horizon, periodically reset memory.
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
