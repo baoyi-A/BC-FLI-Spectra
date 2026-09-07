@@ -240,7 +240,7 @@ the network is deposited on Zenodo.
 
 ## 📜 License
 
-BSD 2-Clause, the same as the rest of the repository. See
+BSD 3-Clause, the same as the rest of the repository. See
 [`Napari_plugin/LICENSE`](../Napari_plugin/LICENSE).
 
 ### Oversized crops, and results produced before this change

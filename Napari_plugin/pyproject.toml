@@ -10,7 +10,7 @@ name = "bc-flim-spectra"
 description = "Spectral-lifetime barcode decoding for FLIM images: a napari plugin"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "BSD-2-Clause"
+license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = 'Baoyi Wang', email = "wang.baoyi@stu.pku.edu.cn" }]
 classifiers = [

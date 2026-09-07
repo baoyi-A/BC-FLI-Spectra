@@ -1,7 +1,7 @@
 # 🔬 SLIC — Spectral-Lifetime Indexing of Cells
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22228957.svg)](https://doi.org/10.5281/zenodo.22228957)
-[![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](Napari_plugin/LICENSE)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-orange.svg)](Napari_plugin/LICENSE)
 
 Software for **Spectral-Lifetime Indexing of Cells (SLIC)**, a single-cell
 barcoding strategy that combines fluorescence lifetime, spectral imprint and
@@ -223,7 +223,13 @@ and the argument parsers in the source. Nothing keeps them in step
 automatically, so where the two disagree the source is what runs.
 
 ## 📜 License
-BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
+BSD 3-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for the full text.
+
+The tracking code vendored under `Napari_plugin/src/flim_s_gen/` — `tracker/`,
+`inpainter/`, `tools/` and `track_anything_simple.py` — comes from
+[Track-Anything](https://github.com/gaomingqi/Track-Anything) and stays under its own
+MIT licence, Copyright (c) 2023 Mingqi Gao. That is the licence file sitting beside it
+at `Napari_plugin/src/flim_s_gen/LICENSE`; it covers those files, not this package.
 
 ---
 
