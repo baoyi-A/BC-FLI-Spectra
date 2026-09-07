@@ -92,15 +92,25 @@ the code needs one environment.
 
 ## Model weights
 
-**The fine-tuned models are not in this repository** — the weights are
-distributed separately. The published set is three Cellpose v2 models of about
-27 MB each, the same ones the reviewer demo runs:
+**The fine-tuned models are not in this repository** — the weights are archived
+on Zenodo at <https://doi.org/10.5281/zenodo.22499321>. Download and extract it; the
+plugin's defaults are the three Cellpose 2 models in `plugin_defaults/`, which
+are the ones the demo runs:
 
 | Model | Role |
 |---|---|
 | `NinNC-260328-1` | barcode nucleus (N) |
 | `CinNC-260328-1` | barcode cytoplasm (P) |
 | `BS-BC-assist-cls-260402-forDense` | biosensor cells |
+
+The same archive also carries `manuscript_quantified/`: the eight Cellpose 2
+models whose segmentation performance the manuscript reports, named as the
+manuscript names them (nucleus, mitochondria and plasma membrane for
+single-anchor samples and again for mixed N/M/P populations, plus dual-anchor
+cells and biosensor tracking initialisation). Those are for reproducing the
+reported results, not for routine decoding — point a widget at one explicitly
+rather than putting them in the default model root. `MANIFEST.tsv` carries md5
+and sha256 for every file and the original training-run name of each.
 
 Each widget's default is the **first model it can actually find**, in this
 order: the published set, then the lab's larger CellposeSAM models on machines

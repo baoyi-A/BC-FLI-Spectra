@@ -200,6 +200,24 @@ import flim_s_gen   # logs: v2 python: …, v4 python: …, scoring decisions
 
 ---
 
+## 📦 Segmentation models
+
+The plugin's default Cellpose models are archived at
+**<https://doi.org/10.5281/zenodo.22499321>**. Extract the archive and point the plugin at
+`plugin_defaults/`:
+
+```bash
+export BCFLIM_MODEL_ROOT=/path/to/plugin_defaults
+```
+
+Without them the plugin falls back to a public Cellpose base model, which
+segments but does not reproduce the published masks. The same archive carries
+`manuscript_quantified/`, the eight models whose segmentation performance the
+manuscript reports, under the manuscript's own names; `MANIFEST.tsv` gives md5
+and sha256 for every file and the original training-run name of each.
+
+---
+
 ## 🧩 Bring your own Cellpose model
 
 Drop a `config.json` beside the model weight (or in its parent dir, or one level

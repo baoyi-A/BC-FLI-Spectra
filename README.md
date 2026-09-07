@@ -232,5 +232,7 @@ BSD 2-Clause License. See [`Napari_plugin/LICENSE`](Napari_plugin/LICENSE) for t
 - The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available. The schematics above are figure panels from that manuscript.
 - An [instruction video](https://zenodo.org/records/17045806) is available, providing a step-by-step guide on how to use the Napari plugin.
 - The [Dual-Anchor dataset](https://zenodo.org/records/17036213), used for training the LUMINA network, is also provided.
+- The [segmentation models](https://doi.org/10.5281/zenodo.22499321) the plugin loads by default, together with the
+  eight models whose performance the manuscript reports, are archived separately.
 - A [demo dataset](https://zenodo.org/records/16940026) is included for testing the Napari plugin functionalities.
 - The [original version of all software code](https://zenodo.org/records/17018436) has been archived as well.

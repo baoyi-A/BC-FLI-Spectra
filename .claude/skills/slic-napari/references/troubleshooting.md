@@ -127,9 +127,10 @@ terminal.
 
 **Model not found.** The widget header shows the resolved model root, where it
 came from, and how many models are under it. The fine-tuned defaults
-(`NinNC-…`, `CinNC-…`, `BS-BC-assist-…`) are **not** in the repository; on a
-fresh checkout pick a public base model (`cpsam`, `cyto3`) or point the plugin
-at your own store:
+(`NinNC-…`, `CinNC-…`, `BS-BC-assist-…`) are **not** in the repository — they
+are on Zenodo at <https://doi.org/10.5281/zenodo.22499321>, in the archive's
+`plugin_defaults/` folder. On a fresh checkout either fetch those, pick a public
+base model (`cpsam`, `cyto3`), or point the plugin at your own store:
 
 ```bash
 export BCFLIM_MODEL_ROOT=/path/to/models
