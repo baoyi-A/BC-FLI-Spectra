@@ -318,6 +318,7 @@ def _run_infer_subprocess(
         cellpose_src=cellpose_src,
         extra_roots=[str(r) for r in (extra_roots or [])],
         default_finetune_roots=default_roots,
+        base_path=_resolve_base_model_for_child(base_name, extra_roots),
         out_path=str(out_path),
     )
     # Only forward thresholds when the caller actually specified them —
@@ -404,6 +405,39 @@ def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images
         return None
 
 
+def _resolve_base_model_for_child(base_name, extra_roots=()):
+    """Absolute path of the base model, resolved in the parent.
+
+    The child process used to search for the base model itself, with its own
+    copy of the layout rules. Three lists then had to agree by hand -- what the
+    dropdown offers, what the parent can load, and what the child can find --
+    and they drifted, so a model the GUI let you pick failed at training time
+    with nothing to act on. The parent knows every root the dropdown scanned,
+    so it resolves the name here once and hands the child a path.
+
+    Returns '' for a builtin name, or when nothing matched (the caller decides
+    whether that is fatal).
+    """
+    name = str(base_name).strip()
+    if not name or name in _CELLPOSE_BUILTIN:
+        return ''
+    try:
+        hit = _resolve_barcode_model_path(name, extra_roots=extra_roots)
+    except Exception:
+        hit = None
+    return str(hit) if hit is not None else ''
+
+
+def _base_model_search_report(base_name, extra_roots=()) -> str:
+    """Where we looked, for an error a user on another machine can act on."""
+    lines = ['the cellpose cache %s' % (Path.home() / '.cellpose' / 'models')]
+    lines.append('the model root %s (from %s)'
+                 % (_BARCODE_MODEL_ROOT, _MODEL_ROOT_SOURCE))
+    for r in (extra_roots or []):
+        lines.append('the folder %s' % r)
+    return '; '.join(lines)
+
+
 def _run_finetune_subprocess(
     *, img=None, mask=None, imgs=None, masks=None,
     base_name, new_name, save_dir, n_epochs, channels,
@@ -438,8 +472,19 @@ def _run_finetune_subprocess(
     py_path = _python_for_model(base_name, extra_roots=extra_roots)
     cellpose_src = '' if is_v4 else (str(_CELLPOSE_SRC_PATH) if _CELLPOSE_SRC_PATH.exists() else '')
 
+    # Resolve the base model HERE, where every root the dropdown scanned is
+    # known. Refusing now costs a message; refusing in the child costs a
+    # subprocess launch and an error the user cannot act on.
+    base_path = _resolve_base_model_for_child(base_name, extra_roots)
+    if not base_path and base_name not in _CELLPOSE_BUILTIN:
+        _msg = ("base model '%s' is selectable but its weight file is not"
+                " on this machine, so there is nothing to fine-tune from."
+                % base_name)
+        _where = _base_model_search_report(base_name, extra_roots)
+        raise FileNotFoundError(_msg + " Looked in: " + _where)
+
     cfg = dict(
-        base_name=base_name, new_name=new_name,
+        base_name=base_name, new_name=new_name, base_path=base_path,
         save_dir=str(save_dir), n_epochs=int(n_epochs),
         channels=list(channels), use_gpu=bool(use_gpu),
         cellpose_src=cellpose_src,
@@ -741,6 +786,7 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
     def _on_start():
         # Gather every (image, mask) pair of every ✓ folder still in the table.
         pairs: list[tuple[Path, Path]] = []
+        chosen_folders: list[str] = []
         n_folders = 0
         for r in range(table.rowCount()):
             status = table.item(r, 3).text() if table.item(r, 3) else ''
@@ -751,6 +797,8 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
             if got:
                 n_folders += 1
                 pairs.extend(got)
+                if folder:
+                    chosen_folders.append(folder)
         if not pairs:
             QMessageBox.warning(dlg, 'Nothing to train',
                                 'No folder in the list has a saved mask yet.\n\n'
@@ -826,7 +874,8 @@ def _open_multi_finetune_dialog(parent_widget, target: str, base_name: str,
                 base_name=base_name, new_name=new_name,
                 save_dir=save_dir, n_epochs=int(ep_spin.value()),
                 channels=channels, use_gpu=bool(gpu_chk.isChecked()),
-                extra_roots=[str(save_root)], input_kind=input_kind,
+                extra_roots=[str(save_root), *chosen_folders],
+                input_kind=input_kind,
             )
             progress.setValue(100)
             status_lbl.setText(

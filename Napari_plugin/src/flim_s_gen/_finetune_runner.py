@@ -90,6 +90,7 @@ def _resolve_local_model(name: str, extra_roots, default_finetune_roots):
             root / n / f"{n}_BEST",       # ... with the best-epoch suffix
             root / n,                     # flat store: the weight file itself
             root / "models" / n,
+            root / f"{n}_BEST",           # ... best-epoch file straight in the root
         )
 
     for d in default_finetune_roots:
@@ -101,6 +102,31 @@ def _resolve_local_model(name: str, extra_roots, default_finetune_roots):
             if c.is_file():
                 return c
     return None
+
+
+def _base_model_path(cfg):
+    """The base model file, preferring what the parent already resolved.
+
+    The parent knows every root the model dropdown scanned, so it resolves the
+    name and passes ``base_path``. Searching again here is a fallback for an
+    older parent, not the normal path: when the two searches disagreed, a model
+    the GUI offered could not be trained from.
+    """
+    given = str(cfg.get("base_path") or "").strip()
+    if given:
+        p = Path(given)
+        if p.is_file():
+            return p
+    return _resolve_local_model(
+        str(cfg["base_name"]).strip(),
+        extra_roots=cfg.get("extra_roots", []),
+        default_finetune_roots=cfg.get("default_finetune_roots", []),
+    )
+
+
+def _searched(cfg) -> str:
+    roots = list(cfg.get("default_finetune_roots", [])) + list(cfg.get("extra_roots", []))
+    return "; ".join(str(r) for r in roots) or "(no roots were passed)"
 
 
 def _device(use_gpu: bool):
@@ -129,13 +155,10 @@ def _run_v2(cfg) -> int:
             gpu=use_gpu, device=device, model_type=base_name,
         )
     else:
-        local = _resolve_local_model(
-            base_name,
-            extra_roots=cfg.get("extra_roots", []),
-            default_finetune_roots=cfg.get("default_finetune_roots", []),
-        )
+        local = _base_model_path(cfg)
         if local is None:
-            print(f"ERROR:base model '{base_name}' not found locally (v2)")
+            print(f"ERROR:base model '{base_name}' not found locally (v2). "
+                  f"Searched: {_searched(cfg)}")
             return 4
         base_model = models.CellposeModel(
             gpu=use_gpu, device=device, model_type=None,
@@ -207,13 +230,10 @@ def _run_v4(cfg) -> int:
             gpu=use_gpu, device=device, pretrained_model=base_name.lower(),
         )
     else:
-        local = _resolve_local_model(
-            base_name,
-            extra_roots=cfg.get("extra_roots", []),
-            default_finetune_roots=cfg.get("default_finetune_roots", []),
-        )
+        local = _base_model_path(cfg)
         if local is None:
-            print(f"ERROR:base model '{base_name}' not found locally (v4)")
+            print(f"ERROR:base model '{base_name}' not found locally (v4). "
+                  f"Searched: {_searched(cfg)}")
             return 4
         base_model = models.CellposeModel(
             gpu=use_gpu, device=device, pretrained_model=str(local),
