@@ -13358,6 +13358,11 @@ class BarcodeSeg(Container):
             combo = self.n_model if target == 'n' else self.p_model
             if new_name in combo.choices:
                 combo.value = new_name
+            # The bar that moved during training belongs to the modal dialog.
+            # Leaving this one at 0 once the dialog closes reads as "nothing
+            # happened", which is what people ask about -- so it ends full,
+            # the same way the single-image fine-tune ends.
+            self.progress.value = self.progress.max
             self.status_label.value = (
                 f'Multi-folder fine-tune done: {new_name} '
                 f'(trained on {n_samples} samples). Saved to {new_path}.'
@@ -13365,6 +13370,7 @@ class BarcodeSeg(Container):
             show_info(f'Multi-folder fine-tune done: {new_name} ({n_samples} samples).')
 
         def _err(exc):
+            self.progress.value = 0
             self.status_label.value = f'Multi-folder fine-tune ERROR: {exc}'
             show_warning(f'Multi-folder fine-tune failed: {exc}')
 
