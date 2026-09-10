@@ -339,3 +339,7 @@ Napari_plugin/
 - NaCha finalise: single-frame masks broadcast to the full biosensor stack, with
   per-cell signal inspection.
 - vispy 0x1C crash fix, a backport of napari PR #8122 applied at plugin load.
+
+---
+
+**Enjoy SLIC! 🎉**
