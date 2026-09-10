@@ -144,8 +144,8 @@ searched in the per-sample `_finetune/` folder and `~/.cellpose`.
 
 ## CellposeSAM weights will not download
 
-First use of `cpsam` pulls ~1.15 GB from `cellpose.org`, which is often blocked
-in China.
+First use of `cpsam` pulls ~1.15 GB from `cellpose.org`. If that download is
+blocked:
 
 ```bash
 # either point Cellpose at a mirror
@@ -237,7 +237,7 @@ pip install "napari[all]==0.4.19.post1"
 
 > `UnicodeEncodeError: 'gbk' codec can't encode character '✅'`
 
-A non-UTF-8 Windows console (common with a Chinese system locale) cannot print
+A non-UTF-8 Windows console (common with non-English system locales) cannot print
 npe2's tick marks. Not a plugin problem:
 
 ```bash

@@ -118,8 +118,8 @@ the slot anytime with the env vars `BCFLIM_CELLPOSE_V2_PYTHON` and
 ### CellposeSAM weights (~1.15 GB)
 
 The first time you run a v4 model with the default name `cpsam`,
-Cellpose downloads the weights from `cellpose.org`. **In China this
-download is often blocked.** Two workarounds:
+Cellpose downloads the weights from `cellpose.org`. **If that download is
+blocked**, two workarounds:
 
 ```bash
 # (a) point Cellpose at a HuggingFace mirror
@@ -309,47 +309,48 @@ Napari_plugin/
 
 ## 📜 Changelog
 
-**2026‑04 major update**
+**2026-09 — first public release** (v1.0.1, archived on Zenodo)
 
-- 🆕 **Two Cellpose‑based segmentation widgets** (Barcode Seg, Biosensor Seg)
-  with on‑the‑fly manual editing (right‑click polygon draw, Ctrl+click
-  delete, Z/X toggle, S cycle contrast).
-- 🎓 **Online fine‑tuning** of Cellpose directly from the edited mask —
-  both single‑image (the currently edited sample) and a new
-  **multi‑folder dialog**: pick any number of sample folders, per‑row
-  auto‑detection of the required image / mask pair with ✓ ⚠ ✗ status,
-  trains jointly in one subprocess call.
-- 🧵 **Subprocess isolation for PyTorch / CUDA**: all Cellpose training
-  and inference runs in a child process (`_finetune_runner.py`), so
-  torch and CUDA state are never loaded into the napari main process.
-  This fixes a family of vispy access‑violation crashes on Windows.
-- 🔍 **Persistent custom‑model discovery**: fine‑tuned models are
-  auto‑discovered from the per‑sample `_finetune/` folder, the shared
-  plugin model root, and the `~/.cellpose` cache, **and re‑scanned when
-  the sample folder changes**. Ordering places target‑matching names
-  first, then sorts by modification time.
-- 🎯 **Seeded K-Means classifier** (renamed from "KMeans Cluster" for
-  clarity): explicitly the semi-supervised **Seeded-KMeans** algorithm of
-  Basu et al. 2002 — seeds initialise the class centroids, then the
-  K-Means EM loop refines them. Added alternative methods (K-Means++,
-  MiniBatchKMeans, Gaussian Mixture, Spectral), per-class outlier
-  flagging (Isolation Forest), an optional **whiten by within-cluster
-  spread** pass for seed K-Means (rescales the 5D space by the pooled
-  covariance of the first-pass clusters, no labels used, so a seed set
-  saved on one acquisition transfers to another without the two closest
-  barcodes swapping), and save / load of **class distribution
-  overlays** (convex hulls) with a user-adjustable expansion factor that
-  serve as prior knowledge for manual seeding.
-- 🎉 **NaCha finalise**: auto‑broadcasts single‑frame masks to the full
-  biosensor stack length, Shift‑click per‑cell signal inspection in
-  Revise Mode, and a celebration dialog on final Calculate that reports
-  the total elapsed time from PTU Reader open.
-- 🛠 **vispy 0x1C crash fix**: a backport of napari PR #8122 is applied
-  at plugin load (see `_widget.py` → `_install_vispy_0x1c_patch`), so
-  removing layers on Windows / NVIDIA no longer corrupts the shared GL
-  context. Self‑tests in `walkthrough/` reproduce the add → remove →
-  add pattern stress‑free.
+- Repository published: installable package, agent-readable docs, and the
+  segmentation models archived separately.
+- Default models are resolved against the machine at import, so a name that is
+  not on it no longer reaches the dropdown.
+- The fine-tune base model is resolved in the parent process and passed to the
+  child, so a model the dropdown offers is one training can start from.
+- The model store accepts ordinary folder layouts instead of a hardcoded drive.
+- The segmentation panel reports whether Cellpose will actually use the GPU.
+- Fixed a silent hang when the Cellpose child process failed, and a data-prep
+  path that kept only the last field of view of a sample.
 
----
+**2026-06 / 07**
 
-**Enjoy SLIC! 🎉**
+- Per-head input-kind picker; `cpsam` offered among the builtins.
+- Seeded K-Means: per-FOV mode, optional Harmony calibration to a labelled
+  reference, and classification layers added to napari on save.
+- PTU Reader: re-render dialog when a folder is already complete.
+
+**2026-05**
+
+- Cellpose v2 and v4 side by side, routed automatically by model name.
+- Per-model `config.json`: bring your own model with its own input kind and
+  parameters.
+- Multi-FOV batch runs and post-processing knobs (erode, close holes, dilate,
+  minimum area), with undo.
+- Sample folder, model choice and contrast settings persist across sessions.
+
+**2026-04 — major update**
+
+- Two Cellpose segmentation widgets (Barcode Seg, Biosensor Seg) with manual
+  mask editing.
+- Online fine-tuning from the edited mask, single-image or across any number of
+  sample folders.
+- Cellpose training and inference moved into a child process, which fixed a
+  family of vispy access-violation crashes on Windows.
+- Custom models discovered from the sample folder, the shared model root and the
+  Cellpose cache, re-scanned when the sample folder changes.
+- Seeded K-Means classifier (Basu et al. 2002) with alternative methods, outlier
+  flagging, whitening by within-cluster spread, and saved class-distribution
+  overlays.
+- NaCha finalise: single-frame masks broadcast to the full biosensor stack, with
+  per-cell signal inspection.
+- vispy 0x1C crash fix, a backport of napari PR #8122 applied at plugin load.

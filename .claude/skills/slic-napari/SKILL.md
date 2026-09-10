@@ -58,7 +58,7 @@ Read the one you need; do not read them all.
 | `references/status-and-qc.md` | **Start here for any "where am I / how is it going / does this look right" question.** Runs one read-only script that reports which steps are done, the quality checks with real numbers, and what is outstanding. |
 | `references/workflow.md` | Walking someone through a step, or choosing parameters. Covers all seven widgets, every control, and what each number does. |
 | `references/troubleshooting.md` | Something failed, looks wrong, or produced surprising numbers. |
-| `references/install.md` | Installing, or diagnosing an install: the three-environment design, Cellpose model weights, Qt backends, China-network workarounds. |
+| `references/install.md` | Installing, or diagnosing an install: the three-environment design, Cellpose model weights, Qt backends, mirror workarounds for a blocked download. |
 
 ## Answering well here
 

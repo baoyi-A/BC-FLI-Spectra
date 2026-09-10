@@ -135,8 +135,8 @@ The folder may be flat (`<root>/<name>`), one directory per model
 plugin's own fine-tuning writes (`<root>/<name>/models/<name>`). The widget
 header reports which root it resolved and how many models it found there.
 
-`cpsam` (~1.15 GB) downloads from `cellpose.org` on first use, which is often
-blocked in China:
+`cpsam` (~1.15 GB) downloads from `cellpose.org` on first use. If that
+download is blocked:
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
