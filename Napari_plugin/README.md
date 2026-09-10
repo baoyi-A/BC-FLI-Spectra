@@ -47,15 +47,10 @@ viewer layers on transition, keeping the session clean.
 
 ## ✨ What's new
 
-The current version segments with Cellpose in two dedicated widgets
-(Barcode Seg, Biosensor Seg) with in‑viewer mask editing and online
-fine‑tuning, single‑image or multi‑folder; runs every Cellpose train and
-inference call in an isolated subprocess, so torch and CUDA never load
-into the napari process; ships the classifier as **Seeded K‑Means** with
-alternative methods, per‑class outlier flagging, whitening and saved
-class distribution overlays; and carries a fix for the Windows / NVIDIA
-vispy access‑violation crash. Release‑by‑release detail is in the
-[Changelog](#-changelog) at the bottom of this file.
+The current version adds two Cellpose segmentation widgets with in‑viewer
+editing and online fine‑tuning, runs every Cellpose call in an isolated
+subprocess, and ships the classifier as **Seeded K‑Means**.
+Release‑by‑release detail is in the [Changelog](#-changelog).
 
 ---
 
@@ -65,13 +60,10 @@ vispy access‑violation crash. Release‑by‑release detail is in the
 > <https://baoyi-a.github.io/nacha-demo/>, on the demo dataset, with none of the
 > setup below. The three-environment install described here is for local data.
 
-The plugin runs Cellpose in **subprocess‑isolated child processes** (to
-keep CUDA / OpenGL state out of napari's main process), and Cellpose 2.x
-and 4.x have **incompatible APIs** + different model formats. As a
-result the recommended setup is **three conda envs** — one for napari +
-the plugin, plus one each for cellpose 2 and cellpose 4. The plugin
-auto‑detects which python belongs to which slot, so you don't have to
-configure paths by hand.
+Cellpose 2.x and 4.x have **incompatible APIs** and different model
+formats, and the plugin runs Cellpose in a subprocess, so the setup is
+**three conda envs** — one for napari + the plugin, one each for cellpose
+2 and cellpose 4. The plugin auto‑detects which python belongs to which slot.
 
 ```bash
 # 1️⃣ napari + this plugin (the env you actually launch napari from)
@@ -132,14 +124,11 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"  # PowerShell
 ```
 
 > 📝 Notes
-> • We intentionally do **not** pin a Qt backend (PyQt5 / PySide) in the
->   plugin dependencies to avoid conflicts with other plugins or napari
->   distributions. Install whichever Qt backend napari itself is using.
+> • Install whichever Qt backend napari itself is using; the plugin pins none.
 > • For headless / CI systems prefer `opencv-python-headless`; for
 >   desktop use keep `opencv-python`.
 > • Make sure your CUDA driver / toolkit matches the PyTorch build you
->   install. Cellpose inference and fine‑tuning both accept a `Use GPU`
->   checkbox; if GPU is not available they fall back to CPU.
+>   install.
 > • Track‑Anything has loose torch / CUDA constraints; if its
 >   `requirements.txt` upgrades torch beyond what your driver supports,
 >   pip‑install it with `--no-deps` and resolve dependencies manually.
@@ -153,9 +142,7 @@ conda activate nacha
 napari
 ```
 
-Open the menu **`Plugins → BC‑FLIM‑Spectra`** and pick one of the seven
-widgets. A **Next** button at the bottom of each widget advances to the
-next stage in the canonical workflow order.
+Open the menu **`Plugins → BC‑FLIM‑Spectra`** and pick one of the seven widgets.
 
 ---
 
@@ -172,12 +159,10 @@ on the model:
 | `cpsam` (the v4 builtin)                        | v4         | 3‑channel RGB render |
 | Anything else (incl. `cyto2`, `nuclei`, custom v2) | v2      | 1‑ or 2‑channel grayscale |
 
-Each default is the first name on a candidate list that is actually present on
-this machine. BarcodeSeg tries `NinNC-260328-1` (N) and `CinNC-260328-1` (P)
-first; BiosensorSeg tries `BS-BC-assist-cls-260402-forDense`. Those three are
-the models published with the paper, and all three are v2 → routed to the
-`cellpose2` env. The `…-cpsam-…` names come next on the same lists and are
-v4 → `cellpose4`. **You don't pick the env, the model name does.**
+The defaults are the three models published with the paper, all v2:
+BarcodeSeg uses `NinNC-260328-1` (N) and `CinNC-260328-1` (P), BiosensorSeg
+`BS-BC-assist-cls-260402-forDense`; if one is absent the next candidate
+present on the machine is used. **You don't pick the env, the model name does.**
 
 If the v4 env isn't installed the routing logs a warning and falls back
 to v2. The plugin's status panel in BarcodeSeg shows ✓/✗ per slot at a

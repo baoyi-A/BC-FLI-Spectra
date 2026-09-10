@@ -152,17 +152,11 @@ constant exists in any of the five scripts. If you are unsure of a flag name or 
 default, read the `add_argument` block rather than guessing — `--help` is
 authoritative and cheap to run.
 
-**A flag's default is the value the script shipped with.** That is the whole
-point of the conversion, so "what does it do by default" and "what did the
-original file do" have the same answer for every optional flag. There are two
-kinds of exception. The required path flags have no default at all. And the
-sample lists of `Data_prep.py` and `Test_LUMINA.py` have none either — those two
-write into the folders they are handed, so the choice is `--samples` or
-`--all-samples` and neither is assumed. `Visualize_heatmap.py`'s `--samples` is
-the one that is deliberately *wider* than the shipped file: empty means every
-folder already holding a confident workbook at this threshold, where the shipped
-file plotted whatever short list was left uncommented. Tell a user to pass
-`--samples` explicitly when they want to reproduce a particular figure.
+**`Visualize_heatmap.py`'s `--samples` is the one default that is wider than the
+shipped file**: empty means every folder already holding a confident workbook at
+this threshold, where the shipped file plotted whatever short list was left
+uncommented. Tell a user to pass `--samples` explicitly to reproduce a
+particular figure.
 
 **Class indices are module constants now, in four places.**
 `NU_CLASS_MAP` / `MITO_CLASS_MAP` are written out as module-level literals in

@@ -27,10 +27,9 @@ extracts its signal kinetics.
 ### 🌐 Hosted instance
 
 **<https://baoyi-a.github.io/nacha-demo/>** runs the plugin on the demo dataset
-in a browser, with no local setup. The page starts a cloud machine on demand,
-optionally with a GPU for the segmentation steps, and shuts it down when idle.
-It re-installs from this repository's `main` on every cold start, so it runs the
-published code rather than a snapshot.
+in a browser, with no local setup. It starts a cloud machine on demand and
+re-installs from this repository's `main` on every cold start, so it runs the
+published code.
 
 ## Repository contents
 
@@ -52,9 +51,7 @@ version described in the manuscript.
 ## 1. 🧩 Napari Plugin — Single-Anchor Barcode Analysis
 
 The SLIC napari plugin runs the full workflow, from `.ptu` ingestion through
-segmentation, classification and tracking to alignment and visualization. It is
-distributed as the Python package `bc-flim-spectra` and appears in napari under
-that name; *NaCha* is the label of its final widget.
+segmentation, classification and tracking to alignment and visualization.
 
 **Seven widgets**, listed under `Plugins → bc-flim-spectra`. Each has a blue
 **Next ▶** button that opens the following one, so the workflow chains without
@@ -63,7 +60,7 @@ returning to the menu.
 - 📥 **PTU Reader** — import and decode FLIM `.ptu` files.
 - 🔬 **Barcode Seg (Cellpose)** — N / P segmentation on the barcode intensity image, with online single- or multi-folder fine-tuning.
 - 🌀 **Calculate FLIM-S** — lifetime / phasor computation.
-- 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002 — seeds initialise centroids, then K-Means refines). Also ships K-Means++, MiniBatchKMeans, Gaussian Mixture and Spectral as alternatives; per-class outlier flagging; save / load of class distribution overlays.
+- 🧩 **Seeded K-Means** — semi-supervised barcode classifier (Basu et al. 2002), with per-class outlier flagging. Four alternative clusterers ship alongside it.
 
 
 https://github.com/user-attachments/assets/38b1ef57-20be-4ee5-bfb2-d6bd414d0390
@@ -207,9 +204,9 @@ Quality checks
 
 It checks the decay stacks, the masks, the phasor coordinates against the
 universal semicircle, the lifetimes, the declined fraction, the class sizes, and
-the registration — for which it tries all four rotations and reports coverage
-*and* purity, since coverage alone cannot tell a correct alignment from a wrong
-one. `--json` for scripting; exit status 1 on a failed check, so it gates too.
+the registration — all four rotations, reporting coverage and purity, since
+coverage alone cannot separate a correct alignment from a wrong one. `--json`
+for scripting; exit status 1 on a failed check, so it gates too.
 
 ### 📚 What the assistant reads
 
@@ -238,7 +235,7 @@ at `Napari_plugin/src/flim_s_gen/LICENSE`; it covers those files, not this packa
 
 - These tools are under active development.
 - The manuscript describing the methods has been submitted but not yet published. The DOI will be provided once it becomes available. The schematics above are figure panels from that manuscript.
-- An [instruction video](https://zenodo.org/records/17045806) is available, providing a step-by-step guide on how to use the Napari plugin.
+- The [instruction video](https://zenodo.org/records/17045806) walks through the plugin step by step.
 - The [Dual-Anchor dataset](https://zenodo.org/records/17036213), used for training the LUMINA network, is also provided.
 - The [segmentation models](https://doi.org/10.5281/zenodo.22499321) the plugin loads by default, together with the
   eight models whose performance the manuscript reports, are archived separately.

@@ -1,9 +1,7 @@
 # "Where am I, and does this look right?"
 
-Most people using this plugin are running someone else's protocol on their own
-cells. The questions that come up mid-experiment are not about parameters —
-they are *have I done this bit yet*, *is this number normal*, and *what do I do
-next*. Answer them from the folder, not from memory.
+*Have I done this bit yet*, *is this number normal*, *what do I do next* —
+answer these from the folder, not from memory.
 
 ## Start here, every time
 

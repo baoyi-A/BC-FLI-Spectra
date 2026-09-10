@@ -42,8 +42,8 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 pip install -r requirements.txt
 ```
 
-This environment is independent of the napari plugin's. Nothing here is shared
-with it, so the two can be installed in either order or on their own.
+This environment is independent of the napari plugin's; install either on its own,
+in any order.
 
 ---
 
@@ -52,16 +52,12 @@ with it, so the two can be installed in either order or on their own.
 Run the scripts in this order. Preprocessing must finish before training or
 inference.
 
-Every script is driven by command-line flags — `--help` on any of them lists the
-full set with its defaults. The input and output roots are **required** and carry
-no default, because there is no path that would be right on someone else's
-machine; optional extras such as a second root are empty until you pass them. So
-is the choice of which sample folders to touch, in the two scripts that write into
-them — see `--samples` / `--all-samples` under steps 1 and 3. Every other flag
-defaults to the value the script was developed with, so a run passing only the
-required flags reproduces the reference configuration. Each run
-also writes a `*_run_config.csv` beside its output recording every flag it
-resolved, so a directory of results says what produced it.
+Every script is driven by command-line flags; `--help` lists the full set with
+defaults. The input and output roots are **required**, as is the choice of sample
+folders in the two scripts that write into them (`--samples` / `--all-samples`,
+steps 1 and 3). Every other flag defaults to the reference configuration, so a run
+passing only the required flags reproduces it. Each run writes a
+`*_run_config.csv` beside its output recording every flag it resolved.
 
 ### 1. 🧹 `Data_prep.py` — build the per-cell crops
 
@@ -123,13 +119,12 @@ Writes `predict_class_confident_<threshold>.xlsx` and
 `predict_class_uncertain_<threshold>.xlsx` back into each sample folder. Add
 `--out` to redirect them, `--device cpu` on a machine without a GPU.
 
-Which sample folders it touches is never a default, for the same reason as in
-`Data_prep.py`: name them with `--samples`, or pass `--all-samples` for every
-folder under the root(s) that holds a `clustered.xlsx` or a folder of crops;
-passing neither is an error. Without `--out` the two workbooks are written back
-into each sample folder and overwrite the ones already there, so `--all-samples`
-overwrites them everywhere. The resolved list of destinations is printed one per
-line before the first workbook is written.
+As in `Data_prep.py`, the sample folders are never a default: name them with
+`--samples`, or pass `--all-samples` for every folder under the root(s) holding a
+`clustered.xlsx` or a folder of crops; passing neither is an error. Without
+`--out` the workbooks overwrite the ones already in each sample folder, so
+`--all-samples` overwrites them everywhere. The resolved destinations are printed
+before the first write.
 
 ### 4. 🔥 `Visualize_heatmap.py` — plot the combination heatmap
 
@@ -183,11 +178,10 @@ crops it read for each sample (`seg_5D` or `seg_5D_calib`, see `--seg-folder`)
 and where each sample's labels came from. Read those three lines before reading
 the numbers.
 
-All five scripts take command-line arguments, but here the flags *are* the
-experiment rather than plumbing: `--k`, `--seed`, `--eval-root` and the curation
-flags each move the number that comes out, and several move the denominator
-rather than the score. A result from this script means nothing without them,
-which is why every one is recorded in `finetune_run_config.csv`.
+Here the flags *are* the experiment: `--k`, `--seed`, `--eval-root` and the
+curation flags each move the number that comes out, several by moving the
+denominator rather than the score. All are recorded in
+`finetune_run_config.csv`.
 
 ### The two numbers it prints
 
@@ -200,8 +194,7 @@ For every barcode combination, and overall:
 
 Accuracy is conditional on detection, so a higher threshold buys accuracy by
 shrinking the denominator. Read them as a pair, and compare two settings only at
-matched detection. By default the un-adapted checkpoint is scored on exactly the
-same held-out cells, so the before/after comparison is on identical cells.
+matched detection. By default the un-adapted checkpoint is scored on exactly the same held-out cells.
 
 The heads keep their original width. Your panel may be a subset of the classes
 the checkpoint was trained on, but the barcode names have to be the same names,
@@ -255,11 +248,9 @@ once. Which rows depends on where the oversized crops fall.
 its aspect ratio, and every row is scored on the cell it names. Inference results produced
 before this change should be regenerated rather than audited.
 
-`Train_LUMINA.py` still skips such a crop, and that is deliberate: it is the code that
-produced the published checkpoint, and changing which cells it feeds would make it no longer
-that code. The consequence there is also different in kind. Its loader re-reads the row after
-it advances, so the labels travel with the image and nothing is ever mislabelled — an
-oversized cell is dropped from the epoch and a neighbour takes its place.
+`Train_LUMINA.py` still skips such a crop, deliberately: it is the code that produced the
+published checkpoint. Nothing is mislabelled there — its loader re-reads the row after
+advancing, so an oversized cell is dropped from the epoch and a neighbour takes its place.
 
 ### Samples with more than one field of view
 

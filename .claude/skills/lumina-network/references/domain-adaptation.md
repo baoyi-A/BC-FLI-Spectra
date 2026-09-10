@@ -7,14 +7,9 @@ while the network's decision boundaries stay where they were.
 
 This page describes the adaptation protocol that has been used to move a
 checkpoint onto a new cell line, and the script in this repository that runs it:
-**`LUMINA_classification/Finetune_LUMINA.py`**. All five scripts in the folder
-take flags, so that is not what sets this one apart. What does is that it is the
-only one implementing *this* protocol — *K*-shot support sampling, a confidence
-gate, the within/cross-batch split and seed averaging — and that here the flags
-*are* the experimental design rather than plumbing: a number from this script
-means nothing without the *K*, the seed, the held-out set and the curation that
-produced it, which is why each is a flag and each is echoed into
-`finetune_run_config.csv`. See the last section for what it does *not* cover.
+**`LUMINA_classification/Finetune_LUMINA.py`** — *K*-shot support sampling, a
+confidence gate, the within/cross-batch split and seed averaging. See the last
+section for what it does *not* cover.
 
 ## What actually shifts between cell lines
 
