@@ -298,24 +298,48 @@ Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
 
+**1.1.1 — 2026-09-11**
+
+- The environment records shipped with 1.1.0 could not be installed: pins
+  were taken from `pip list`, which drops the git origins of packages
+  installed from repositories and, with two copies of a package present,
+  can name the copy that never loads. They are now generated from what the
+  interpreter imports, keep git origins, name the PyTorch index, and
+  `release.py locks` refuses to write a record that disagrees with the
+  interpreter. Apply the conda file, then the pip file; `VERSIONING.md`
+  says so.
+- `signal_analysis.xlsx` gains its `_meta` sheet; `clustered.xlsx` records
+  what each run actually did (whitening applied or skipped by its guard,
+  the seed file that was loaded) instead of the widget state at save time;
+  `FLIM-S.xlsx` keeps the previous write's record under `previous.*`;
+  workbooks are written to a temp file and renamed into place, so an
+  interrupted write no longer leaves an empty file.
+- `release.py check` also refuses to tag a commit that already carries
+  another tag, and when the installed plugin does not report the
+  `pyproject.toml` version.
+
 **1.1.0 — 2026-09-11**
 
 - Whitening by within-cluster spread in Seeded K-Means, ported from the
   research fork: a seed set saved on one acquisition transfers to another
   without the two closest barcodes swapping. Default on; auto-skipped when
-  fewer than 8 clusters are populated. **Results differ from 1.0.1**, which is
+  fewer than 8 seeds are claimed by a cluster centre. **Results differ from 1.0.1**, which is
   why this is a MINOR bump; the manuscript's numbers correspond to this version.
 - Loaded seeds initialise K-Means from their own coordinates rather than from
   the nearest cell.
-- Every workbook the plugin writes gains a `_meta` sheet recording the plugin
-  version and the run settings; fine-tuned models record `plugin_version` in
-  `config.json`. Data sheets are unchanged for existing readers.
+- `FLIM-S.xlsx`, `clustered.xlsx`, the seeds file and `Bs2Code.xlsx` gain a
+  `_meta` sheet recording the plugin version and the run settings; fine-tuned
+  models record `plugin_version` in `config.json`. Data sheets are unchanged
+  for existing readers. (`signal_analysis.xlsx` follows in 1.1.1.)
 - One version number: `pyproject.toml` is the source, `flim_s_gen.__version__`
   reads the installed metadata, `scripts/release.py check` keeps the tag and
   this changelog in step; `envs/` holds exact environment records per release.
 - LUMINA: the K-shot domain-adaptation trainer ships; inference scores the
   cell each row asks for even when its crop is oversized; data preparation
   keeps every field of view of a sample.
+- Repository made installable (`pyproject.toml` dependencies completed), with
+  agent-readable docs (`AGENTS.md`, `CLAUDE.md`, `.claude/skills/`), DOI and
+  licence badges, and the segmentation models archived separately.
 - Default models are resolved against the machine at import, so a name that is
   not on it no longer reaches the dropdown.
 - The fine-tune base model is resolved in the parent process and passed to the
@@ -326,9 +350,9 @@ result, PATCH otherwise.
 
 **1.0.1 — 2026-09-01 — first public release**
 
-- Repository published: installable package, agent-readable docs, DOI and
-  licence badges; per-label hole filling and erosion sped up. (`v1.0.0` and
-  `v1.0.1` point at the same commit.)
+- Per-label hole filling and erosion sped up; Python `faulthandler` enabled
+  so a Qt crash leaves a traceback. `v1.0.0` and `v1.0.1` point at the same
+  commit, and `pyproject.toml` still said `0.1.0`.
 
 **2026-06 / 07**
 

@@ -392,8 +392,18 @@ def _plugin_version() -> str:
 
 
 def _meta_value(v):
-    """One cell of the ``_meta`` sheet: scalars as-is, everything else as JSON."""
+    """One cell of the ``_meta`` sheet: scalars as-is, everything else as JSON.
+
+    numpy scalars become Python scalars, arrays become lists, paths become
+    strings, so a value never lands in the sheet as a quoted repr.
+    """
     import json as _json
+    if isinstance(v, np.generic):
+        v = v.item()
+    elif isinstance(v, np.ndarray):
+        v = v.tolist()
+    elif isinstance(v, os.PathLike):
+        v = os.fspath(v)
     if v is None or isinstance(v, (str, int, float, bool)):
         return v
     try:
@@ -402,24 +412,66 @@ def _meta_value(v):
         return str(v)
 
 
-def _to_excel_stamped(df, path, **meta):
+def _meta_rows(**meta):
+    """The rows of a ``_meta`` sheet: version, time, then the run settings."""
+    rows = [('plugin_version', _plugin_version()),
+            ('written_at', datetime.now().isoformat(timespec='seconds'))]
+    rows += [(str(k), _meta_value(v)) for k, v in meta.items()]
+    return pd.DataFrame(rows, columns=['key', 'value'])
+
+
+def _previous_meta_rows(path):
+    """The ``_meta`` rows already in the workbook at ``path``, if any, keyed
+    ``previous.<key>``. Rows that are themselves ``previous.*`` are dropped, so
+    a workbook carries its last two writes, not its whole history."""
+    try:
+        if not os.path.isfile(path):
+            return []
+        old = pd.read_excel(path, sheet_name='_meta')
+        return [('previous.' + str(k), v) for k, v in zip(old['key'], old['value'])
+                if not str(k).startswith('previous.')]
+    except Exception:
+        return []
+
+
+def _to_excel_stamped(df, path, carry_from=None, **meta):
     """Write ``df`` as the first sheet and a ``_meta`` sheet after it.
 
     Every reader in this repository calls ``pd.read_excel(path)`` with no sheet
     argument, which returns the first sheet, so the data sheet is unchanged for
     them. The second sheet records which plugin version wrote the file, when,
     and the settings that produced it (``meta``), so a workbook can be matched
-    to a release and to the parameters of the run that made it. Before this,
-    nothing on disk said which version a FLIM-S.xlsx or clustered.xlsx came
-    from, and the run settings lived only in memory.
+    to a release and to the parameters of the run that made it.
+
+    The write goes to a sibling temp file and is renamed into place only once
+    the workbook is complete: ``pd.ExcelWriter(path)`` truncates its target on
+    open, so writing directly would leave an empty file behind a crash or an
+    interrupted run. ``carry_from`` names a workbook whose existing ``_meta``
+    rows are kept under ``previous.*`` -- used by the FLIM-S merge, where rows
+    from an earlier run survive in the data sheet.
     """
-    rows = [('plugin_version', _plugin_version()),
-            ('written_at', datetime.now().isoformat(timespec='seconds'))]
-    rows += [(str(k), _meta_value(v)) for k, v in meta.items()]
-    meta_df = pd.DataFrame(rows, columns=['key', 'value'])
-    with pd.ExcelWriter(path) as w:
-        df.to_excel(w, sheet_name='Sheet1', index=False)
-        meta_df.to_excel(w, sheet_name='_meta', index=False)
+    meta_df = _meta_rows(**meta)
+    if carry_from:
+        prev = _previous_meta_rows(carry_from)
+        if prev:
+            meta_df = pd.concat([meta_df, pd.DataFrame(prev, columns=['key', 'value'])],
+                                ignore_index=True)
+    path = str(path)
+    # pandas picks the writer engine from the extension, so the temp file must
+    # keep .xlsx: <name>.partial.xlsx beside the target.
+    root, ext = os.path.splitext(path)
+    tmp = root + '.partial' + (ext or '.xlsx')
+    try:
+        with pd.ExcelWriter(tmp, engine='openpyxl') as w:
+            df.to_excel(w, sheet_name='Sheet1', index=False)
+            meta_df.to_excel(w, sheet_name='_meta', index=False)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images):
@@ -2651,7 +2703,7 @@ def Gen_excel_multi(
         combined_df = new_df
 
     _to_excel_stamped(
-        combined_df, save_path, step='Calculate FLIM-S', fov=str(fov),
+        combined_df, save_path, carry_from=save_path, step='Calculate FLIM-S', fov=str(fov),
         channels=run_meta['channels'],
         pulse_freq_mhz=pulse_freq, tau_resolution_ns=tau_resolution,
         peak_offset_bins=peak_offset, end_offset_bins=end_offset, harmonics=harmonics,
@@ -3951,8 +4003,8 @@ class SeededKMeans(Container):
             'reused on another (see the Supplementary Note of the paper). '
             'While ticked, the 5D weight spin '
             'boxes below carry almost nothing. Skipped automatically when '
-            'fewer than 8 clusters are populated (e.g. a dish carrying one '
-            'or two barcodes), and for the non-seed methods.')
+            'fewer than 8 seeds are claimed by a cluster centre (e.g. a dish '
+            'carrying one or two barcodes), and for the non-seed methods.')
         _tt(self.kmeans_per_fov,
             'When ticked, Run K-Means pops a checklist asking which '
             'FOVs to cluster, then runs the chosen Method SEPARATELY '
@@ -4473,6 +4525,7 @@ class SeededKMeans(Container):
         self.seed_indices = []
         self._seed_raw = None
         self._seed_raw_dims = None
+        self._seed_source = None
         self._notify(f"Plot ready for Localization='{loc}'. Select {self.n_clusters.value} seeds then Run K-Means.")
 
     def on_click(self, event):
@@ -4527,6 +4580,7 @@ class SeededKMeans(Container):
         # cells, not from any coordinates loaded earlier.
         self._seed_raw = None
         self._seed_raw_dims = None
+        self._seed_source = None
 
         #
         # self.seeds.append(self.df_scaled[idx])
@@ -4965,6 +5019,7 @@ class SeededKMeans(Container):
         # Keep the loaded coordinates themselves: K-Means starts from them
         # (see run_kmeans); the snapped cells only say where the stars are
         # drawn. Only possible when the file carries every current dim.
+        self._seed_source = str(path)
         if list(dims_in_file) == list(self.dims):
             self._seed_raw = np.asarray(rows, dtype=float).copy()
             self._seed_raw_dims = list(dims_in_file)
@@ -5670,10 +5725,12 @@ class SeededKMeans(Container):
             seeds_required and init_seeds is not None
             and getattr(self, 'selfwhiten_enable', None) and self.selfwhiten_enable.value
         )
+        sw_state = 'not requested' if not want_sw else 'requested'
         if want_sw:
             try:
                 got = self._self_whiten(Xs_sub, labels0, init_seeds, K)
                 if got is None:
+                    sw_state = 'skipped: fewer than 8 seeds claimed by a cluster centre'
                     self._notify(
                         'Whiten by within-cluster spread: skipped, fewer than 8 seeds are '
                         'claimed by a cluster centre (a dish carrying only a few barcodes, or '
@@ -5683,9 +5740,11 @@ class SeededKMeans(Container):
                     Xs_sub, init_seeds, labels1 = got
                     changed = int((labels1 != labels0).sum())
                     labels0 = labels1
+                    sw_state = 'applied (%d of %d cells changed class)' % (changed, len(labels0))
                     self._notify(f'Whitened by within-cluster spread; {changed} of '
                                  f'{len(labels0)} cells changed class.')
             except Exception as e:
+                sw_state = 'failed: %s' % e
                 self._notify(f'Whiten by within-cluster spread failed: {e}. Keeping the '
                              f'original clustering.')
                 traceback.print_exc()
@@ -5700,6 +5759,23 @@ class SeededKMeans(Container):
             'labels0_base': labels0.astype(int).copy(),
             'df_sub_index': df_sub.index.copy(),
             'K': K,
+        }
+        # What this run actually did, per localisation, for the `_meta` sheet of
+        # clustered.xlsx: the widget state at Save time is not the same thing (the
+        # whitening tick can be on while the guard skipped it, and the seed box can
+        # name a file that was never loaded).
+        if not hasattr(self, '_run_log') or not isinstance(self._run_log, dict):
+            self._run_log = {}
+        self._run_log[str(loc)] = {
+            'method': str(method), 'n_clusters': int(K), 'n_cells': int(len(Xs_sub)),
+            'dims': list(self.dims),
+            'weights': [float(x) for x in self._weights_for_dims(self.dims)],
+            'seeds': ('loaded coordinates from %s' % self._seed_source)
+                     if (init_seeds is not None and getattr(self, '_seed_raw', None) is not None
+                         and getattr(self, '_seed_source', None))
+                     else ('selected cells' if init_seeds is not None else 'none (method ignores seeds)'),
+            'whitening': sw_state,
+            'outliers': 'pending',
         }
 
         use_outlier = bool(getattr(self, 'outlier_enable', None) and self.outlier_enable.value)
@@ -5724,8 +5800,13 @@ class SeededKMeans(Container):
                     f'Per-class outliers flagged as 0: {flagged} / {len(cluster_local)} '
                     f'(contamination={contam:.2f})'
                 )
+                self._run_log[str(loc)]['outliers'] = (
+                    'per-cluster IsolationForest, contamination=%.2f, %d flagged' % (contam, flagged))
             except Exception as e:
+                self._run_log[str(loc)]['outliers'] = 'failed: %s' % e
                 self._notify(f'Per-class outlier detection failed: {e}. Keeping all points.')
+        else:
+            self._run_log[str(loc)]['outliers'] = 'off'
 
         df_sub['cluster_local'] = cluster_local
         # tag 只是显示/导出用；cluster 0 = outlier
@@ -5795,6 +5876,10 @@ class SeededKMeans(Container):
         cluster_local = labels0.astype(int) + 1
         contam = float(self.outlier_contam.value)
         use_outlier = bool(self.outlier_enable.value)
+        if hasattr(self, '_run_log') and str(loc) in self._run_log:
+            self._run_log[str(loc)]['outliers'] = (
+                'per-cluster IsolationForest, contamination=%.2f (re-flagged)' % contam
+                if use_outlier and contam > 0 else 'off (re-flagged)')
         if use_outlier and contam > 0:
             try:
                 from sklearn.ensemble import IsolationForest
@@ -6540,6 +6625,18 @@ class SeededKMeans(Container):
             self.df_test_all = self.df_test.copy()
         except Exception:
             pass
+        # Per-FOV runs use no seeds, no whitening and no outlier gate; say so in
+        # the record clustered.xlsx carries, keyed by the FOVs that were fitted.
+        if not hasattr(self, '_run_log') or not isinstance(self._run_log, dict):
+            self._run_log = {}
+        self._run_log['per-FOV'] = {
+            'method': str(method), 'n_clusters': int(self.n_clusters.value),
+            'fovs': [str(f) for f in selected], 'n_fovs_done': int(n_done),
+            'dims': list(self.dims),
+            'weights': [float(x) for x in self._weights_for_dims(self.dims)],
+            'seeds': 'none (per-FOV mode)', 'whitening': 'not available in per-FOV mode',
+            'outliers': 'off',
+        }
 
         self._notify(
             f'Per-FOV K-Means ({method}) done on {n_done}/{len(selected)} '
@@ -6618,13 +6715,8 @@ class SeededKMeans(Container):
                 try:
                     _to_excel_stamped(
                         out, path, step='Seeded K-Means',
-                        method=str(self.method.value), n_clusters=int(self.n_clusters.value),
-                        dims=list(self.dims),
-                        weights=[float(x) for x in self._weights_for_dims(self.dims)],
-                        whiten=bool(self.selfwhiten_enable.value),
-                        outlier_enable=bool(self.outlier_enable.value),
-                        outlier_contamination=float(self.outlier_contam.value),
-                        seeds_file=str(self.seed_file_path.value or ''))
+                        runs=getattr(self, '_run_log', {}) or 'no run recorded in this session',
+                        note='runs = what each localisation\'s Run K-Means / Re-flag actually did')
                 except Exception as e:
                     self._notify(f"Failed to save to {path}: {e}")
                     continue
@@ -7757,6 +7849,15 @@ class Trackrevise(Container):
                 pivot_data['Ratio'] = normalized_ratio
                 stats_ratio = compute_summary_stats(normalized_ratio)
                 stats_ratio.to_excel(writer, sheet_name='Statistics - G-B')
+
+            _meta_rows(step='NaCha signal analysis',
+                       frames=[int(stack_start), int(stack_end) - 1],
+                       basal_frames=[int(basal_frame_start), int(basal_frame_end)],
+                       channels=[c for c, ok in (('B', has_stack_b), ('G', has_stack_g),
+                                                 ('NIR', has_stack_nir)) if ok],
+                       ratio_g_over_b=bool(has_stack_b and has_stack_g and self.ratio_checkbox.value),
+                       bs2code=str(getattr(self, 'Bs2Code_save_path', '') or '')
+                       ).to_excel(writer, sheet_name='_meta', index=False)
 
         self._set_nacha_progress(90, 'Plotting per-class signals...')
         notifications.show_info(f'Saved signal analysis results to {out_excel_path}')

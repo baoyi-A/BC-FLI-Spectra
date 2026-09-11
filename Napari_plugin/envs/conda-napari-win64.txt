@@ -1,4 +1,5 @@
-# bc-flim-spectra 1.1.0 -- conda explicit spec of the napari environment, 2026-09-11
+# bc-flim-spectra 1.1.1 -- conda layer of the 'napari' environment (BC-FLIM), 2026-09-11.
+# conda create -n <name> --file <this file>   then   pip install -r envs/lock-napari-win64.txt
 # This file may be used to create an environment using:
 # $ conda create --name <env> --file <this file>
 # platform: win-64
@@ -111,7 +112,6 @@ https://conda.anaconda.org/conda-forge/win-64/liblapack-3.9.0-5_hd5c7e75_netlib.
 https://repo.anaconda.com/pkgs/main/win-64/libllvm14-14.0.6-h4157e71_3.conda
 https://repo.anaconda.com/pkgs/main/win-64/libpng-1.6.39-h8cc25b3_0.conda
 https://conda.anaconda.org/conda-forge/win-64/libxslt-1.1.39-h3df6e99_0.conda
-https://repo.anaconda.com/pkgs/main/win-64/llvmlite-0.40.0-py310hf2fb9eb_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/locket-1.0.0-py310haa95532_0.conda
 https://conda.anaconda.org/conda-forge/win-64/markupsafe-2.1.5-py310h8d17308_0.conda
 https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_0.conda
@@ -124,7 +124,6 @@ https://repo.anaconda.com/pkgs/main/win-64/packaging-23.0-py310haa95532_0.conda
 https://conda.anaconda.org/conda-forge/noarch/parso-0.8.3-pyhd8ed1ab_0.tar.bz2
 https://conda.anaconda.org/conda-forge/noarch/pickleshare-0.7.5-py_1003.tar.bz2
 https://conda.anaconda.org/conda-forge/noarch/pkgutil-resolve-name-1.3.10-pyhd8ed1ab_1.conda
-https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.2.0-pyhd8ed1ab_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/ply-3.11-py310haa95532_0.conda
 https://conda.anaconda.org/conda-forge/win-64/psutil-5.9.8-py310h8d17308_0.conda
 https://conda.anaconda.org/conda-forge/noarch/pure_eval-0.2.2-pyhd8ed1ab_0.tar.bz2
@@ -251,6 +250,8 @@ https://conda.anaconda.org/conda-forge/win-64/hdbscan-0.8.33-py310h3e78b6c_4.con
 https://conda.anaconda.org/conda-forge/win-64/numcodecs-0.12.1-py310h00ffb61_0.conda
 https://conda.anaconda.org/conda-forge/noarch/zarr-2.17.1-pyhd8ed1ab_0.conda
 https://conda.anaconda.org/conda-forge/win-64/scipy-1.12.0-py310hf667824_2.conda
+https://conda.anaconda.org/conda-forge/noarch/pynndescent-0.5.11-pyhca7485f_0.conda
+https://conda.anaconda.org/conda-forge/win-64/umap-learn-0.5.5-py310h5588dad_1.conda
 https://conda.anaconda.org/conda-forge/win-64/vispy-0.14.2-py310h3e78b6c_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/bottleneck-1.3.5-py310h9128911_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/contourpy-1.0.5-py310h59b6b97_0.conda
@@ -264,14 +265,11 @@ https://repo.anaconda.com/pkgs/main/win-64/mpld3-0.5.9-py310haa95532_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/mkl_fft-1.3.6-py310h4ed8f06_1.conda
 https://repo.anaconda.com/pkgs/main/win-64/mkl_random-1.2.2-py310h4ed8f06_1.conda
 https://repo.anaconda.com/pkgs/main/win-64/numpy-1.23.5-py310h85e1a82_1.conda
-https://repo.anaconda.com/pkgs/main/win-64/numba-0.57.0-py310h4ed8f06_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/numexpr-2.8.4-py310h2cd9be0_1.conda
 https://repo.anaconda.com/pkgs/main/win-64/pywavelets-1.4.1-py310h2bbff1b_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/pandas-1.5.3-py310h4ed8f06_0.conda
-https://conda.anaconda.org/conda-forge/noarch/pynndescent-0.5.11-pyhca7485f_0.conda
 https://repo.anaconda.com/pkgs/main/win-64/scikit-image-0.20.0-py310h3513d60_0.conda
 https://conda.anaconda.org/conda-forge/noarch/napari-0.4.19.post1-pyh9208f05_0.conda
-https://conda.anaconda.org/conda-forge/win-64/umap-learn-0.5.5-py310h5588dad_1.conda
 https://conda.anaconda.org/conda-forge/noarch/napari-tools-menu-0.1.19-pyhd8ed1ab_0.conda
 https://conda.anaconda.org/conda-forge/noarch/napari-workflows-0.2.10-pyhd8ed1ab_0.conda
 https://conda.anaconda.org/conda-forge/noarch/napari-skimage-regionprops-0.10.1-pyhd8ed1ab_0.conda

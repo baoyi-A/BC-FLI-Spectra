@@ -1,9 +1,9 @@
-# bc-flim-spectra 1.1.0 -- the 'cellpose4' environment, frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.20.
-# Exact versions of a working environment: what to install when the ranges in
-# pyproject.toml no longer resolve to something that runs. pip form:
-#   pip install -r envs/lock-cellpose4-win64.txt
-# The conda form of the same environment is envs/conda-cellpose4-win64.txt
-# (conda create -n <name> --file envs/conda-cellpose4-win64.txt).
+# bc-flim-spectra 1.1.1 -- pip layer of the 'cellpose4' environment (cellpose4), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.20.
+# What the interpreter imports on top of the conda layer in envs/conda-cellpose4-win64.txt.
+# Apply the conda file first, then:   pip install -r envs/lock-cellpose4-win64.txt
+# torch and friends carry a +cu117 tag and come from the PyTorch index below, not PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu117
+# Lines with " @ git+" are packages installed from a repository at a fixed commit.
 annotated-doc==0.0.4
 anyio==4.13.0
 cellpose==4.1.1
@@ -41,14 +41,12 @@ networkx==3.4.2
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
 openpyxl==3.1.5
-packaging==26.2
 pandas==2.3.3
 pillow==12.1.1
-pip==26.0.1
 Pygments==2.20.0
 pyparsing==3.3.2
-PyQt6==6.11.0
 PyQt6-Qt6==6.11.1
+PyQt6==6.11.0
 PyQt6_sip==13.11.1
 pyqtgraph==0.14.0
 python-dateutil==2.9.0.post0
