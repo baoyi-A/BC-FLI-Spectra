@@ -1,14 +1,14 @@
+# The installed package metadata is the only source of the version: it is what
+# pyproject.toml declared when this checkout was installed. A stale generated
+# _version.py used to take precedence and reported a 2025 dev build.
 try:
-    from ._version import version as __version__
-except ImportError:
+    from importlib.metadata import version as _ilm_version, PackageNotFoundError
     try:
-        from importlib.metadata import version as _ilm_version, PackageNotFoundError
-        try:
-            __version__ = _ilm_version("bc-flim-spectra")
-        except PackageNotFoundError:
-            __version__ = "unknown"
-    except ImportError:
+        __version__ = _ilm_version("bc-flim-spectra")
+    except PackageNotFoundError:
         __version__ = "unknown"
+except ImportError:
+    __version__ = "unknown"
 
 # Enable Python faulthandler so that a future Qt fast-fail / segfault /
 # stack overrun dumps the full C-Python stack into a file BEFORE the

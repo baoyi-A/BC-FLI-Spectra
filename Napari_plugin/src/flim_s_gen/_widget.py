@@ -378,6 +378,50 @@ def _run_infer_subprocess(
                        f'(exit={proc.returncode}); tail: {out[-500:]}')
 
 
+def _plugin_version() -> str:
+    """Version of the installed package, for stamping outputs.
+
+    Read from package metadata rather than from ``flim_s_gen.__version__`` so
+    this module does not import its own package (``__init__`` imports us).
+    """
+    try:
+        from importlib.metadata import version as _v
+        return _v("bc-flim-spectra")
+    except Exception:
+        return "unknown"
+
+
+def _meta_value(v):
+    """One cell of the ``_meta`` sheet: scalars as-is, everything else as JSON."""
+    import json as _json
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    try:
+        return _json.dumps(v, ensure_ascii=False, default=str)
+    except Exception:
+        return str(v)
+
+
+def _to_excel_stamped(df, path, **meta):
+    """Write ``df`` as the first sheet and a ``_meta`` sheet after it.
+
+    Every reader in this repository calls ``pd.read_excel(path)`` with no sheet
+    argument, which returns the first sheet, so the data sheet is unchanged for
+    them. The second sheet records which plugin version wrote the file, when,
+    and the settings that produced it (``meta``), so a workbook can be matched
+    to a release and to the parameters of the run that made it. Before this,
+    nothing on disk said which version a FLIM-S.xlsx or clustered.xlsx came
+    from, and the run settings lived only in memory.
+    """
+    rows = [('plugin_version', _plugin_version()),
+            ('written_at', datetime.now().isoformat(timespec='seconds'))]
+    rows += [(str(k), _meta_value(v)) for k, v in meta.items()]
+    meta_df = pd.DataFrame(rows, columns=['key', 'value'])
+    with pd.ExcelWriter(path) as w:
+        df.to_excel(w, sheet_name='Sheet1', index=False)
+        meta_df.to_excel(w, sheet_name='_meta', index=False)
+
+
 def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images):
     """Record how a fine-tuned model was trained, next to the weights.
 
@@ -396,6 +440,7 @@ def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images
             'input_kind': input_kind,
             'trained_from': str(base_name),
             'trained_on_images': int(n_images),
+            'plugin_version': _plugin_version(),
         }
         dest.write_text(json.dumps(payload, indent=2), encoding='utf-8')
         print(f'[finetune] wrote {dest} (input_kind={input_kind})')
@@ -2605,7 +2650,15 @@ def Gen_excel_multi(
     else:
         combined_df = new_df
 
-    combined_df.to_excel(save_path, index=False)
+    _to_excel_stamped(
+        combined_df, save_path, step='Calculate FLIM-S', fov=str(fov),
+        channels=run_meta['channels'],
+        pulse_freq_mhz=pulse_freq, tau_resolution_ns=tau_resolution,
+        peak_offset_bins=peak_offset, end_offset_bins=end_offset, harmonics=harmonics,
+        mask_int_thres=mask_int_thres, pixel_int_thres=pixel_int_thres,
+        n_rows=int(len(combined_df)), n_new=run_meta['n_new'], n_kept=run_meta['n_kept'],
+        note='settings are those of the most recent write; rows kept from earlier'
+             ' FOV runs may have been produced with other settings')
     print(f'Excel file saved at {save_path} ({len(combined_df)} rows total, '
           f'{combined_df["FOV"].nunique() if "FOV" in combined_df.columns else "?"} FOVs)')
     return _with_meta(combined_df)
@@ -4614,7 +4667,8 @@ class SeededKMeans(Container):
             seed_df = self.df_test.iloc[self.seed_indices][self.dims].copy()
             src_txt = 'the cells under the stars'
         seed_df.insert(0, "seed_id", np.arange(1, len(seed_df) + 1))
-        seed_df.to_excel(path, index=False)
+        _to_excel_stamped(seed_df, path, step='Seeded K-Means seeds',
+                          dims=list(self.dims), n_seeds=int(len(seed_df)), source=src_txt)
 
         self._notify(f"Seeds saved to {path}: {src_txt}.")
         try:
@@ -5300,7 +5354,11 @@ class SeededKMeans(Container):
         try:
             sample_folder = Path(str(self.sample_folder.value))
             out_path = sample_folder / 'clustered.xlsx'
-            self.df_test.to_excel(out_path, index=False)
+            _to_excel_stamped(
+                self.df_test, out_path, step='Harmony calibration',
+                reference_csv=str(self.harmony_ref_csv.value),
+                theta=float(self.harmony_theta.value), nclust=int(self.harmony_nclust.value),
+                knn_k=int(self.harmony_knn_k.value))
             assigned = int((self.df_test['cluster_local'] > 0).sum())
             self.save_status.value = (
                 f'Harmony done. {assigned}/{len(self.df_test)} cells labelled. '
@@ -6558,7 +6616,15 @@ class SeededKMeans(Container):
                 _set_progress(pct('confirmed'), f'[{base}] writing {filename}...')
 
                 try:
-                    out.to_excel(path, index=False)
+                    _to_excel_stamped(
+                        out, path, step='Seeded K-Means',
+                        method=str(self.method.value), n_clusters=int(self.n_clusters.value),
+                        dims=list(self.dims),
+                        weights=[float(x) for x in self._weights_for_dims(self.dims)],
+                        whiten=bool(self.selfwhiten_enable.value),
+                        outlier_enable=bool(self.outlier_enable.value),
+                        outlier_contamination=float(self.outlier_contam.value),
+                        seeds_file=str(self.seed_file_path.value or ''))
                 except Exception as e:
                     self._notify(f"Failed to save to {path}: {e}")
                     continue
@@ -7937,7 +8003,12 @@ class Trackrevise(Container):
     def save_alignment_info(self, alignment_info):
         df = pd.DataFrame(alignment_info, columns=['Tracking Mask Index', 'Class'])
         self.Bs2Code_save_path = os.path.join(self.base_folder, 'Bs2Code.xlsx')
-        df.to_excel(self.Bs2Code_save_path, index=False)
+        _to_excel_stamped(
+            df, self.Bs2Code_save_path, step='NaCha align',
+            align_threshold_pct=int(self.align_thres_percent.value),
+            align_frame=int(self.align_mask_frame.value),
+            resize=int(self.classification_resize.value),
+            rotate=str(self.classification_rotate.value))
         print(f'Saved alignment information to {self.Bs2Code_save_path}')
         notifications.show_info(f'Saved alignment information to {self.Bs2Code_save_path}')
 
