@@ -4354,6 +4354,10 @@ class SeededKMeans(Container):
                 dfs_test.append(df)
 
         self.df_test_all = pd.concat(dfs_test, ignore_index=True) if dfs_test else None
+        # A new table means new runs: the record clustered.xlsx carries must not
+        # describe K-Means runs made on whatever was loaded before.
+        self._run_log = {}
+        self._last_run = None
         if self.df_test_all is None or len(self.df_test_all) == 0:
             print('No test data loaded.')
             return
@@ -4775,7 +4779,9 @@ class SeededKMeans(Container):
                 regions[cid] = per_pair
 
         np.savez(path, regions=np.asarray(regions, dtype=object),
-                 pairs=np.asarray([f'{a}|{b}' for a, b in pairs], dtype=object))
+                 pairs=np.asarray([f'{a}|{b}' for a, b in pairs], dtype=object),
+                 plugin_version=np.asarray(_plugin_version()),
+                 written_at=np.asarray(datetime.now().isoformat(timespec='seconds')))
         self._notify(f'Distribution saved to {path} (clusters: {sorted(regions.keys())})')
         try:
             self.dist_file_path.value = path
@@ -5078,6 +5084,12 @@ class SeededKMeans(Container):
             except Exception:
                 self._seed_raw = None
                 self._seed_raw_dims = None
+        # The record must say the file was edited by hand after loading.
+        src = getattr(self, '_seed_source', None)
+        if src:
+            note = '; seed %d dragged to cell #%d' % (self._drag_artist_idx + 1, new_idx)
+            if note not in src:
+                self._seed_source = src + note
         # redraw that seed's star on EVERY panel at the new cell (the drag
         # happened on one panel, but the seed is one cell for all of them)
         row = self.df_test.iloc[new_idx]
@@ -5545,11 +5557,15 @@ class SeededKMeans(Container):
         Xa = np.asarray(X, dtype=float)
         have = [k for k in range(K) if int((idx == k).sum()) >= min_cells]
         if len(have) < min_classes:
+            self._sw_skip_reason = ('fewer than %d clusters hold at least %d cells (%d do)'
+                                    % (min_classes, min_cells, len(have)))
             return None
         cent = np.vstack([Xa[idx == k].mean(0) for k in have])
         claimed = np.unique(
             np.linalg.norm(cent[:, None, :] - seeds_a[None, :, :], axis=2).argmin(1))
         if len(claimed) < min_classes:
+            self._sw_skip_reason = ('fewer than %d distinct seeds are claimed by a cluster centre (%d are)'
+                                    % (min_classes, len(claimed)))
             return None
         Wm = self._within_cluster_whitener(Xa, idx)
         Xw = Xa @ Wm
@@ -5730,7 +5746,7 @@ class SeededKMeans(Container):
             try:
                 got = self._self_whiten(Xs_sub, labels0, init_seeds, K)
                 if got is None:
-                    sw_state = 'skipped: fewer than 8 seeds claimed by a cluster centre'
+                    sw_state = 'skipped: ' + getattr(self, '_sw_skip_reason', 'guard')
                     self._notify(
                         'Whiten by within-cluster spread: skipped, fewer than 8 seeds are '
                         'claimed by a cluster centre (a dish carrying only a few barcodes, or '
@@ -5770,10 +5786,8 @@ class SeededKMeans(Container):
             'method': str(method), 'n_clusters': int(K), 'n_cells': int(len(Xs_sub)),
             'dims': list(self.dims),
             'weights': [float(x) for x in self._weights_for_dims(self.dims)],
-            'seeds': ('loaded coordinates from %s' % self._seed_source)
-                     if (init_seeds is not None and getattr(self, '_seed_raw', None) is not None
-                         and getattr(self, '_seed_source', None))
-                     else ('selected cells' if init_seeds is not None else 'none (method ignores seeds)'),
+            'seeds': ((init_src.strip(' ()') + ((' from ' + self._seed_source) if getattr(self, '_seed_source', None) else ''))
+                      if init_seeds is not None else 'none (method ignores seeds)'),
             'whitening': sw_state,
             'outliers': 'pending',
         }
@@ -5876,10 +5890,11 @@ class SeededKMeans(Container):
         cluster_local = labels0.astype(int) + 1
         contam = float(self.outlier_contam.value)
         use_outlier = bool(self.outlier_enable.value)
-        if hasattr(self, '_run_log') and str(loc) in self._run_log:
-            self._run_log[str(loc)]['outliers'] = (
-                'per-cluster IsolationForest, contamination=%.2f (re-flagged)' % contam
-                if use_outlier and contam > 0 else 'off (re-flagged)')
+        def _log_outliers(text):
+            if hasattr(self, '_run_log') and str(loc) in self._run_log:
+                self._run_log[str(loc)]['outliers'] = text
+        if not (use_outlier and contam > 0):
+            _log_outliers('off (re-flagged)')
         if use_outlier and contam > 0:
             try:
                 from sklearn.ensemble import IsolationForest
@@ -5900,7 +5915,10 @@ class SeededKMeans(Container):
                     f'Re-flag outliers: {flagged} / {len(cluster_local)} flagged '
                     f'(contamination={contam:.2f})'
                 )
+                _log_outliers('per-cluster IsolationForest, contamination=%.2f, %d flagged (re-flagged)'
+                              % (contam, flagged))
             except Exception as e:
+                _log_outliers('failed on re-flag: %s (previous labels kept)' % e)
                 self._notify(f'Outlier detection failed: {e}')
                 return
 
@@ -7588,11 +7606,13 @@ class Trackrevise(Container):
             # Build default alignment: every cell_id maps to class 1
             idx = np.arange(1, self.num_masks + 1)
             alignment_info = pd.DataFrame({'Class': 1}, index=idx)
+            alignment_source = 'default: every cell class 1 (no Bs2Code.xlsx)'
         else:
             # Normal path: read the provided Excel
             df = pd.read_excel(self.Bs2Code_save_path)
             df = df[['Tracking Mask Index', 'Class']].set_index('Tracking Mask Index')
             alignment_info = df
+            alignment_source = str(self.Bs2Code_save_path)
 
         out_excel_path = os.path.join(self.base_folder, 'signal_analysis.xlsx')
         # If the Excel file already exists, ask user if they want to overwrite it.
@@ -7695,7 +7715,15 @@ class Trackrevise(Container):
         pivot_data = {}
 
         self._set_nacha_progress(15, 'Opening Excel writer + extracting intensities...')
-        with pd.ExcelWriter(out_excel_path) as writer:
+        # Written beside the target and renamed in once complete, so a failure in
+        # a later channel cannot leave a truncated workbook (see _to_excel_stamped).
+        out_partial = os.path.splitext(out_excel_path)[0] + '.partial.xlsx'
+        if os.path.exists(out_partial):
+            try:
+                os.remove(out_partial)
+            except OSError:
+                pass
+        with pd.ExcelWriter(out_partial, engine='openpyxl') as writer:
             # if stack_end < stack length, pop out warning
             if stack_end < self.viewer.layers['Masks'].data.shape[0]:
                 notifications.show_warning(f'using only frames {stack_start} to {stack_end - 1} of the Masks stack, '
@@ -7856,8 +7884,11 @@ class Trackrevise(Container):
                        channels=[c for c, ok in (('B', has_stack_b), ('G', has_stack_g),
                                                  ('NIR', has_stack_nir)) if ok],
                        ratio_g_over_b=bool(has_stack_b and has_stack_g and self.ratio_checkbox.value),
-                       bs2code=str(getattr(self, 'Bs2Code_save_path', '') or '')
+                       alignment=alignment_source
                        ).to_excel(writer, sheet_name='_meta', index=False)
+        os.replace(out_partial, out_excel_path)
+        # (a failure inside the block above leaves the previous signal_analysis.xlsx
+        # untouched; the partial file is removed on the next successful write)
 
         self._set_nacha_progress(90, 'Plotting per-class signals...')
         notifications.show_info(f'Saved signal analysis results to {out_excel_path}')

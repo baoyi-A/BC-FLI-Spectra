@@ -1,15 +1,39 @@
-# bc-flim-spectra 1.1.1 -- pip layer of the 'napari' environment (BC-FLIM), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.13.
-# What the interpreter imports on top of the conda layer in envs/conda-napari-win64.txt.
-# Apply the conda file first, then:   pip install -r envs/lock-napari-win64.txt
+# bc-flim-spectra 1.1.2 -- pip layer of the 'napari' environment (BC-FLIM), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.13.
+# The copies the interpreter actually imports, on top of the conda layer in
+# envs/conda-napari-win64.txt. Apply the conda file first, then exactly:
+#   pip install --no-deps -r envs/lock-napari-win64.txt
+# (--no-deps: the record is complete; this is the form it was validated with.)
 # torch and friends carry a +cu117 tag and come from the PyTorch index below, not PyPI.
 --extra-index-url https://download.pytorch.org/whl/cu117
 # Lines with " @ git+" are packages installed from a repository at a fixed commit.
-# Present on the freezing machine but not recorded (editable checkouts and
-# local-only packages; the plugin does not need them):
+# Names with more than one copy on the freezing machine; the record is the copy
+# whose files the interpreter imports:
+#   certifi: copies 2022.12.7, 2024.12.14; 2024.12.14 imports (by __version__)
+#   charset-normalizer: copies 2.0.4, 3.3.2; 3.3.2 imports (by __version__)
+#   jinja2: copies 3.1.2, 3.1.3; 3.1.3 imports (by __version__)
+#   magicgui: copies 0.8.1, 0.8.2; 0.8.1 imports (by __version__)
+#   markupsafe: copies 2.1.2, 2.1.5; 2.1.5 imports (by __version__)
+#   minisom: copies 2.3.0, 2.3.3; 2.3.0 imports (by RECORD hash)
+#   msgpack: copies 1.0.5, 1.0.7; 1.0.7 imports (by __version__)
+#   networkx: copies 2.8.4, 3.0; 2.8.4 imports (by __version__)
+#   pandas: copies 1.5.3, 2.0.2; 1.5.3 imports (by __version__)
+#   pillow: copies 10.4.0, 9.3.0; 10.4.0 imports (by __version__)
+#   prompt-toolkit: copies 3.0.42, 3.0.43; 3.0.42 imports (by __version__)
+#   psutil: copies 5.9.5, 5.9.8; 5.9.8 imports (by __version__)
+#   pynndescent: copies 0.5.10, 0.5.11; 0.5.10 imports (by __version__)
+#   pyopengl: copies 3.1.6, 3.1.7; 3.1.6 imports (by __version__)
+#   pytz: copies 2022.7, 2026.1.post1; 2026.1.post1 imports (by __version__)
+#   pywin32: 306 installed twice (same version)
+#   requests: copies 2.28.1, 2.29.0; 2.29.0 imports (by __version__)
+#   scipy: copies 1.11.1, 1.12.0; 1.12.0 imports (by __version__)
+#   stack-data: copies 0.6.2, 0.6.3; 0.6.2 imports (by __version__)
+#   tqdm: copies 4.66.1, 4.66.2; 4.66.2 imports (by __version__)
+#   umap-learn: copies 0.5.4, 0.5.5; 0.5.4 imports (by __version__)
+#   urllib3: copies 1.26.13, 1.26.15; 1.26.15 imports (by __version__)
+# Present on the freezing machine but not recorded (the plugin does not need them):
 #   -e file:///D:/PKU_STUDY/SynologyDrive/BaoyiWang/BC-FLIM/Cutie/Cutie-main  (cutie 1.0.0: editable checkout)
-#   Cython==0.29.37  (installed from file:///D:/bld/cython_1702977946009/work: not on an index)
-#   PhasorPy==1.0.2  (no index has this version; installed from a local build)
-#   PySimpleGUI==5.0.10  (no index has this version; installed from a local build)
+#   PhasorPy==1.0.2  (not resolvable from the configured indexes)
+#   PySimpleGUI==5.0.10  (not resolvable from the configured indexes)
 absl-py==2.1.0
 aiofiles==23.2.1
 aiohttp==3.9.5
@@ -28,10 +52,8 @@ anndata==0.10.8
 antlr-denter==1.3.1
 antlr4-python3-runtime==4.9.3
 anyio==4.3.0
-appdirs==1.4.4
 array_api_compat==1.7.1
 arrow==1.3.0
-asciitree==0.3.3
 asteval==0.9.32
 async-timeout==4.0.3
 automata-lib==8.4.0
@@ -45,12 +67,11 @@ boto3==1.40.53
 botocore==1.40.53
 brainglobe-atlasapi==2.1.0
 brainglobe_space==1.0.3
-brotlipy==0.7.0
 cached_method==0.1.0
 cchardet==2.1.7
-certifi==2022.12.7
 cfgv==3.4.0
 chardet==5.2.0
+charset-normalizer==3.3.2
 chex==0.1.86
 choreographer==1.3.0
 click-log==0.4.0
@@ -83,7 +104,6 @@ ffmpy==0.3.2
 filelock==3.13.1
 flax==0.8.5
 flimlib==2.2.3
-fonttools==4.25.0
 frozendict==2.4.4
 frozenlist==1.4.1
 fsspec==2024.3.1
@@ -113,7 +133,6 @@ ipython==8.12.3
 jax==0.4.30
 jaxlib==0.4.30
 jgo==1.0.5
-Jinja2==3.1.2
 jmespath==0.10.0
 JPype1==1.4.1
 jupyterlab_pygments==0.3.0
@@ -131,22 +150,18 @@ lxml_html_clean==0.1.1
 lz4==4.4.5
 markdown-it-py==2.2.0
 Markdown==3.6
-MarkupSafe==2.1.2
 mdit-py-plugins==0.3.3
 meshio==5.3.5
 mistune==3.1.3
 mkl-fft==1.3.6
-mkl-service==2.4.0
 ml-collections==0.1.1
 ml-dtypes==0.4.0
 model-index==0.1.11
 moviepy==1.0.3
 mpmath==1.2.1
-msgpack==1.0.5
 mudata==0.2.4
 multidict==6.0.5
 multipledispatch==1.0.0
-munkres==1.1.4
 napari-plugin-manager==0.1.0a2
 narwhals==2.24.0
 nbclient==0.10.2
@@ -176,17 +191,14 @@ pandocfilters==1.5.1
 patsy==0.5.6
 phconvert==0.8.2
 pillow==10.4.0
-pip==23.0.1
 pipreqs==0.5.0
 platformdirs==4.11.0
 plotly==6.9.0
-ply==3.11
 portalocker==3.2.0
 pre-commit==3.6.2
 proglog==0.1.10
 progressbar2==4.4.2
 protobuf==5.27.0
-psutil==5.9.5
 ptufile==2024.4.24
 py-cpuinfo==9.0.0
 pyarrow==25.0.0
@@ -211,12 +223,11 @@ python-multipart==0.0.9
 python-slugify==8.0.4
 python-utils==3.8.2
 pytorch-lightning==2.3.2
+pytz==2026.1.post1
 pyvers==0.2.2
-pywin32==306
 read-roi==1.6.0
 readlif==0.6.5
 regex==2026.4.4
-requests==2.28.1
 roifile==2025.5.10
 rsa==4.9.1
 Rtree==1.2.0
@@ -224,14 +235,12 @@ s3transfer==0.14.0
 safetensors==0.4.3
 scanpy==1.10.2
 scikit-learn==1.7.2
-scipy==1.11.1
 scvi-tools==1.1.5
 scyjava==1.9.1
 seaborn==0.13.2
 segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@6fdee8f2727f4506cfbbe553e23b895e27956588
 semantic-version==2.10.0
 session-info==1.0.0
-setuptools==67.8.0
 shapely==2.0.3
 shiboken6==6.7.2
 simpleitk==2.5.5
@@ -259,7 +268,6 @@ torch==2.0.1+cu117
 torchaudio==2.0.2+cu117
 torchmetrics==1.4.0.post0
 torchvision==0.15.2+cu117
-tqdm==4.66.1
 trattoria-core==0.4.6
 trattoria==0.3.7
 treelib==1.8.0
@@ -273,17 +281,14 @@ uc-micro-py==1.0.3
 ultralytics==8.0.120
 umap-learn==0.5.4
 uncertainties==3.1.7
-urllib3==1.26.13
 uvicorn==0.29.0
 virtualenv==20.25.1
 webencodings==0.5.1
 websocket-client==1.9.0
 websockets==11.0.3
 Werkzeug==3.0.3
-wheel==0.38.4
 xarray==2023.7.0
 xlrd==2.0.1
 XlsxWriter==3.2.0
-xlwt==1.3.0
 yarg==0.1.9
 yarl==1.9.4

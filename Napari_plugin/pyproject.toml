@@ -24,7 +24,7 @@ classifiers = [
 ]
 # The one place the version lives. `python scripts/release.py check` verifies the
 # git tag and the changelog agree with it; see VERSIONING.md at the repo root.
-version = "1.1.1"
+version = "1.1.2"
 # Runtime deps read by pip install . / -e .
 dependencies = [
   # Upper bound is real: napari >= 0.5 removed QtViewer._remove_layer, which the
@@ -34,7 +34,10 @@ dependencies = [
   "scipy>=1.12",
   "scikit-image>=0.20",
   "scikit-learn>=1.2",
-  "pandas>=2.0,<2.2",
+  # Lower bound is what the release was verified on: the verifying environment
+  # imports pandas 1.5.3 (see envs/conda-napari-win64.txt). The upper bound is
+  # untested territory, not a known break.
+  "pandas>=1.5,<2.2",
   "opencv-python>=4.10",
   "tifffile>=2021.7",
   "pillow>=10.4",

@@ -298,6 +298,26 @@ Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
 
+**1.1.2 — 2026-09-11**
+
+- Environment records, third time: with two copies of a package installed
+  (conda's and pip's, in one `site-packages`), `importlib.metadata` lists
+  them in directory order, so 1.1.1 still recorded the copy that does not
+  load for eleven packages. The copy that imports is now identified by its
+  `__version__`, then by the file hash `RECORD` holds for the imported
+  module, and the tool refuses to write when it cannot tell. The documented
+  install command is the validated one, `pip install --no-deps -r …`, and
+  the plugin step is `pip install --no-deps -e .`; the tool also refuses
+  when the record violates `pyproject.toml`'s own ranges.
+- `pandas>=2.0` in `pyproject.toml` was never true of the verifying
+  environment, which imports 1.5.3; the lower bound is now `>=1.5`.
+- `signal_analysis.xlsx` is written to a temp file and renamed in like the
+  others, and its `_meta` says whether classes came from `Bs2Code.xlsx` or
+  from the every-cell-class-1 fallback. The class-distribution `.npz`
+  carries `plugin_version`. The `clustered.xlsx` record starts over when a
+  new table is loaded, says which whitening guard skipped a run, records a
+  re-flag only after it succeeds, and notes seeds dragged after loading.
+
 **1.1.1 — 2026-09-11**
 
 - The environment records shipped with 1.1.0 could not be installed: pins
@@ -312,8 +332,9 @@ result, PATCH otherwise.
   what each run actually did (whitening applied or skipped by its guard,
   the seed file that was loaded) instead of the widget state at save time;
   `FLIM-S.xlsx` keeps the previous write's record under `previous.*`;
-  workbooks are written to a temp file and renamed into place, so an
-  interrupted write no longer leaves an empty file.
+  the four workbooks written through the shared writer go to a temp file
+  and are renamed into place, so an interrupted write no longer leaves an
+  empty file (`signal_analysis.xlsx` follows in 1.1.2).
 - `release.py check` also refuses to tag a commit that already carries
   another tag, and when the installed plugin does not report the
   `pyproject.toml` version.
@@ -333,7 +354,8 @@ result, PATCH otherwise.
   for existing readers. (`signal_analysis.xlsx` follows in 1.1.1.)
 - One version number: `pyproject.toml` is the source, `flim_s_gen.__version__`
   reads the installed metadata, `scripts/release.py check` keeps the tag and
-  this changelog in step; `envs/` holds exact environment records per release.
+  this changelog in step; `envs/` holds environment records per release (the
+  1.1.0 records were not installable; see 1.1.1 and 1.1.2).
 - LUMINA: the K-shot domain-adaptation trainer ships; inference scores the
   cell each row asks for even when its crop is oversized; data preparation
   keeps every field of view of a sample.

@@ -1,5 +1,5 @@
-# bc-flim-spectra 1.1.1 -- conda layer of the 'cellpose4' environment (cellpose4), 2026-09-11.
-# conda create -n <name> --file <this file>   then   pip install -r envs/lock-cellpose4-win64.txt
+# bc-flim-spectra 1.1.2 -- conda layer of the 'cellpose4' environment (cellpose4), 2026-09-11.
+# conda create -n <name> --file <this file>   then   pip install --no-deps -r envs/lock-cellpose4-win64.txt
 # This file may be used to create an environment using:
 # $ conda create --name <env> --file <this file>
 # platform: win-64

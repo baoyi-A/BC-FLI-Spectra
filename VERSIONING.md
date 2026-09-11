@@ -13,9 +13,9 @@ tag until they do:
 
 | Place | Form | Who reads it |
 |---|---|---|
-| `Napari_plugin/pyproject.toml` | `version = "1.1.1"` | pip, `flim_s_gen.__version__`, every output file |
-| git tag | `v1.1.1` on the released commit | `pip install git+...@v1.1.1`, rollback |
-| `Napari_plugin/README.md` → Changelog | `**1.1.1 — 2026-09-11**` heading | people |
+| `Napari_plugin/pyproject.toml` | `version = "1.1.2"` | pip, `flim_s_gen.__version__`, the `_meta` sheets |
+| git tag | `v1.1.2` on the released commit | `pip install "git+https://github.com/baoyi-A/BC-FLI-Spectra.git@v1.1.2#subdirectory=Napari_plugin"`, rollback |
+| `Napari_plugin/README.md` → Changelog | `**1.1.2 — 2026-09-11**` heading | people |
 
 Zenodo carries the same number as its record version, with one DOI per
 release and one concept DOI that always resolves to the latest.
@@ -51,7 +51,7 @@ project:
 
 When in doubt between two levels, take the higher one.
 
-## What every output file records
+## What the output files record
 
 The workbooks the plugin writes — `FLIM-S.xlsx`, `clustered.xlsx` (both
 the Seeded K-Means and the Harmony path), the seeds file, `Bs2Code.xlsx` and
@@ -69,9 +69,16 @@ keeps the others), so its `_meta` sheet describes the most recent write and
 carries the previous write's rows under `previous.*`; rows from older runs
 than that are described only by the data they contain.
 
-A file can therefore be matched to a release and to the run that produced
-it, and a MAJOR version can tell an old file from a new one and convert it
-instead of misreading it. Files written before 1.1.0 have no `_meta` sheet.
+The class-distribution `.npz` carries `plugin_version` and `written_at` as
+arrays. Fine-tuned models carry `plugin_version` in `config.json`. Nothing
+else the plugin writes is stamped: the per-FOV masks (`*_seg_n.npy`, the
+`-cls.tif` class maps, tracking masks) and the rendered images identify
+themselves only through the workbook of the run that made them.
+
+A stamped file can therefore be matched to a release and to the run that
+produced it, and a MAJOR version can tell an old file from a new one and
+convert it instead of misreading it. Files written before 1.1.0 have no
+`_meta` sheet; `signal_analysis.xlsx` and the `.npz` are stamped from 1.1.2.
 
 ## Cutting a release
 
@@ -84,8 +91,12 @@ instead of misreading it. Files written before 1.1.0 have no `_meta` sheet.
    `python Napari_plugin/scripts/release.py locks`
    (writes `Napari_plugin/envs/lock-<env>-win64.txt` and
    `conda-<env>-win64.txt` for the napari, cellpose2 and cellpose4
-   environments from the machine the release was verified on; it refuses
-   to write a record that disagrees with what the interpreter imports).
+   environments from the machine the release was verified on). It refuses
+   to write when it cannot tell which of two installed copies of a package
+   is the one that imports, when a key package's imported version differs
+   from the record, or when the recorded versions violate the dependency
+   ranges in `pyproject.toml` — a record that `pip install -e` would then
+   undo is not a record.
 4. Commit the release: `git commit -am "Release X.Y.Z"` (pyproject, the
    changelog, `envs/`).
 5. `python Napari_plugin/scripts/release.py check` — must pass.
@@ -97,31 +108,39 @@ instead of misreading it. Files written before 1.1.0 have no `_meta` sheet.
 
 ## Installing a particular version
 
-Any release from 1.1.1 on, at any later date:
+Any release from 1.1.2 on, at any later date:
 
 ```bash
-git clone --branch v1.1.1 https://github.com/baoyi-A/BC-FLI-Spectra.git
+git clone --branch v1.1.2 https://github.com/baoyi-A/BC-FLI-Spectra.git
 cd BC-FLI-Spectra/Napari_plugin
-conda create -n bc-flim-1.1.1 --file envs/conda-napari-win64.txt   # the conda layer
-conda activate bc-flim-1.1.1
-pip install -r envs/lock-napari-win64.txt                          # the pip layer
-pip install -e .
+conda create -n bc-flim-1.1.2 --file envs/conda-napari-win64.txt   # the conda layer
+conda activate bc-flim-1.1.2
+pip install --no-deps -r envs/lock-napari-win64.txt                # the pip layer
+pip install --no-deps -e .                                         # the plugin itself
 ```
 
 The two files are two layers of one environment, not alternatives:
 `conda list --explicit` records only what conda installed, and the pip
-record is what the interpreter actually imports on top of it (with the
-PyTorch index and the git commits of packages installed from repositories
-named in the file). Apply the conda file first, then the pip file. The
-same pair exists for the `cellpose2` and `cellpose4` environments.
+record is the set of copies the interpreter actually imports on top of it
+(with the PyTorch index and the git commits of packages installed from
+repositories named in the file). Apply the conda file first, then the pip
+file. `--no-deps` on both pip steps is deliberate and is the form the record
+was validated with: the record is complete, and letting pip re-resolve
+dependencies would reject it for the internal inconsistencies any
+long-lived environment accumulates (a package whose declared range excludes
+the version that was in fact installed beside it). The same pair of files
+exists for the `cellpose2` and `cellpose4` environments.
 
 Environments are named by version and never upgraded in place. Two versions
 that must coexist — the situation a MAJOR bump creates — live in two
 environments, exactly as `cellpose2` and `cellpose4` do today.
 
-`v1.0.0` and `v1.0.1` predate all of this: no environment records, and the
-package installs as `0.1.0`. They can be checked out and read, but the
-recipe above starts at 1.1.1.
+`v1.0.0` and `v1.0.1` predate all of this: no environment records, and
+their `pyproject.toml` is rejected by current setuptools
+(`project.license must be string`), so they cannot be pip-installed at all.
+They can be checked out and read; the recipe above starts at 1.1.2 (the
+1.1.0 and 1.1.1 records exist but 1.1.0's were not installable and 1.1.1's
+named some copies that do not load — see the changelog).
 
 ## Rolling back a deployment
 
@@ -137,10 +156,11 @@ pip install -e Napari_plugin       # refresh the version metadata, always
 ```
 
 then restart napari. Nothing is deleted; every other tag is one checkout
-away. Rolling back to `v1.0.1` works as a checkout, but that version reports
-itself as `0.1.0` and its outputs carry no `_meta` sheet; if a stale
-`src/flim_s_gen/_version.py` is present from an old install, delete it, or
-`__version__` will report a 2025 dev build.
+away. Rolling back to `v1.0.1` is a bare checkout: skip the `pip install`
+step (that tree does not install), and know that `__version__` will keep
+reporting whatever was installed last, its outputs carry no `_meta` sheet,
+and a stale `src/flim_s_gen/_version.py` from an old install, if present,
+makes `__version__` report a 2025 dev build until it is deleted.
 
 ## What is not promised
 
@@ -153,9 +173,10 @@ where feasible and the Changelog says which files need them.
 
 `v1.0.0` and `v1.0.1` (2026-09-01) point at the same commit and were cut while
 `pyproject.toml` still said `0.1.0`. `1.1.0` (2026-09-11) is the first release
-where the three places agree; `1.1.1` (same day) corrects its environment
-records, which as first published were not installable, and completes the
-`_meta` stamping. Results in the manuscript were produced with the
-classification pipeline as of `1.1.x` (whitening by within-cluster spread,
-per-cluster isolation-forest rejection); `1.0.1` predates whitening and
-should not be cited for them.
+where the three places agree. `1.1.1` and `1.1.2` (same day) are the two
+rounds it took to make the environment records true and installable — the
+first records were not installable, the second named some copies that do
+not load — and to finish the `_meta` stamping. Results in the manuscript
+were produced with the classification pipeline as of `1.1.x` (whitening by
+within-cluster spread, per-cluster isolation-forest rejection); `1.0.1`
+predates whitening and should not be cited for them.

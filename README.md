@@ -42,9 +42,10 @@ code shared between them.
 | 🧠 **[`LUMINA_classification/`](LUMINA_classification/README.md)** | **LUMINA** (Lifetime-based Unmixing for Multiplexed ImagiNg and bArcoding) — the deep-learning classifier for dual-anchor barcodes, where one cell carries two fluorophores in two compartments. |
 | 🤖 [`.claude/skills/`](.claude/skills/) | One agent skill per tool, allowing a coding assistant to install and operate either of them. See [below](#-slic-works-with-an-ai-assistant). |
 
-Each tagged release is archived on Zenodo; the DOI above always resolves to the
-most recent version, and the version DOI on the Zenodo record cites the exact
-version described in the manuscript.
+Releases are tagged and archived on Zenodo; the DOI above always resolves to
+the most recent archived version. The classification pipeline the manuscript
+describes is that of release 1.1 and later (see [`VERSIONING.md`](VERSIONING.md));
+the 1.0.x archive predates it.
 
 ---
 

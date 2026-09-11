@@ -28,16 +28,22 @@ ENV_PYTHON = {
     'cellpose4': r'D:\Softwares\Anaconda\Anaconda3\envs\cellpose4\python.exe',
 }
 CONDA = r'D:\Softwares\Anaconda\Anaconda3\Scripts\conda.exe'
-# Modules whose imported version must agree with the record, per environment,
-# so a pin can never name a copy that is installed but never loads.
+# Modules whose imported version must agree with the record, per environment.
 KEY_IMPORTS = {
-    'napari': ['napari', 'numpy', 'pandas', 'sklearn', 'torch'],
+    'napari': ['napari', 'numpy', 'pandas', 'sklearn', 'torch', 'scipy', 'skimage'],
     'cellpose2': ['cellpose', 'numpy', 'torch'],
     'cellpose4': ['cellpose', 'numpy', 'torch'],
 }
-DIST_OF_MODULE = {'sklearn': 'scikit-learn'}
+DIST_OF_MODULE = {'sklearn': 'scikit-learn', 'skimage': 'scikit-image'}
+# distribution name -> conda package name, where they differ
+CONDA_NAME = {'torch': 'pytorch', 'msgpack': 'msgpack-python', 'pyqt5': 'pyqt', 'pyyaml': 'pyyaml'}
 OWN = ('bc-flim-spectra', 'bc-flim-s', 'napari-cutie', 'napari-mito-flim')
 PYTORCH_INDEX = 'https://download.pytorch.org/whl/{cuda}'
+# The documented install command. `_validate_pins` runs exactly this form, so
+# what is validated is what the reader types. --no-deps because the record is
+# complete: letting pip re-resolve dependencies would reject a real machine's
+# environment for the inconsistencies every long-lived environment carries.
+PIP_FORM = 'pip install --no-deps -r envs/lock-{env}-win64.txt'
 
 
 def git(*args):
@@ -49,6 +55,21 @@ def read_version():
     with open(PYPROJECT, encoding='utf-8') as f:
         m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.M)
     return m.group(1) if m else None
+
+
+def read_dependencies():
+    """The `dependencies = [...]` list of pyproject.toml, comments stripped."""
+    with open(PYPROJECT, encoding='utf-8') as f:
+        text = f.read()
+    m = re.search(r'^dependencies\s*=\s*\[(.*?)^\]', text, re.S | re.M)
+    if not m:
+        return []
+    out = []
+    for line in m.group(1).splitlines():
+        line = line.split('#', 1)[0].strip().strip(',').strip()
+        if line.startswith(('"', "'")):
+            out.append(line.strip('"\''))
+    return out
 
 
 def _run(cmd):
@@ -126,25 +147,99 @@ def cmd_check():
 
 # ---------------------------------------------------------------- locks
 
-# Runs inside the target interpreter. Walks importlib.metadata in sys.path
-# order (first hit is the copy that imports), splits distributions by who
-# installed them, and keeps the origin of anything installed from a repository.
+# Runs inside the target interpreter. When one distribution name has several
+# dist-infos on the machine, the copy that actually imports is found by
+# importing its module and matching __file__ against each dist-info's RECORD
+# (falling back to __version__); listing order proves nothing.
 INSPECT_CODE = r'''
-import importlib, importlib.metadata as m, json, platform
-own = set(%r); mods = %r
-seen, pip_pins, conda_names, dropped = set(), [], [], []
+import importlib, importlib.metadata as m, json, os, platform
+from collections import defaultdict
+own = set(%r); mods = %r; conda_ver = %r; conda_name = %r
+groups = defaultdict(list)
 for d in m.distributions():
+    name = (d.metadata['Name'] or '').strip(); key = name.lower().replace('_', '-')
+    if name and key not in own:
+        groups[key].append(d)
+def norm(p):
+    return os.path.normcase(os.path.abspath(str(p))) if p else None
+def top_modules(d):
+    try:
+        t = d.read_text('top_level.txt')
+        if t and t.split():
+            return [x for x in t.split() if x and not x.startswith('_')] or t.split()
+    except Exception:
+        pass
+    return [(d.metadata['Name'] or '').replace('-', '_')]
+def import_info(modname):
+    try:
+        mod = importlib.import_module(modname)
+        return norm(getattr(mod, '__file__', None)), getattr(mod, '__version__', None)
+    except Exception:
+        return None, None
+def file_hash_b64(path):
+    import hashlib, base64
+    try:
+        h = hashlib.sha256(open(path, 'rb').read()).digest()
+        return base64.urlsafe_b64encode(h).rstrip(b'=').decode()
+    except Exception:
+        return None
+def record_hash(d, path):
+    """RECORD's sha256 (urlsafe b64, unpadded) for the on-disk file, or None."""
+    try:
+        for f in (d.files or []):
+            if norm(d.locate_file(f)) == path and f.hash is not None and f.hash.mode == 'sha256':
+                return f.hash.value
+    except Exception:
+        pass
+    return None
+chosen, ambiguous, dup_note = {}, [], []
+for key, ds in groups.items():
+    if len(ds) == 1:
+        chosen[key] = ds[0]; continue
+    if len(set(d.version for d in ds)) == 1:
+        # same version twice (conda and pip both installed it): identical code,
+        # and the conda layer already records it
+        conda_ones = [d for d in ds if (d.read_text('INSTALLER') or '').strip().lower() == 'conda']
+        chosen[key] = (conda_ones or ds)[0]
+        dup_note.append('%%s: %%s installed twice (same version)' %% (key, ds[0].version)); continue
+    pick = None; how = ''
+    for modname in top_modules(ds[0]):
+        f, v = import_info(modname)
+        if f is None:
+            continue
+        # 1. the version the module reports about itself
+        if v is not None:
+            same = [d for d in ds if d.version == str(v)]
+            if len(same) == 1:
+                pick, how = same[0], '__version__'; break
+        # 2. the hash RECORD holds for the file that was imported
+        hv = file_hash_b64(f)
+        if hv:
+            same = [d for d in ds if record_hash(d, f) == hv]
+            if len(same) == 1:
+                pick, how = same[0], 'RECORD hash'; break
+        # 3. dist-infos in different directories: the one beside the module
+        here = os.path.dirname(f)
+        same = [d for d in ds if norm(d.locate_file('')).rstrip(os.sep) == here.rstrip(os.sep)
+                or here.startswith(norm(d.locate_file('')).rstrip(os.sep) + os.sep)]
+        if len(same) == 1:
+            pick, how = same[0], 'location'; break
+    if pick is None:
+        ambiguous.append('%%s: copies %%s, cannot tell which imports' %% (key, ', '.join(sorted(set(d.version for d in ds))))); continue
+    chosen[key] = pick
+    dup_note.append('%%s: copies %%s; %%s imports (by %%s)' %% (key, ', '.join(sorted(set(d.version for d in ds))), pick.version, how))
+pip_pins, conda_layer, dropped = [], [], []
+for key, d in chosen.items():
     name = (d.metadata['Name'] or '').strip()
-    key = name.lower().replace('_', '-')
-    if not name or key in seen:
-        continue
-    seen.add(key)
-    if key in own:
-        continue
-    installer = (d.read_text('INSTALLER') or '').strip().lower()
-    if installer == 'conda':
-        conda_names.append(key)             # recorded by the conda layer
-        continue
+    installer = ''
+    try:
+        installer = (d.read_text('INSTALLER') or '').strip().lower()
+    except Exception:
+        pass
+    cname = conda_name.get(key, key)
+    in_conda = conda_ver.get(cname) == d.version or conda_ver.get(key) == d.version
+    if installer == 'conda' or (installer != 'pip' and in_conda):
+        conda_layer.append(key); continue
     du = None
     try:
         raw = d.read_text('direct_url.json'); du = json.loads(raw) if raw else None
@@ -157,22 +252,23 @@ for d in m.distributions():
         vi = du['vcs_info']
         pip_pins.append('%%s @ %%s+%%s@%%s' %% (name, vi.get('vcs', 'git'), url, vi.get('commit_id', ''))); continue
     if du and url.startswith('file:'):
-        dropped.append('%%s==%%s  (installed from %%s: not on an index)' %% (name, d.version, url)); continue
+        if in_conda:
+            conda_layer.append(key); continue
+        dropped.append('%%s==%%s  (installed from %%s)' %% (name, d.version, url)); continue
     pip_pins.append('%%s==%%s' %% (name, d.version))
 imported = {}
 for n in mods:
-    try:
-        mod = importlib.import_module(n); imported[n] = str(getattr(mod, '__version__', '?'))
-    except Exception as e:
-        imported[n] = 'ERR ' + type(e).__name__
-print(json.dumps(dict(pins=sorted(pip_pins, key=str.lower), conda=sorted(conda_names),
-                      dropped=dropped, imported=imported, python=platform.python_version())))
+    f, v = import_info(n)
+    if f is None:
+        imported[n] = 'ERR import failed'; continue
+    if v is None:
+        hv = file_hash_b64(f)
+        v = next((d.version for ds in groups.values() for d in ds if hv and record_hash(d, f) == hv), None)
+    imported[n] = str(v) if v is not None else 'ERR no version'
+print(json.dumps(dict(pins=sorted(pip_pins, key=str.lower), conda=sorted(conda_layer), dropped=dropped,
+                      ambiguous=ambiguous, duplicates=dup_note, imported=imported,
+                      python=platform.python_version())))
 '''
-
-
-def _inspect(py, env):
-    return json.loads(_run([py, '-c', INSPECT_CODE % ([o.lower() for o in OWN],
-                                                       KEY_IMPORTS.get(env, []))]))
 
 
 def _conda_versions(spec_text):
@@ -185,6 +281,11 @@ def _conda_versions(spec_text):
     return out
 
 
+def _inspect(py, env, conda_ver):
+    code = INSPECT_CODE % ([o.lower() for o in OWN], KEY_IMPORTS.get(env, []), conda_ver, CONDA_NAME)
+    return json.loads(_run([py, '-c', code]))
+
+
 def _cuda_tag(pins):
     for l in pins:
         m = re.match(r'torch==\d[^+]*\+(cu\d+)', l)
@@ -194,20 +295,16 @@ def _cuda_tag(pins):
 
 
 def _validate_pins(py, pins, cuda):
-    """Ask pip to resolve the record without installing; drop what no index has.
-
-    Returns (pins that resolve, [lines that do not]). Iterates because pip stops
-    at the first unresolvable requirement.
-    """
+    """Ask pip to resolve the record the way it will be installed (--no-deps),
+    without installing. Returns (pins that resolve, [lines that do not])."""
     import tempfile
-    unresolvable = []
-    pins = list(pins)
+    unresolvable, pins = [], list(pins)
     for _ in range(12):
         fd, req = tempfile.mkstemp(suffix='.txt'); os.close(fd)
         with open(req, 'w', encoding='utf-8') as f:
             if cuda:
-                f.write('--extra-index-url %s' % PYTORCH_INDEX.format(cuda=cuda) + chr(10))
-            f.write(chr(10).join(pins) + chr(10))
+                f.write('--extra-index-url %s\n' % PYTORCH_INDEX.format(cuda=cuda))
+            f.write('\n'.join(pins) + '\n')
         r = subprocess.run([py, '-m', 'pip', 'install', '--dry-run', '--no-deps', '--ignore-installed',
                             '-q', '-r', req], capture_output=True, text=True)
         os.remove(req)
@@ -215,7 +312,7 @@ def _validate_pins(py, pins, cuda):
             return pins, unresolvable
         m = re.search(r'No matching distribution found for ([^\s]+)', r.stderr + r.stdout)
         if not m:
-            raise RuntimeError('pip dry-run failed for another reason: %s' % (r.stderr or r.stdout).strip()[-400:])
+            raise RuntimeError('pip dry-run failed: %s' % (r.stderr or r.stdout).strip()[-400:])
         bad = m.group(1).split('==')[0].split('@')[0].strip().lower().replace('_', '-')
         hit = [l for l in pins if l.split('==')[0].split('@')[0].strip().lower().replace('_', '-') == bad]
         if not hit:
@@ -223,6 +320,30 @@ def _validate_pins(py, pins, cuda):
         unresolvable.extend(hit)
         pins = [l for l in pins if l not in hit]
     raise RuntimeError('too many unresolvable pins; giving up')
+
+
+def _pyproject_violations(recorded):
+    """pyproject dependencies not satisfied by the recorded versions."""
+    try:
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+    except ImportError:
+        return ['packaging is not importable here; cannot check pyproject specifiers']
+    out = []
+    for spec in read_dependencies():
+        try:
+            req = Requirement(spec)
+        except Exception:
+            continue
+        if req.marker is not None and not req.marker.evaluate():
+            continue
+        name = req.name.lower().replace('_', '-')
+        ver = recorded.get(name)
+        if ver is None:
+            out.append('%s: not in either layer' % spec)
+        elif not req.specifier.contains(Version(ver.split('+')[0]), prereleases=True):
+            out.append('%s: recorded %s' % (spec, ver))
+    return out
 
 
 def cmd_locks():
@@ -234,34 +355,33 @@ def cmd_locks():
     rc = 0
     for env, py in ENV_PYTHON.items():
         if not os.path.isfile(py):
-            print('  skip %s: no %s' % (env, py))
-            rc = 1
-            continue
-        info = _inspect(py, env)
+            print('  skip %s: no %s' % (env, py)); rc = 1; continue
         env_name = os.path.basename(os.path.dirname(py))
         spec = _run([CONDA, 'list', '-n', env_name, '--explicit'])
         conda_ver = _conda_versions(spec)
+        info = _inspect(py, env, conda_ver)
+        fatal = list(info['ambiguous'])
         pins = list(info['pins'])
         pinned = {l.split('==')[0].lower().replace('_', '-'): l.split('==')[1] for l in pins if '==' in l}
-        # cross-check against what actually imports, over both layers
-        notes, fatal = [], []
+        recorded = dict(conda_ver)
+        for k, vv in pinned.items():
+            recorded[k] = vv
         for mod, ver in info['imported'].items():
             d = DIST_OF_MODULE.get(mod, mod).lower()
+            rec = recorded.get(d) or recorded.get(CONDA_NAME.get(d, d))
             if ver.startswith('ERR'):
-                fatal.append('%s: %s' % (mod, ver)); continue
-            rec = pinned.get(d) or conda_ver.get(d)
-            layer = 'pip' if d in pinned else ('conda' if d in conda_ver else None)
-            if rec is None:
-                fatal.append('%s: imports %s but appears in neither layer' % (mod, ver)); continue
-            if ver != '?' and rec.split('+')[0] != ver.split('+')[0]:
-                if layer == 'pip':
-                    pins = [l for l in pins if l.split('==')[0].lower().replace('_', '-') != d]
-                    pins.append('%s==%s' % (d, ver)); pinned[d] = ver
-                    notes.append('%s: metadata said %s, import gives %s; pinned %s' % (d, rec, ver, ver))
-                else:
-                    fatal.append('%s: conda layer says %s, import gives %s' % (mod, rec, ver))
+                fatal.append('%s: %s' % (mod, ver))
+            elif rec is None:
+                fatal.append('%s: imports %s but appears in neither layer' % (mod, ver))
+            elif rec.split('+')[0] != ver.split('+')[0]:
+                fatal.append('%s: record says %s, import gives %s' % (mod, rec, ver))
+        if env == 'napari':
+            viol = _pyproject_violations(recorded)
+            if viol:
+                fatal.append('the recorded environment violates pyproject.toml: ' + '; '.join(viol)
+                             + '  (fix pyproject or the environment; a record that pip install -e would undo is not a record)')
         if fatal:
-            print('  %s: cannot reconcile the record with the interpreter; not writing:' % env)
+            print('  %s: not writing:' % env)
             for m_ in fatal:
                 print('      ' + m_)
             rc = 1
@@ -271,38 +391,39 @@ def cmd_locks():
         print('  %-10s asking pip to resolve %d pins (takes a few minutes)...' % (env, len(pins)))
         pins, unresolvable = _validate_pins(py, pins, cuda)
         for u in unresolvable:
-            info['dropped'].append('%s  (no index has this version; installed from a local build)' % u)
+            info['dropped'].append('%s  (not resolvable from the configured indexes)' % u)
         lock = os.path.join(ENVS, 'lock-%s-win64.txt' % env)
         with open(lock, 'w', encoding='utf-8', newline='\n') as f:
             f.write("# bc-flim-spectra %s -- pip layer of the '%s' environment (%s), frozen %s on %s, Python %s.\n"
                     % (v, env, env_name, today, platform.platform(), info['python']))
-            f.write('# What the interpreter imports on top of the conda layer in envs/conda-%s-win64.txt.\n'
-                    '# Apply the conda file first, then:   pip install -r envs/lock-%s-win64.txt\n'
-                    % (env, env))
+            f.write('# The copies the interpreter actually imports, on top of the conda layer in\n'
+                    '# envs/conda-%s-win64.txt. Apply the conda file first, then exactly:\n'
+                    '#   %s\n'
+                    '# (--no-deps: the record is complete; this is the form it was validated with.)\n'
+                    % (env, PIP_FORM.format(env=env)))
             if cuda:
                 f.write('# torch and friends carry a +%s tag and come from the PyTorch index below, not PyPI.\n'
                         '--extra-index-url %s\n' % (cuda, PYTORCH_INDEX.format(cuda=cuda)))
             f.write('# Lines with " @ git+" are packages installed from a repository at a fixed commit.\n')
+            if info['duplicates']:
+                f.write('# Names with more than one copy on the freezing machine; the record is the copy\n'
+                        '# whose files the interpreter imports:\n')
+                for n_ in info['duplicates']:
+                    f.write('#   %s\n' % n_)
             if info['dropped']:
-                f.write('# Present on the freezing machine but not recorded (editable checkouts and\n'
-                        '# local-only packages; the plugin does not need them):\n')
+                f.write('# Present on the freezing machine but not recorded (the plugin does not need them):\n')
                 for d_ in info['dropped']:
                     f.write('#   %s\n' % d_)
-            if notes:
-                f.write('# Two copies were installed; the pin is the copy that imports:\n')
-                for n_ in notes:
-                    f.write('#   %s\n' % n_)
             f.write('\n'.join(pins) + '\n')
         conda = os.path.join(ENVS, 'conda-%s-win64.txt' % env)
         with open(conda, 'w', encoding='utf-8', newline='\n') as f:
             f.write("# bc-flim-spectra %s -- conda layer of the '%s' environment (%s), %s.\n"
                     % (v, env, env_name, today))
-            f.write('# conda create -n <name> --file <this file>   then   pip install -r envs/lock-%s-win64.txt\n'
-                    % env)
+            f.write('# conda create -n <name> --file <this file>   then   %s\n' % PIP_FORM.format(env=env))
             f.write(spec)
-        print('  %-10s pip layer %3d pins (%s; %d not recorded), conda layer %3d packages'
+        print('  %-10s pip layer %3d pins (%s; %d duplicates resolved, %d not recorded), conda layer %3d packages'
               % (env, len(pins), ('index +' + cuda) if cuda else 'PyPI only',
-                 len(info['dropped']), len(conda_ver)))
+                 len(info['duplicates']), len(info['dropped']), len(conda_ver)))
     return rc
 
 
