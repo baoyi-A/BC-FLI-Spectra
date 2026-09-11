@@ -13,9 +13,9 @@ tag until they do:
 
 | Place | Form | Who reads it |
 |---|---|---|
-| `Napari_plugin/pyproject.toml` | `version = "1.1.2"` | pip, `flim_s_gen.__version__`, the `_meta` sheets |
-| git tag | `v1.1.2` on the released commit | `pip install "git+https://github.com/baoyi-A/BC-FLI-Spectra.git@v1.1.2#subdirectory=Napari_plugin"`, rollback |
-| `Napari_plugin/README.md` → Changelog | `**1.1.2 — 2026-09-11**` heading | people |
+| `Napari_plugin/pyproject.toml` | `version = "1.1.3"` | pip, `flim_s_gen.__version__`, the `_meta` sheets |
+| git tag | `v1.1.3` on the released commit | `pip install "git+https://github.com/baoyi-A/BC-FLI-Spectra.git@v1.1.3#subdirectory=Napari_plugin"`, rollback |
+| `Napari_plugin/README.md` → Changelog | `**1.1.3 — 2026-09-11**` heading | people |
 
 Zenodo carries the same number as its record version, with one DOI per
 release and one concept DOI that always resolves to the latest.
@@ -78,7 +78,8 @@ themselves only through the workbook of the run that made them.
 A stamped file can therefore be matched to a release and to the run that
 produced it, and a MAJOR version can tell an old file from a new one and
 convert it instead of misreading it. Files written before 1.1.0 have no
-`_meta` sheet; `signal_analysis.xlsx` and the `.npz` are stamped from 1.1.2.
+`_meta` sheet; `signal_analysis.xlsx` is stamped from 1.1.1 and the `.npz`
+from 1.1.2.
 
 ## Cutting a release
 
@@ -99,22 +100,27 @@ convert it instead of misreading it. Files written before 1.1.0 have no
    undo is not a record.
 4. Commit the release: `git commit -am "Release X.Y.Z"` (pyproject, the
    changelog, `envs/`).
-5. `python Napari_plugin/scripts/release.py check` — must pass.
+5. `python Napari_plugin/scripts/release.py check` — must pass. It refuses
+   while `git status` lists anything, untracked files included (a new
+   `envs/` record is untracked until added; a stray crash dump must be
+   deleted or ignored).
 6. `python Napari_plugin/scripts/release.py tag` — creates the annotated
    tag; then `git push origin main --tags`.
-7. On Zenodo, add a new version to the existing record with the same
-   number, and update the version DOI in the README badge if it is cited.
+7. Create a GitHub Release for the tag (`gh release create vX.Y.Z`); the
+   Zenodo integration that archived v1.0.1 archives each GitHub Release and
+   mints its version DOI. A tag alone is not archived. Check the record
+   afterwards, and update the version DOI in the README badge if it is cited.
 8. Deploy where the plugin is used (below).
 
 ## Installing a particular version
 
-Any release from 1.1.2 on, at any later date:
+Any release from 1.1.3 on, at any later date:
 
 ```bash
-git clone --branch v1.1.2 https://github.com/baoyi-A/BC-FLI-Spectra.git
+git clone --branch v1.1.3 https://github.com/baoyi-A/BC-FLI-Spectra.git
 cd BC-FLI-Spectra/Napari_plugin
-conda create -n bc-flim-1.1.2 --file envs/conda-napari-win64.txt   # the conda layer
-conda activate bc-flim-1.1.2
+conda create -n bc-flim-1.1.3 --file envs/conda-napari-win64.txt   # the conda layer
+conda activate bc-flim-1.1.3
 pip install --no-deps -r envs/lock-napari-win64.txt                # the pip layer
 pip install --no-deps -e .                                         # the plugin itself
 ```
@@ -138,9 +144,9 @@ environments, exactly as `cellpose2` and `cellpose4` do today.
 `v1.0.0` and `v1.0.1` predate all of this: no environment records, and
 their `pyproject.toml` is rejected by current setuptools
 (`project.license must be string`), so they cannot be pip-installed at all.
-They can be checked out and read; the recipe above starts at 1.1.2 (the
-1.1.0 and 1.1.1 records exist but 1.1.0's were not installable and 1.1.1's
-named some copies that do not load — see the changelog).
+They can be checked out and read; the recipe above starts at 1.1.3 (the
+1.1.0–1.1.2 records exist, but 1.1.0's were not installable and 1.1.1's and
+1.1.2's named some copies that do not load — see the changelog).
 
 ## Rolling back a deployment
 
@@ -173,10 +179,10 @@ where feasible and the Changelog says which files need them.
 
 `v1.0.0` and `v1.0.1` (2026-09-01) point at the same commit and were cut while
 `pyproject.toml` still said `0.1.0`. `1.1.0` (2026-09-11) is the first release
-where the three places agree. `1.1.1` and `1.1.2` (same day) are the two
-rounds it took to make the environment records true and installable — the
-first records were not installable, the second named some copies that do
-not load — and to finish the `_meta` stamping. Results in the manuscript
+where the three places agree. `1.1.1`, `1.1.2` and `1.1.3` (same day) are
+the rounds it took to make the environment records true and installable —
+the first records were not installable, the next two each still named some
+copies that do not load — and to finish the `_meta` stamping. Results in the manuscript
 were produced with the classification pipeline as of `1.1.x` (whitening by
 within-cluster spread, per-cluster isolation-forest rejection); `1.0.1`
 predates whitening and should not be cited for them.

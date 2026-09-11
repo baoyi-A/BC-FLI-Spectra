@@ -100,7 +100,8 @@ def problems(version):
     if not re.search(r'^\*\*%s\b' % re.escape(version), readme, re.M):
         out.append('README.md changelog: no heading starting with "**%s"' % version)
     if git('status', '--porcelain'):
-        out.append('working tree is not clean (commit the release first)')
+        out.append('working tree is not clean: `git status` must print nothing '
+                   '(commit, delete or .gitignore each listed file; untracked files count)')
     head = git('rev-parse', 'HEAD')
     others = [t for t in git('tag', '--points-at', 'HEAD').split() if t != tag]
     if others:
@@ -148,9 +149,11 @@ def cmd_check():
 # ---------------------------------------------------------------- locks
 
 # Runs inside the target interpreter. When one distribution name has several
-# dist-infos on the machine, the copy that actually imports is found by
-# importing its module and matching __file__ against each dist-info's RECORD
-# (falling back to __version__); listing order proves nothing.
+# dist-infos on the machine, the copy that actually imports is the one whose
+# RECORD describes the files on disk: the hashes are compared for every file
+# the candidates disagree on. Only when the package files are identical does
+# the module's __version__ decide (it may itself be importlib.metadata's
+# answer, which is directory order and proves nothing), then the location.
 INSPECT_CODE = r'''
 import importlib, importlib.metadata as m, json, os, platform
 from collections import defaultdict
@@ -203,7 +206,39 @@ for key, ds in groups.items():
         chosen[key] = (conda_ones or ds)[0]
         dup_note.append('%%s: %%s installed twice (same version)' %% (key, ds[0].version)); continue
     pick = None; how = ''
-    for modname in top_modules(ds[0]):
+    # 0. the RECORD that describes the files on disk: hash every file the
+    #    candidates disagree on (at most 400) and count agreements
+    recs = []
+    for d in ds:
+        rec = {}
+        try:
+            for f in (d.files or []):
+                rel = str(f).replace(os.sep, '/')
+                if (f.hash is None or f.hash.mode != 'sha256' or rel.endswith('.pyc')
+                        or '.dist-info/' in rel or '.egg-info/' in rel):
+                    continue
+                rec[rel] = f.hash.value
+        except Exception:
+            rec = None
+        recs.append(rec)
+    if all(r is not None for r in recs):
+        every = set().union(*[set(r) for r in recs])
+        paths = sorted(q for q in every if len(set(r.get(q) for r in recs)) > 1)[:400]
+        if paths:
+            score = [0] * len(ds)
+            for q in paths:
+                on_disk = None
+                for d, r in zip(ds, recs):
+                    if q in r:
+                        on_disk = file_hash_b64(str(d.locate_file(q))); break
+                for i, r in enumerate(recs):
+                    if (r.get(q) == on_disk) if q in r else (on_disk is None):
+                        score[i] += 1
+            best = max(score)
+            if best > 0 and score.count(best) == 1:
+                pick = ds[score.index(best)]
+                how = 'RECORD, %%d of %%d differing files on disk' %% (best, len(paths))
+    for modname in ([] if pick is not None else top_modules(ds[0])):
         f, v = import_info(modname)
         if f is None:
             continue
@@ -211,7 +246,7 @@ for key, ds in groups.items():
         if v is not None:
             same = [d for d in ds if d.version == str(v)]
             if len(same) == 1:
-                pick, how = same[0], '__version__'; break
+                pick, how = same[0], '__version__ (package files identical)'; break
         # 2. the hash RECORD holds for the file that was imported
         hv = file_hash_b64(f)
         if hv:
@@ -277,7 +312,8 @@ def _conda_versions(spec_text):
     for line in spec_text.splitlines():
         m = re.search(r'/([^/]+)-([^-/]+)-[^-/]+\.(?:conda|tar\.bz2)$', line.strip())
         if m:
-            out[m.group(1).lower()] = m.group(2)
+            # the same normalisation distribution names get (mkl_fft -> mkl-fft)
+            out[re.sub(r'[-_.]+', '-', m.group(1)).lower()] = m.group(2)
     return out
 
 
@@ -287,8 +323,9 @@ def _inspect(py, env, conda_ver):
 
 
 def _cuda_tag(pins):
+    """The CUDA tag of any +cuNNN pin (torch, torchvision, torchaudio, ...)."""
     for l in pins:
-        m = re.match(r'torch==\d[^+]*\+(cu\d+)', l)
+        m = re.match(r'[A-Za-z0-9_.\-]+==\d[^+]*\+(cu\d+)', l)
         if m:
             return m.group(1)
     return None
@@ -390,6 +427,14 @@ def cmd_locks():
         cuda = _cuda_tag(pins)
         print('  %-10s asking pip to resolve %d pins (takes a few minutes)...' % (env, len(pins)))
         pins, unresolvable = _validate_pins(py, pins, cuda)
+        stuck = [u for u in unresolvable if re.search(r'\+cu\d+', u)]
+        if stuck:
+            # a CUDA build that imports here and cannot be fetched is a hole in
+            # the record, not a package the plugin does not need
+            print('  %s: not writing: CUDA-tagged pins do not resolve from the index: %s'
+                  % (env, ', '.join(stuck)))
+            rc = 1
+            continue
         for u in unresolvable:
             info['dropped'].append('%s  (not resolvable from the configured indexes)' % u)
         lock = os.path.join(ENVS, 'lock-%s-win64.txt' % env)

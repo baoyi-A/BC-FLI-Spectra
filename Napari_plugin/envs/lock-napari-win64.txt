@@ -1,4 +1,4 @@
-# bc-flim-spectra 1.1.2 -- pip layer of the 'napari' environment (BC-FLIM), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.13.
+# bc-flim-spectra 1.1.3 -- pip layer of the 'napari' environment (BC-FLIM), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.10.13.
 # The copies the interpreter actually imports, on top of the conda layer in
 # envs/conda-napari-win64.txt. Apply the conda file first, then exactly:
 #   pip install --no-deps -r envs/lock-napari-win64.txt
@@ -8,28 +8,28 @@
 # Lines with " @ git+" are packages installed from a repository at a fixed commit.
 # Names with more than one copy on the freezing machine; the record is the copy
 # whose files the interpreter imports:
-#   certifi: copies 2022.12.7, 2024.12.14; 2024.12.14 imports (by __version__)
-#   charset-normalizer: copies 2.0.4, 3.3.2; 3.3.2 imports (by __version__)
-#   jinja2: copies 3.1.2, 3.1.3; 3.1.3 imports (by __version__)
-#   magicgui: copies 0.8.1, 0.8.2; 0.8.1 imports (by __version__)
-#   markupsafe: copies 2.1.2, 2.1.5; 2.1.5 imports (by __version__)
-#   minisom: copies 2.3.0, 2.3.3; 2.3.0 imports (by RECORD hash)
-#   msgpack: copies 1.0.5, 1.0.7; 1.0.7 imports (by __version__)
-#   networkx: copies 2.8.4, 3.0; 2.8.4 imports (by __version__)
-#   pandas: copies 1.5.3, 2.0.2; 1.5.3 imports (by __version__)
-#   pillow: copies 10.4.0, 9.3.0; 10.4.0 imports (by __version__)
-#   prompt-toolkit: copies 3.0.42, 3.0.43; 3.0.42 imports (by __version__)
-#   psutil: copies 5.9.5, 5.9.8; 5.9.8 imports (by __version__)
-#   pynndescent: copies 0.5.10, 0.5.11; 0.5.10 imports (by __version__)
-#   pyopengl: copies 3.1.6, 3.1.7; 3.1.6 imports (by __version__)
-#   pytz: copies 2022.7, 2026.1.post1; 2026.1.post1 imports (by __version__)
+#   certifi: copies 2022.12.7, 2024.12.14; 2024.12.14 imports (by RECORD, 3 of 3 differing files on disk)
+#   charset-normalizer: copies 2.0.4, 3.3.2; 3.3.2 imports (by RECORD, 18 of 18 differing files on disk)
+#   jinja2: copies 3.1.2, 3.1.3; 3.1.3 imports (by RECORD, 11 of 11 differing files on disk)
+#   magicgui: copies 0.8.1, 0.8.2; 0.8.1 imports (by RECORD, 21 of 21 differing files on disk)
+#   markupsafe: copies 2.1.2, 2.1.5; 2.1.5 imports (by RECORD, 5 of 5 differing files on disk)
+#   minisom: copies 2.3.0, 2.3.3; 2.3.0 imports (by RECORD, 1 of 1 differing files on disk)
+#   msgpack: copies 1.0.5, 1.0.7; 1.0.7 imports (by RECORD, 16 of 16 differing files on disk)
+#   networkx: copies 2.8.4, 3.0; 2.8.4 imports (by RECORD, 317 of 392 differing files on disk)
+#   pandas: copies 1.5.3, 2.0.2; 1.5.3 imports (by RECORD, 387 of 400 differing files on disk)
+#   pillow: copies 10.4.0, 9.3.0; 10.4.0 imports (by RECORD, 111 of 111 differing files on disk)
+#   prompt-toolkit: copies 3.0.42, 3.0.43; 3.0.42 imports (by RECORD, 6 of 6 differing files on disk)
+#   psutil: copies 5.9.5, 5.9.8; 5.9.8 imports (by RECORD, 30 of 30 differing files on disk)
+#   pynndescent: copies 0.5.10, 0.5.11; 0.5.11 imports (by RECORD, 4 of 4 differing files on disk)
+#   pyopengl: copies 3.1.6, 3.1.7; 3.1.6 imports (by RECORD, 32 of 32 differing files on disk)
+#   pytz: copies 2022.7, 2026.1.post1; 2026.1.post1 imports (by RECORD, 82 of 82 differing files on disk)
 #   pywin32: 306 installed twice (same version)
-#   requests: copies 2.28.1, 2.29.0; 2.29.0 imports (by __version__)
-#   scipy: copies 1.11.1, 1.12.0; 1.12.0 imports (by __version__)
-#   stack-data: copies 0.6.2, 0.6.3; 0.6.2 imports (by __version__)
-#   tqdm: copies 4.66.1, 4.66.2; 4.66.2 imports (by __version__)
-#   umap-learn: copies 0.5.4, 0.5.5; 0.5.4 imports (by __version__)
-#   urllib3: copies 1.26.13, 1.26.15; 1.26.15 imports (by __version__)
+#   requests: copies 2.28.1, 2.29.0; 2.29.0 imports (by RECORD, 7 of 7 differing files on disk)
+#   scipy: copies 1.11.1, 1.12.0; 1.12.0 imports (by RECORD, 259 of 400 differing files on disk)
+#   stack-data: copies 0.6.2, 0.6.3; 0.6.2 imports (by RECORD, 2 of 2 differing files on disk)
+#   tqdm: copies 4.66.1, 4.66.2; 4.66.2 imports (by RECORD, 5 of 7 differing files on disk)
+#   umap-learn: copies 0.5.4, 0.5.5; 0.5.5 imports (by RECORD, 2 of 2 differing files on disk)
+#   urllib3: copies 1.26.13, 1.26.15; 1.26.15 imports (by RECORD, 8 of 8 differing files on disk)
 # Present on the freezing machine but not recorded (the plugin does not need them):
 #   -e file:///D:/PKU_STUDY/SynologyDrive/BaoyiWang/BC-FLIM/Cutie/Cutie-main  (cutie 1.0.0: editable checkout)
 #   PhasorPy==1.0.2  (not resolvable from the configured indexes)
@@ -153,7 +153,6 @@ Markdown==3.6
 mdit-py-plugins==0.3.3
 meshio==5.3.5
 mistune==3.1.3
-mkl-fft==1.3.6
 ml-collections==0.1.1
 ml-dtypes==0.4.0
 model-index==0.1.11
@@ -209,7 +208,6 @@ pydot==2.0.0
 pydub==0.25.1
 pyimagej==1.4.1
 pymupdf==1.28.0
-pynndescent==0.5.10
 pynvml==13.0.1
 pypdf==6.14.2
 pyqtdarktheme==2.1.0
@@ -279,7 +277,6 @@ tzdata==2023.3
 tzlocal==5.3.1
 uc-micro-py==1.0.3
 ultralytics==8.0.120
-umap-learn==0.5.4
 uncertainties==3.1.7
 uvicorn==0.29.0
 virtualenv==20.25.1

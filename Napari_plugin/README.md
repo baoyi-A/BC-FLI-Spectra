@@ -298,12 +298,41 @@ Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
 
+**1.1.3 — 2026-09-11**
+
+- Environment records, fourth time: 1.1.2 chose between two installed
+  copies by the module's `__version__` first, but for packages whose
+  `__version__` is itself `importlib.metadata.version(...)` that is
+  directory order again, and the napari record named the `umap-learn` and
+  `pynndescent` copies that do not load. Every duplicate is now decided by
+  hashing the files the two `RECORD`s disagree on; `__version__` only
+  breaks a tie between identical files. `mkl-fft` is recorded in the conda
+  layer it came from (its conda name has an underscore). A CUDA-tagged pin
+  that does not resolve stops the tool instead of being dropped, and
+  `torchvision`/`torchaudio` `+cu` pins set the PyTorch index as `torch`'s do.
+- A NaCha `Calculate` that failed before its first sheet left the workbook's
+  temp file open for the rest of the napari session (napari keeps the
+  traceback), and every later `Calculate` then failed at the final rename.
+  All workbook writers now use a unique temp name, close the handle on
+  failure, and sweep stale `*.partial*` files first.
+- The `clustered.xlsx` run record survives re-clicking Read and Plot on the
+  same folders (the N → M → P workflow), starting over only when the
+  folders change, and the previous write's record is kept under
+  `previous.*`. The whitening skip notification names the guard that fired,
+  and a seed dragged more than once is recorded where it ended up.
+- Docs: `signal_analysis.xlsx` has been stamped since 1.1.1, not 1.1.2; the
+  1.1.1 records named non-loading copies in the cellpose2 record too (six
+  packages, not only the napari eleven); whitening was not part of the
+  2026-04 update; a release is archived on Zenodo by its GitHub Release,
+  not by its tag.
+
 **1.1.2 — 2026-09-11**
 
 - Environment records, third time: with two copies of a package installed
   (conda's and pip's, in one `site-packages`), `importlib.metadata` lists
   them in directory order, so 1.1.1 still recorded the copy that does not
-  load for eleven packages. The copy that imports is now identified by its
+  load for eleven packages in the napari record and six in the cellpose2
+  record. The copy that imports is now identified by its
   `__version__`, then by the file hash `RECORD` holds for the imported
   module, and the tool refuses to write when it cannot tell. The documented
   install command is the validated one, `pip install --no-deps -r …`, and
@@ -355,7 +384,7 @@ result, PATCH otherwise.
 - One version number: `pyproject.toml` is the source, `flim_s_gen.__version__`
   reads the installed metadata, `scripts/release.py check` keeps the tag and
   this changelog in step; `envs/` holds environment records per release (the
-  1.1.0 records were not installable; see 1.1.1 and 1.1.2).
+  1.1.0 records were not installable; see 1.1.1–1.1.3).
 - LUMINA: the K-shot domain-adaptation trainer ships; inference scores the
   cell each row asks for even when its crop is oversized; data preparation
   keeps every field of view of a sample.
@@ -403,8 +432,7 @@ result, PATCH otherwise.
 - Custom models discovered from the sample folder, the shared model root and the
   Cellpose cache, re-scanned when the sample folder changes.
 - Seeded K-Means classifier (Basu et al. 2002) with alternative methods, outlier
-  flagging, whitening by within-cluster spread, and saved class-distribution
-  overlays.
+  flagging, and saved class-distribution overlays.
 - NaCha finalise: single-frame masks broadcast to the full biosensor stack, with
   per-cell signal inspection.
 - vispy 0x1C crash fix, a backport of napari PR #8122 applied at plugin load.

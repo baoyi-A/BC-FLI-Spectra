@@ -1,4 +1,4 @@
-# bc-flim-spectra 1.1.2 -- pip layer of the 'cellpose2' environment (cellpose), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.8.18.
+# bc-flim-spectra 1.1.3 -- pip layer of the 'cellpose2' environment (cellpose), frozen 2026-09-11 on Windows-10-10.0.26340-SP0, Python 3.8.18.
 # The copies the interpreter actually imports, on top of the conda layer in
 # envs/conda-cellpose2-win64.txt. Apply the conda file first, then exactly:
 #   pip install --no-deps -r envs/lock-cellpose2-win64.txt
@@ -6,15 +6,15 @@
 # Lines with " @ git+" are packages installed from a repository at a fixed commit.
 # Names with more than one copy on the freezing machine; the record is the copy
 # whose files the interpreter imports:
-#   imagecodecs: copies 2022.9.26, 2023.1.23; 2023.1.23 imports (by __version__)
-#   importlib-metadata: copies 5.0.0, 6.0.0; 6.0.0 imports (by RECORD hash)
-#   numpy: copies 1.23.5, 1.24.4; 1.24.4 imports (by __version__)
-#   packaging: copies 21.3, 23.1; 23.1 imports (by __version__)
-#   pillow: copies 10.0.1, 9.3.0; 10.0.1 imports (by __version__)
+#   imagecodecs: copies 2022.9.26, 2023.1.23; 2023.1.23 imports (by RECORD, 44 of 54 differing files on disk)
+#   importlib-metadata: copies 5.0.0, 6.0.0; 6.0.0 imports (by RECORD, 4 of 4 differing files on disk)
+#   numpy: copies 1.23.5, 1.24.4; 1.24.4 imports (by RECORD, 240 of 241 differing files on disk)
+#   packaging: copies 21.3, 23.1; 23.1 imports (by RECORD, 13 of 14 differing files on disk)
+#   pillow: copies 10.0.1, 9.3.0; 10.0.1 imports (by RECORD, 100 of 102 differing files on disk)
 #   scipy: 1.9.3 installed twice (same version)
-#   tifffile: copies 2022.10.10, 2023.4.12; 2023.4.12 imports (by __version__)
-#   typing-extensions: copies 4.4.0, 4.7.1; 4.7.1 imports (by RECORD hash)
-#   zipp: copies 3.10.0, 3.11.0; 3.11.0 imports (by RECORD hash)
+#   tifffile: copies 2022.10.10, 2023.4.12; 2023.4.12 imports (by RECORD, 3 of 7 differing files on disk)
+#   typing-extensions: copies 4.4.0, 4.7.1; 4.7.1 imports (by RECORD, 1 of 1 differing files on disk)
+#   zipp: copies 3.10.0, 3.11.0; 3.11.0 imports (by RECORD, 1 of 1 differing files on disk)
 anyio==3.6.2
 argon2-cffi-bindings==21.2.0
 argon2-cffi==21.3.0

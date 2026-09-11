@@ -35,6 +35,8 @@ from pathlib import Path
 from matplotlib.widgets import LassoSelector
 from matplotlib.path import Path as MplPath
 import os
+import contextlib
+import tempfile
 import pandas as pd
 import numpy as np
 import napari
@@ -434,6 +436,49 @@ def _previous_meta_rows(path):
         return []
 
 
+@contextlib.contextmanager
+def _partial_workbook(target):
+    """A pandas ExcelWriter on a fresh temp file beside ``target``; the file is
+    renamed onto ``target`` when the block completes, and removed if it does not.
+
+    ``pd.ExcelWriter(path)`` truncates its target on open, so writing directly
+    would leave an empty workbook behind a crash. The temp name is unique per
+    call, and on failure the writer's file handle is closed by hand: pandas'
+    ``close()`` saves before it releases the handle, so when the save itself
+    raises (no sheet was written) the handle stays open -- and napari keeps the
+    traceback, and with it the handle, alive for the rest of the session, which
+    would pin a fixed temp name for every later write.
+    """
+    target = str(target)
+    folder, base = os.path.split(target)
+    root, ext = os.path.splitext(base)
+    ext = ext or '.xlsx'
+    for stale in glob.glob(os.path.join(folder or '.', glob.escape(root) + '.partial*' + ext)):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    fd, tmp = tempfile.mkstemp(prefix=root + '.partial-', suffix=ext, dir=folder or None)
+    os.close(fd)
+    writer = pd.ExcelWriter(tmp, engine='openpyxl')
+    try:
+        yield writer
+        writer.close()
+    except BaseException:
+        handles = getattr(writer, '_handles', None)
+        if handles is not None:
+            try:
+                handles.close()
+            except Exception:
+                pass
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, target)
+
+
 def _to_excel_stamped(df, path, carry_from=None, **meta):
     """Write ``df`` as the first sheet and a ``_meta`` sheet after it.
 
@@ -443,12 +488,10 @@ def _to_excel_stamped(df, path, carry_from=None, **meta):
     and the settings that produced it (``meta``), so a workbook can be matched
     to a release and to the parameters of the run that made it.
 
-    The write goes to a sibling temp file and is renamed into place only once
-    the workbook is complete: ``pd.ExcelWriter(path)`` truncates its target on
-    open, so writing directly would leave an empty file behind a crash or an
-    interrupted run. ``carry_from`` names a workbook whose existing ``_meta``
-    rows are kept under ``previous.*`` -- used by the FLIM-S merge, where rows
-    from an earlier run survive in the data sheet.
+    The write goes through ``_partial_workbook`` (a sibling temp file renamed
+    into place once complete). ``carry_from`` names a workbook whose existing
+    ``_meta`` rows are kept under ``previous.*`` -- used where rows or labels
+    from an earlier write survive in the data sheet.
     """
     meta_df = _meta_rows(**meta)
     if carry_from:
@@ -456,22 +499,9 @@ def _to_excel_stamped(df, path, carry_from=None, **meta):
         if prev:
             meta_df = pd.concat([meta_df, pd.DataFrame(prev, columns=['key', 'value'])],
                                 ignore_index=True)
-    path = str(path)
-    # pandas picks the writer engine from the extension, so the temp file must
-    # keep .xlsx: <name>.partial.xlsx beside the target.
-    root, ext = os.path.splitext(path)
-    tmp = root + '.partial' + (ext or '.xlsx')
-    try:
-        with pd.ExcelWriter(tmp, engine='openpyxl') as w:
-            df.to_excel(w, sheet_name='Sheet1', index=False)
-            meta_df.to_excel(w, sheet_name='_meta', index=False)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    with _partial_workbook(path) as w:
+        df.to_excel(w, sheet_name='Sheet1', index=False)
+        meta_df.to_excel(w, sheet_name='_meta', index=False)
 
 
 def _write_finetune_config(save_dir, model_path, base_name, input_kind, n_images):
@@ -4354,9 +4384,15 @@ class SeededKMeans(Container):
                 dfs_test.append(df)
 
         self.df_test_all = pd.concat(dfs_test, ignore_index=True) if dfs_test else None
-        # A new table means new runs: the record clustered.xlsx carries must not
-        # describe K-Means runs made on whatever was loaded before.
-        self._run_log = {}
+        # The record clustered.xlsx carries describes runs on the folders that are
+        # loaded. Re-reading the same folders keeps it (the N -> M -> P workflow
+        # re-clicks Read and Plot per localisation); a different set of folders
+        # starts it over.
+        folders = tuple(sorted(os.path.normcase(os.path.abspath(fe.value))
+                               for fe in self.test_folders if fe.value and os.path.isdir(fe.value)))
+        if folders != getattr(self, '_run_log_folders', None):
+            self._run_log = {}
+        self._run_log_folders = folders
         self._last_run = None
         if self.df_test_all is None or len(self.df_test_all) == 0:
             print('No test data loaded.')
@@ -5087,9 +5123,8 @@ class SeededKMeans(Container):
         # The record must say the file was edited by hand after loading.
         src = getattr(self, '_seed_source', None)
         if src:
-            note = '; seed %d dragged to cell #%d' % (self._drag_artist_idx + 1, new_idx)
-            if note not in src:
-                self._seed_source = src + note
+            src = re.sub(r'; seed %d dragged to cell #\d+' % (self._drag_artist_idx + 1), '', src)
+            self._seed_source = src + '; seed %d dragged to cell #%d' % (self._drag_artist_idx + 1, new_idx)
         # redraw that seed's star on EVERY panel at the new cell (the drag
         # happened on one panel, but the seed is one cell for all of them)
         row = self.df_test.iloc[new_idx]
@@ -5748,9 +5783,9 @@ class SeededKMeans(Container):
                 if got is None:
                     sw_state = 'skipped: ' + getattr(self, '_sw_skip_reason', 'guard')
                     self._notify(
-                        'Whiten by within-cluster spread: skipped, fewer than 8 seeds are '
-                        'claimed by a cluster centre (a dish carrying only a few barcodes, or '
-                        'seeds sitting far from the data). Classification continues without it.'
+                        'Whiten by within-cluster spread: skipped, '
+                        + getattr(self, '_sw_skip_reason', 'guard')
+                        + '. Classification continues without it.'
                     )
                 else:
                     Xs_sub, init_seeds, labels1 = got
@@ -6733,6 +6768,7 @@ class SeededKMeans(Container):
                 try:
                     _to_excel_stamped(
                         out, path, step='Seeded K-Means',
+                        carry_from=path,
                         runs=getattr(self, '_run_log', {}) or 'no run recorded in this session',
                         note='runs = what each localisation\'s Run K-Means / Re-flag actually did')
                 except Exception as e:
@@ -7715,15 +7751,9 @@ class Trackrevise(Container):
         pivot_data = {}
 
         self._set_nacha_progress(15, 'Opening Excel writer + extracting intensities...')
-        # Written beside the target and renamed in once complete, so a failure in
-        # a later channel cannot leave a truncated workbook (see _to_excel_stamped).
-        out_partial = os.path.splitext(out_excel_path)[0] + '.partial.xlsx'
-        if os.path.exists(out_partial):
-            try:
-                os.remove(out_partial)
-            except OSError:
-                pass
-        with pd.ExcelWriter(out_partial, engine='openpyxl') as writer:
+        # Written to a temp file and renamed in once complete, so a failure in a
+        # later channel cannot leave a truncated workbook (see _partial_workbook).
+        with _partial_workbook(out_excel_path) as writer:
             # if stack_end < stack length, pop out warning
             if stack_end < self.viewer.layers['Masks'].data.shape[0]:
                 notifications.show_warning(f'using only frames {stack_start} to {stack_end - 1} of the Masks stack, '
@@ -7886,9 +7916,8 @@ class Trackrevise(Container):
                        ratio_g_over_b=bool(has_stack_b and has_stack_g and self.ratio_checkbox.value),
                        alignment=alignment_source
                        ).to_excel(writer, sheet_name='_meta', index=False)
-        os.replace(out_partial, out_excel_path)
         # (a failure inside the block above leaves the previous signal_analysis.xlsx
-        # untouched; the partial file is removed on the next successful write)
+        # untouched)
 
         self._set_nacha_progress(90, 'Plotting per-class signals...')
         notifications.show_info(f'Saved signal analysis results to {out_excel_path}')
