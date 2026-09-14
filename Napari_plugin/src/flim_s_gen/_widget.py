@@ -655,9 +655,15 @@ def _run_finetune_subprocess(
                 save_dir, new_path, base_name, input_kind,
                 len(imgs) if imgs is not None else 1,
             )
+            _sd = Path(save_dir)
+            _register_finetuned_model(
+                new_name, new_path, _sd,
+                sample_dir=_sd.parent.parent if _sd.parent.name == '_finetune' else None)
             return new_path
         if s.startswith('ERROR:'):
+            _discard_empty_finetune_dir(save_dir)
             raise CellposeChildError(s[len('ERROR:'):].strip())
+    _discard_empty_finetune_dir(save_dir)
     raise CellposeChildError(f'fine-tune subprocess ended without RESULT/ERROR '
                        f'(exit={proc.returncode}); stdout tail: {out[-500:]}')
 
@@ -10545,6 +10551,7 @@ def _remember_sample_dir(viewer, path):
                 state = _load_persisted_state()
                 state['last_sample_dir'] = str(new_path)
                 _save_persisted_state(state)
+                _remember_recent_sample_dir(new_path)
     except Exception:
         pass
 
@@ -10559,6 +10566,146 @@ try:
         _log.info('restored last sample folder: %s', _LAST_SAMPLE_DIR)
 except Exception:
     pass
+
+
+# ---- Where fine-tuned models are looked for -------------------------------
+# A model trained in one sample folder used to be listed only while that folder
+# was the sample folder: the dropdown scanned <sample>/_finetune, the shared
+# root and the cellpose cache, nothing else, and Refresh could not help. People
+# read that as the model being lost. Three things fix it: every fine-tune the
+# plugin finishes is registered in the state file, every sample folder it has
+# been pointed at is remembered, and the folders around the current sample
+# (siblings and cousins in a date/sample tree) are scanned as well.
+_MAX_REMEMBERED_SAMPLE_DIRS = 60
+_MAX_REGISTERED_MODELS = 500
+
+
+def _register_finetuned_model(name, model_path, save_dir, sample_dir=None) -> None:
+    """Record a finished fine-tune so every later session, in any folder, lists it."""
+    try:
+        st = _load_persisted_state()
+        reg = [r for r in (st.get('finetuned_models') or []) if isinstance(r, dict)]
+        reg = [r for r in reg if r.get('dir') != str(save_dir)]
+        reg.append({'name': str(name), 'path': str(model_path), 'dir': str(save_dir),
+                    'sample_dir': str(sample_dir) if sample_dir else '',
+                    'when': datetime.now().isoformat(timespec='seconds')})
+        st['finetuned_models'] = reg[-_MAX_REGISTERED_MODELS:]
+        _save_persisted_state(st)
+    except Exception as e:
+        _log.debug('model registry write failed: %s', e)
+
+
+def _remember_recent_sample_dir(path) -> None:
+    """Keep the sample folders this machine has worked in; their _finetune/
+    folders stay in the model scan after the user moves on to another one."""
+    try:
+        p = str(path) if path else ''
+        if not p or not Path(p).is_dir():
+            return
+        st = _load_persisted_state()
+        rec = [r for r in (st.get('recent_sample_dirs') or []) if isinstance(r, str)]
+        key = os.path.normcase(os.path.abspath(p))
+        rec = [r for r in rec if os.path.normcase(os.path.abspath(r)) != key]
+        rec.append(os.path.abspath(p))
+        st['recent_sample_dirs'] = rec[-_MAX_REMEMBERED_SAMPLE_DIRS:]
+        _save_persisted_state(st)
+    except Exception as e:
+        _log.debug('recent sample dirs write failed: %s', e)
+
+
+def _registered_models() -> list:
+    try:
+        return [r for r in (_load_persisted_state().get('finetuned_models') or [])
+                if isinstance(r, dict) and r.get('name') and r.get('path')]
+    except Exception:
+        return []
+
+
+def _finetune_roots_for(sample_dirs=()) -> "list[Path]":
+    """Every ``_finetune``-style folder worth scanning for these sample folders.
+
+    Theirs and their subfolders'; their siblings' and the siblings' subfolders'
+    (a person's data is a date/sample tree, and a model trained under one date
+    is wanted under the next); the remembered sample folders'; and the folders
+    the registered models were saved in. Listing only, bounded per level, and
+    never across a drive root.
+    """
+    roots: "list[Path]" = []
+    seen: "set[str]" = set()
+
+    def add(p) -> None:
+        try:
+            p = Path(p)
+            k = os.path.normcase(str(p))
+            if k not in seen and p.is_dir():
+                seen.add(k)
+                roots.append(p)
+        except Exception:
+            pass
+
+    def subdirs(p, limit=400) -> "list[Path]":
+        out: "list[Path]" = []
+        try:
+            with os.scandir(p) as it:
+                for e in it:
+                    if e.is_dir(follow_symlinks=False) and not e.name.startswith(('.', '$', '_')):
+                        out.append(Path(e.path))
+                        if len(out) >= limit:
+                            break
+        except OSError:
+            pass
+        return out
+
+    def is_root(p) -> bool:
+        return p.parent == p
+
+    sds: "list[Path]" = []
+    for sd in sample_dirs:
+        try:
+            if sd and Path(sd).is_dir():
+                sds.append(Path(sd))
+        except Exception:
+            pass
+    st = _load_persisted_state()
+    for r in st.get('recent_sample_dirs') or []:
+        try:
+            if isinstance(r, str) and Path(r).is_dir():
+                sds.append(Path(r))
+        except Exception:
+            pass
+    for r in _registered_models():
+        if r.get('dir'):
+            add(Path(r['dir']).parent)
+    for sd in sds:
+        add(sd / '_finetune')
+        for c in subdirs(sd):
+            add(c / '_finetune')
+        parent = sd.parent
+        if is_root(sd) or is_root(parent):
+            continue
+        for sib in subdirs(parent):
+            add(sib / '_finetune')
+            for c in subdirs(sib, 100):
+                add(c / '_finetune')
+        gp = parent.parent
+        if is_root(gp):
+            continue
+        for u in subdirs(gp):
+            for c in subdirs(u, 100):
+                add(c / '_finetune')
+    return roots
+
+
+def _discard_empty_finetune_dir(save_dir) -> None:
+    """A fine-tune that failed leaves the folder it was about to fill; an empty
+    one lies in _finetune/ forever and looks like a model that went missing."""
+    try:
+        p = Path(save_dir)
+        if p.is_dir() and p.parent.name == '_finetune' and not any(x.is_file() for x in p.rglob('*')):
+            import shutil
+            shutil.rmtree(p, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def _get_persisted_model_pick(slot: str) -> "str | None":
@@ -11270,6 +11417,21 @@ def _resolve_barcode_model_path(model_type: str, extra_roots=()) -> "Path | None
                     return cand
             except OSError:
                 continue
+    # Everything the dropdown can list must resolve: the registered models and
+    # the _finetune/ folders around and before the current sample folder.
+    for r in _registered_models():
+        try:
+            if r['name'] == model_type and Path(r['path']).is_file():
+                return Path(r['path'])
+        except Exception:
+            continue
+    for fd in _finetune_roots_for(extra_roots):
+        for cand in _model_file_candidates(fd, model_type):
+            try:
+                if cand.is_file():
+                    return cand
+            except OSError:
+                continue
     return None
 
 
@@ -11332,7 +11494,11 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "",
     """Return custom Cellpose model names discovered in all known locations.
 
     Scans:
-      * Each ``<sample_dir>/_finetune/<name>/models/<name>``  (curated)
+      * Each ``<sample_dir>/_finetune/<name>/models/<name>``  (curated), plus the
+        ``_finetune/`` folders of the remembered sample folders, of the folders
+        next to the current one, and the registered fine-tunes
+        (``_finetune_roots_for``) -- a model trained under one date is listed
+        under the next
       * The shared ``_BARCODE_MODEL_ROOT/_cellpose_finetune_*/<name>/models/<name>``
         (curated)
       * ``~/.cellpose/models/*`` (cache — anything not in the builtin set),
@@ -11380,18 +11546,22 @@ def _list_all_custom_models(sample_dirs=(), target_hint: str = "",
         if prev is None or mt > prev[1]:
             seen[name] = (max(prev[0] if prev else 0, is_hit), mt)
 
-    for sd in sample_dirs:
+    # The current sample folder's _finetune/, the remembered and neighbouring
+    # ones, and the registered models (see _finetune_roots_for).
+    for fd in _finetune_roots_for(sample_dirs):
         try:
-            sd = Path(sd) if sd else None
+            entries = list(fd.iterdir())
+        except OSError:
+            continue
+        for mdir in entries:
+            if not mdir.is_dir():
+                continue
+            _consider(mdir / "models" / mdir.name, mdir.name)
+    for r in _registered_models():
+        try:
+            _consider(Path(r['path']), str(r['name']))
         except Exception:
-            sd = None
-        if sd and sd.is_dir():
-            fd = sd / "_finetune"
-            if fd.is_dir():
-                for mdir in fd.iterdir():
-                    if not mdir.is_dir():
-                        continue
-                    _consider(mdir / "models" / mdir.name, mdir.name)
+            continue
 
     try:
         root_iter = list(_BARCODE_MODEL_ROOT.glob("_cellpose_finetune_*")) + \
@@ -12340,6 +12510,7 @@ class BarcodeSeg(Container):
         """
         sd = self.sample_dir.value
         sample_dirs = [sd] if sd else []
+        _remember_recent_sample_dir(sd)
         n_ranked = _list_all_custom_models(sample_dirs, target_hint='n')
         p_ranked = _list_all_custom_models(sample_dirs, target_hint='p')
         # Separate curated-only set (no ~/.cellpose/models cache) — used
@@ -14270,6 +14441,7 @@ class BiosensorSeg(Container):
         """
         sd = self.sample_folder.value
         sample_dirs = [sd] if sd else []
+        _remember_recent_sample_dir(sd)
         ranked = _list_all_custom_models(sample_dirs, target_hint='bs')
         cur = str(self.seg_model.value) if self.seg_model.value else _BIOSENSOR_MODEL_DEFAULT
         out: list[str] = []

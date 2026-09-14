@@ -13,9 +13,9 @@ tag until they do:
 
 | Place | Form | Who reads it |
 |---|---|---|
-| `Napari_plugin/pyproject.toml` | `version = "1.1.3"` | pip, `flim_s_gen.__version__`, the `_meta` sheets |
-| git tag | `v1.1.3` on the released commit | `pip install "git+https://github.com/baoyi-A/BC-FLI-Spectra.git@v1.1.3#subdirectory=Napari_plugin"`, rollback |
-| `Napari_plugin/README.md` → Changelog | `**1.1.3 — 2026-09-11**` heading | people |
+| `Napari_plugin/pyproject.toml` | `version = "1.1.4"` | pip, `flim_s_gen.__version__`, the `_meta` sheets |
+| git tag | `v1.1.4` on the released commit | `pip install "git+https://github.com/baoyi-A/BC-FLI-Spectra.git@v1.1.4#subdirectory=Napari_plugin"`, rollback |
+| `Napari_plugin/README.md` → Changelog | `**1.1.4 — 2026-09-14**` heading | people |
 
 Zenodo carries the same number as its record version, with one DOI per
 release and one concept DOI that always resolves to the latest.
@@ -114,13 +114,13 @@ from 1.1.2.
 
 ## Installing a particular version
 
-Any release from 1.1.3 on, at any later date:
+Any release from 1.1.3 on, at any later date (shown for 1.1.4):
 
 ```bash
-git clone --branch v1.1.3 https://github.com/baoyi-A/BC-FLI-Spectra.git
+git clone --branch v1.1.4 https://github.com/baoyi-A/BC-FLI-Spectra.git
 cd BC-FLI-Spectra/Napari_plugin
-conda create -n bc-flim-1.1.3 --file envs/conda-napari-win64.txt   # the conda layer
-conda activate bc-flim-1.1.3
+conda create -n bc-flim-1.1.4 --file envs/conda-napari-win64.txt   # the conda layer
+conda activate bc-flim-1.1.4
 pip install --no-deps -r envs/lock-napari-win64.txt                # the pip layer
 pip install --no-deps -e .                                         # the plugin itself
 ```

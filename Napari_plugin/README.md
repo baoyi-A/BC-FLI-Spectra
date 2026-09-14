@@ -298,6 +298,20 @@ Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
 
+**1.1.4 — 2026-09-14**
+
+- A fine-tuned model was listed only while the folder it was trained in was
+  the sample folder: the dropdowns scanned `<sample>/_finetune/`, the shared
+  model root and the Cellpose cache, nothing else, so switching to the next
+  day's folder made yesterday's model vanish and Refresh could not bring it
+  back. Now every fine-tune the plugin finishes is registered in
+  `~/.bc_flim_spectra_state.json`, every sample folder the plugin has been
+  pointed at is remembered, and the `_finetune/` folders next to the current
+  sample folder (siblings and cousins in a date/sample tree) are scanned too;
+  the same places are searched when a model is loaded, so anything the
+  dropdown lists can be run. A fine-tune that fails no longer leaves an
+  empty `_finetune/<name>/` folder behind.
+
 **1.1.3 — 2026-09-11**
 
 - Environment records, fourth time: 1.1.2 chose between two installed
