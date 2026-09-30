@@ -70,7 +70,7 @@ https://github.com/user-attachments/assets/38b1ef57-20be-4ee5-bfb2-d6bd414d0390
 each barcode's own cluster spread, seeded K-means refining the centres, then an
 isolation forest that sets aside the most anomalous tenth of each cluster rather
 than assign a cell it cannot place. Click to play.*
-- 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel.
+- 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel. A biosensor experiment without barcodes also runs: the widget and NaCha detect that the sample has no barcode, skip the barcode steps, and read out every cell as one group ([details](Napari_plugin/README.md#-biosensor-only-no-barcode)).
 - 🎬 **B&P Tracker** — multi-cell tracking in dense cultures, based on XMem with a short-horizon, periodically reset memory.
 - 📈 **NaCha** — final alignment and per-class signal readout / visualization.
 
@@ -80,6 +80,10 @@ https://github.com/user-attachments/assets/92455514-da5d-40f7-bbad-bfafc0d70a19
 is a barcode, its biosensor, the three confocal channels, and that population's
 own response to the stimulus. A full step-by-step
 [instruction video](https://zenodo.org/records/17045806) is on Zenodo.*
+
+Every widget has a **⌨ Keyboard shortcuts** button listing the keys of that
+step, including Alt+1…9 to show or hide layers ([full table](Napari_plugin/README.md#-keyboard-shortcuts)),
+and an **ⓘ How to use** button with the step-by-step notes.
 
 ➡️ **Installation and full usage: [`Napari_plugin/README`](Napari_plugin/README.md)**
 

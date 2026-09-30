@@ -1110,11 +1110,12 @@ def _go_next_widget(container, viewer):
 
 # One text size for every SLIC widget. napari's own default is about 9 pt,
 # which users found too small on the lab screens.
-_SLIC_FONT_PT = 11
+_SLIC_FONT_PT = 12
+_SLIC_FONT_FAMILY = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif'
 _SLIC_BASE_QSS = (
     'QLabel, QCheckBox, QRadioButton, QPushButton, QComboBox, QLineEdit, '
     'QAbstractSpinBox, QGroupBox, QProgressBar, QToolButton, QSlider '
-    f'{{ font-size: {_SLIC_FONT_PT}pt; }} '
+    f'{{ font-size: {_SLIC_FONT_PT}pt; font-family: {_SLIC_FONT_FAMILY}; }} '
     'QPushButton { min-height: 26px; } '
     'QLineEdit, QComboBox, QAbstractSpinBox { min-height: 24px; } '
 )
@@ -1543,10 +1544,115 @@ def _console(text):
         pass
 
 
+_LAYER_KEYS_STATIC = [
+    ('Alt + 1 ... 9', 'show / hide layer 1-9, counted from the top of the layer list'),
+    ('Alt + 0', 'show every layer'),
+    ('Alt + S', 'show only the selected layer; press again to restore'),
+    ('Alt + Left / Right', 'select the layer above / below'),
+]
+_LAYER_KEYS_VIEWERS: set = set()
+
+
+def _layers_top_down(viewer):
+    """Layers in the order the layer list shows them (top first)."""
+    return list(viewer.layers)[::-1]
+
+
+def _install_layer_keys(viewer):
+    """Bind the generic layer keys (Alt+number etc.) once per viewer. They
+    work in every SLIC widget, however many layers are open."""
+    if viewer is None or id(viewer) in _LAYER_KEYS_VIEWERS:
+        return
+    solo_state = {}
+
+    def _say(msg):
+        try:
+            viewer.status = msg
+        except Exception:
+            pass
+
+    def _make_toggle(i):
+        def _toggle(v):
+            ls = _layers_top_down(viewer)
+            if i <= len(ls):
+                layer = ls[i - 1]
+                layer.visible = not layer.visible
+                _say(f'{layer.name}: {"shown" if layer.visible else "hidden"} (Alt+{i})')
+        _toggle.__name__ = f'slic_toggle_layer_{i}'
+        return _toggle
+
+    def slic_show_all_layers(v):
+        for layer in viewer.layers:
+            layer.visible = True
+        solo_state.clear()
+        _say('All layers shown (Alt+0)')
+
+    def slic_solo_layer(v):
+        if solo_state:
+            for layer in viewer.layers:
+                if layer.name in solo_state:
+                    layer.visible = solo_state[layer.name]
+            solo_state.clear()
+            _say('Layer visibility restored (Alt+S)')
+            return
+        active = viewer.layers.selection.active
+        if active is None:
+            _say('Select a layer first, then Alt+S')
+            return
+        for layer in viewer.layers:
+            solo_state[layer.name] = layer.visible
+            layer.visible = layer is active
+        _say(f'Only {active.name} shown; Alt+S again to restore')
+
+    def _make_step(delta):
+        def _step(v):
+            ls = _layers_top_down(viewer)
+            if not ls:
+                return
+            active = viewer.layers.selection.active
+            i = ls.index(active) if active in ls else -1
+            j = min(max(i + delta, 0), len(ls) - 1)
+            viewer.layers.selection.active = ls[j]
+            _say(f'Selected layer: {ls[j].name}')
+        _step.__name__ = 'slic_select_layer_' + ('below' if delta > 0 else 'above')
+        return _step
+
+    try:
+        for i in range(1, 10):
+            viewer.bind_key(f'Alt-{i}', _make_toggle(i), overwrite=True)
+        viewer.bind_key('Alt-0', slic_show_all_layers, overwrite=True)
+        viewer.bind_key('Alt-S', slic_solo_layer, overwrite=True)
+        viewer.bind_key('Alt-Left', _make_step(-1), overwrite=True)
+        viewer.bind_key('Alt-Right', _make_step(+1), overwrite=True)
+        _LAYER_KEYS_VIEWERS.add(id(viewer))
+    except Exception as e:
+        _console(f'[SLIC] layer keys not bound: {e}')
+
+
+def _layer_key_rows(widget):
+    """The generic layer keys, with the layers open right now."""
+    rows = list(_LAYER_KEYS_STATIC)
+    viewer = getattr(widget, 'viewer', None)
+    try:
+        ls = _layers_top_down(viewer) if viewer is not None else []
+    except Exception:
+        ls = []
+    for i, layer in enumerate(ls[:9], start=1):
+        state = 'shown' if layer.visible else 'hidden'
+        rows.append((f'Alt + {i}', f'{layer.name}  ({state})'))
+    return rows
+
+
 def _shortcut_sections(widget, only_active=False):
     cls_name = type(widget).__name__
     out = []
-    for title, how, active_fn, rows in _SHORTCUTS.get(cls_name, []):
+    specs = list(_SHORTCUTS.get(cls_name, []))
+    if not only_active:
+        specs.append(('Layers (all SLIC widgets)',
+                      'Numbers follow the layer list from the top; the '
+                      'layers open now are listed below.',
+                      None, _layer_key_rows(widget)))
+    for title, how, active_fn, rows in specs:
         try:
             active = True if active_fn is None else bool(active_fn(widget))
         except Exception:
@@ -1598,6 +1704,30 @@ def _shortcuts_html(widget):
             % (_SLIC_FONT_PT, ''.join(rows_html)))
 
 
+def _show_text_dialog(widget, title, html):
+    """Non-modal window with rich text (the widget's how-to steps)."""
+    from qtpy.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+    from qtpy.QtCore import Qt
+    display = dict(_WIDGET_ORDER).get(type(widget).__name__, type(widget).__name__)
+    dlg = QDialog(getattr(widget, 'native', None))
+    dlg.setWindowTitle(f'{title} — {display}')
+    lay = QVBoxLayout(dlg)
+    lbl = QLabel(html.replace('\n', '<br>') if '<' not in html else html)
+    lbl.setTextFormat(Qt.TextFormat.RichText)
+    lbl.setWordWrap(True)
+    lay.addWidget(lbl)
+    close = QPushButton('Close')
+    close.clicked.connect(dlg.close)
+    lay.addWidget(close)
+    dlg.setStyleSheet(_SLIC_BASE_QSS + 'QDialog { background-color: #262930; } '
+                      'QLabel { color: #E0E0E0; } '
+                      'QPushButton { background-color: #414851; color: white; '
+                      'padding: 5px 14px; border-radius: 4px; }')
+    dlg.resize(760, dlg.sizeHint().height())
+    widget._text_dialog = dlg
+    dlg.show()
+
+
 def _show_shortcuts_dialog(widget):
     """Non-modal window listing the widget's shortcuts; greys out the ones
     that are not active in the current mode."""
@@ -1626,7 +1756,7 @@ def _show_shortcuts_dialog(widget):
                       'QLabel { color: #E0E0E0; } '
                       'QPushButton { background-color: #414851; color: white; '
                       'padding: 5px 14px; border-radius: 4px; }')
-    dlg.resize(620, dlg.sizeHint().height())
+    dlg.resize(760, dlg.sizeHint().height())
     widget._shortcuts_dialog = dlg
     dlg.show()
     _print_shortcuts(widget)
@@ -1651,13 +1781,27 @@ def _add_shortcut_bar(container):
     and print the table to the terminal once when the widget opens."""
     if getattr(container, '_shortcut_bar_added', False):
         return
-    if not _SHORTCUTS.get(type(container).__name__):
-        return
+    _install_layer_keys(getattr(container, 'viewer', None))
     from qtpy.QtWidgets import QWidget, QHBoxLayout, QPushButton
     bar = QWidget()
     lay = QHBoxLayout(bar)
     lay.setContentsMargins(0, 0, 0, 4)
     lay.addStretch(1)
+    # The step-by-step text used to sit in a box in the widget; it now lives
+    # behind a button (hover to read, click for a window).
+    tips = getattr(container, 'tips_label', None)
+    if tips is not None:
+        try:
+            html = str(tips.value)
+            tips.visible = False
+            info = QPushButton('ⓘ  How to use')
+            info.setStyleSheet(_SHORTCUT_BTN_QSS.replace('#FFE082', '#90CAF9')
+                               .replace('#FFB300', '#42A5F5'))
+            info.setToolTip(html)
+            info.clicked.connect(lambda *_: _show_text_dialog(container, 'How to use', html))
+            lay.addWidget(info)
+        except Exception:
+            pass
     btn = QPushButton('⌨  Keyboard shortcuts')
     btn.setStyleSheet(_SHORTCUT_BTN_QSS)
     btn.setToolTip('List every key and mouse shortcut of this step; the ones '
@@ -4623,14 +4767,17 @@ class SeededKMeans(Container):
         self.save_status = Label(value='Ready.')
         self.append(self.save_progress)
         self.append(self.save_status)
-        self.append(Label(
+        self.tips_label = Label(
             value=(
-                'Tip: For multi-localization data (e.g. AUTO over N / M / P),\n'
-                'run K-Means for each localization separately, and click\n'
-                'Save Results after EACH localization so that cluster_local /\n'
-                'cluster_tag accumulate correctly across locs in clustered.xlsx.'
+                '<b>Order</b>: Read and Plot → place or load seeds → Run '
+                'K-Means → check → Save Results.<br>'
+                '<b>Several localisations</b> (AUTO over N / M / P): run '
+                'K-Means for each localisation separately and click Save '
+                'Results after EACH one, so cluster_local / cluster_tag '
+                'accumulate correctly in clustered.xlsx.'
             )
-        ))
+        )
+        self.append(self.tips_label)
 
         _add_next_button(self, viewer)
         _tighten_container(self)
@@ -7794,6 +7941,16 @@ class Trackrevise(Container):
         # NaCha is the last step of the workflow — no Next button; the
         # celebration dialog fires from calculate_signal_ratio when it finishes.
         self._on_bs_only_changed(self.bs_only_checkbox.value)
+        self.tips_label = Label(value=(
+            '<b>1 · ▶ Read in all</b>: loads the cell masks (tracking masks, '
+            'or the Biosensor Seg mask for every frame) and the B / G / NIR '
+            'stacks from the sample folder.<br>'
+            '<b>2 · Check</b> (optional): shift channels, flag over-exposed '
+            'pixels, tick Revise+Visualize Mode and Shift+click cells.<br>'
+            '<b>3 · Barcode</b> (skipped when “Biosensor only” is ticked): '
+            'load the barcode image and click ▶ Align.<br>'
+            '<b>4 · ▶ Calculate (final)</b>: per-cell B / G / NIR, F/F0 over '
+            'the Basal Frame Range, G/B, written to signal_analysis.xlsx.'))
         _tighten_container(self)
 
     def _guard(self, fn, action):

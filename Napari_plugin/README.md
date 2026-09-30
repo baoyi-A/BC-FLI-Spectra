@@ -33,7 +33,8 @@ It exposes **seven widgets** under the napari menu
 5. 🟡 **Biosensor Seg (Cellpose)** — dual‑input Cellpose segmentation on the
    confocal biosensor stack that takes the barcode classification mask as
    an auxiliary channel, biasing segmentation toward barcode‑positive
-   cells and boosting detection rate.
+   cells and boosting detection rate. Samples without a barcode use a
+   plain model instead ([Biosensor only](#-biosensor-only-no-barcode)).
 6. 🎬 **B&P Tracker** — tracking widget for barcode / object trajectories
    (B‑Tracker & P‑Tracker combined), built on Track‑Anything / XMem.
 7. 📈 **NaCha** — final **data alignment** and **readout / visualisation**
@@ -47,7 +48,13 @@ viewer layers on transition, keeping the session clean.
 
 ## ✨ What's new
 
-The current version adds two Cellpose segmentation widgets with in‑viewer
+**1.2.0** runs biosensor-only samples (no barcode) end to end, corrects the
+F/F0 baseline in NaCha (values change, see the Changelog), explains errors in
+plain words, enlarges the interface text, and adds a **⌨ Keyboard shortcuts**
+button (with Alt+1…9 layer keys) and an **ⓘ How to use** button to every
+widget.
+
+The 1.x series adds two Cellpose segmentation widgets with in‑viewer
 editing and online fine‑tuning, runs every Cellpose call in an isolated
 subprocess, and ships the classifier as **Seeded K‑Means**.
 Release‑by‑release detail is in the [Changelog](#-changelog).
@@ -269,10 +276,24 @@ the message then says what is missing and where to set it.
 
 ## ⌨ Keyboard shortcuts
 
-Each widget that has shortcuts shows a **⌨ Keyboard shortcuts** button at
-its top; it lists them and greys out the ones that do not work in the
-current mode. The same table is printed in the terminal napari runs in when
-the widget opens, and again when an editing mode is switched on.
+Every widget has a **⌨ Keyboard shortcuts** button at its top; it lists
+the keys of that step, greys out the ones that do not work in the current
+mode, and numbers the layers that are open right now. The same table is
+printed in the terminal napari runs in when the widget opens, and again when
+an editing mode is switched on. The step-by-step notes of a widget sit
+behind the **ⓘ How to use** button next to it (hover to read, click for a
+window).
+
+**Layers, in every widget** — however many layers are open:
+
+| Keys | What they do |
+|---|---|
+| Alt+1 … Alt+9 | show / hide layer 1–9, counted from the top of the layer list |
+| Alt+0 | show every layer |
+| Alt+S | show only the selected layer; press again to restore |
+| Alt+← / Alt+→ | select the layer above / below |
+
+**Per widget:**
 
 | Widget | Keys | What they do |
 |---|---|---|
@@ -349,7 +370,7 @@ Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
 
-**Unreleased**
+**1.2.0 — 2026-09-30**
 
 - Biosensor-only samples (no barcode) now run through. Biosensor Seg and
   NaCha tick "Biosensor only (no barcode)" when the sample has no
@@ -373,11 +394,14 @@ result, PATCH otherwise.
   barcode steps that the biosensor result does not need are skipped with a
   warning that says so. NaCha's Save Track works (it read attributes the
   widget does not have).
-- Larger text and even spacing in all seven widgets, section headers
+- Larger text (12 pt Segoe UI instead of the 9 pt SimSun Windows falls back
+  to) and even spacing in all seven widgets, section headers
   across the full width, the main action buttons coloured, and a scroll
   bar on docks taller than the screen.
 - A **⌨ Keyboard shortcuts** button and a terminal print-out list every
-  shortcut per widget and mode. Barcode Seg's Shift+S / Shift+Z now bind
+  shortcut per widget and mode, and Alt+1…9 / Alt+0 / Alt+S / Alt+←→ show,
+  hide, solo and select layers in every widget. The how-to boxes moved
+  behind an **ⓘ How to use** button. Barcode Seg's Shift+S / Shift+Z now bind
   again when the widget is reopened; Seeded K-Means no longer stacks a new
   set of key handlers on every run, and matplotlib's own single-letter keys
   (g grid, f fullscreen, s save, q close ...) no longer fire on the letters

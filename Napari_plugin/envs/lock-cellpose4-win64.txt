@@ -1,4 +1,4 @@
-# bc-flim-spectra 1.1.4 -- pip layer of the 'cellpose4' environment (cellpose4), frozen 2026-09-14 on Windows-10-10.0.26340-SP0, Python 3.10.20.
+# bc-flim-spectra 1.2.0 -- pip layer of the 'cellpose4' environment (cellpose4), frozen 2026-09-30 on Windows-10-10.0.26340-SP0, Python 3.10.20.
 # The copies the interpreter actually imports, on top of the conda layer in
 # envs/conda-cellpose4-win64.txt. Apply the conda file first, then exactly:
 #   pip install --no-deps -r envs/lock-cellpose4-win64.txt
@@ -6,6 +6,7 @@
 # torch and friends carry a +cu117 tag and come from the PyTorch index below, not PyPI.
 --extra-index-url https://download.pytorch.org/whl/cu117
 # Lines with " @ git+" are packages installed from a repository at a fixed commit.
+aliyun-python-sdk-bssopenapi==2.0.3
 annotated-doc==0.0.4
 anyio==4.13.0
 cellpose==4.1.1
