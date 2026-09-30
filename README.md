@@ -67,7 +67,8 @@ returning to the menu.
 https://github.com/user-attachments/assets/38b1ef57-20be-4ee5-bfb2-d6bd414d0390
 
 *How the classifier places a cell: seeds carried from another batch, whitening by
-each barcode's own cluster spread, seeded K-means refining the centres, then an
+the pooled within-cluster spread of the batch being classified, seeded K-means
+refining the centres on that batch, then an
 isolation forest that sets aside the most anomalous tenth of each cluster rather
 than assign a cell it cannot place. Click to play.*
 - 🟡 **Biosensor Seg (Cellpose)** — dual-input segmentation on the confocal biosensor stack, using the barcode classification mask as an auxiliary channel. A biosensor experiment without barcodes also runs: the widget and NaCha detect that the sample has no barcode, skip the barcode steps, and read out every cell as one group ([details](Napari_plugin/README.md#-biosensor-only-no-barcode)).
