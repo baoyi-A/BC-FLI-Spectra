@@ -1186,6 +1186,7 @@ def _tighten_container(container, spacing: int = 5, margins=(8, 6, 8, 6)):
             lay.setContentsMargins(*margins)
     except Exception:
         pass
+    _widen_unlabelled_rows(container)
     _add_shortcut_bar(container)
     # napari puts no scroll bar on a dock, and with the larger text several
     # widgets are taller than a 1080p screen: wrap once it is docked.
@@ -1194,6 +1195,69 @@ def _tighten_container(container, spacing: int = 5, margins=(8, 6, 8, 6)):
         _QT.singleShot(0, lambda: _make_dock_scrollable(container, tries=20))
     except Exception:
         pass
+
+
+def _if_alive(fn):
+    """Wrap a deferred (QTimer) callback so it does nothing once the widget
+    it belongs to has been closed and its Qt objects deleted."""
+    def run():
+        try:
+            fn()
+        except RuntimeError as e:
+            if 'has been deleted' not in str(e):
+                raise
+    return run
+
+
+def _widen_unlabelled_rows(container):
+    """A horizontal row without a label of its own (a row of buttons or
+    checkboxes, a 2x2 knob grid) otherwise sits in the value column behind an
+    empty label cell; let it span the whole width instead."""
+    try:
+        items = list(container)
+    except Exception:
+        return
+    for w in items:
+        try:
+            if (isinstance(w, Container) and getattr(w, 'layout', '') == 'horizontal'
+                    and not w.label):
+                ref = getattr(w, '_labeled_widget_ref', None)
+                wrapper = ref() if ref is not None else None
+                if wrapper is not None:
+                    wrapper._label_widget.visible = False
+        except Exception:
+            pass
+
+
+_MAXIMISED_WINDOWS: set = set()
+
+
+def _maximise_window(win, tries=3):
+    """Maximise napari's window and check it took: called while napari is
+    still settling, showMaximized() can set the flag without resizing, so
+    re-check shortly after and, failing that, size it to the screen."""
+    from qtpy.QtCore import QTimer as _QT
+
+    def _too_small():
+        scr = win.screen().availableGeometry() if win.screen() else None
+        return scr is not None and (win.width() < 0.9 * scr.width()
+                                    or win.height() < 0.85 * scr.height())
+
+    def _check(n):
+        try:
+            if not _too_small():
+                return
+            if n > 1:
+                win.showNormal()
+                win.showMaximized()
+                _QT.singleShot(300, lambda: _check(n - 1))
+            else:
+                win.setGeometry(win.screen().availableGeometry())
+        except RuntimeError:
+            pass  # window closed meanwhile
+
+    win.showMaximized()
+    _QT.singleShot(300, lambda: _check(tries))
 
 
 def _make_dock_scrollable(container, tries=0):
@@ -1210,19 +1274,62 @@ def _make_dock_scrollable(container, tries=0):
                 _QT.singleShot(150, lambda: _make_dock_scrollable(container, tries - 1))
             return
         inner = dock.widget()
-        if inner is None or isinstance(inner, QScrollArea):
+        if inner is None or getattr(container, '_dock_wrapped', False):
             return
+        container._dock_wrapped = True
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # napari's Plugins menu finds the widget of a dock via ._magic_widget
-        scroll._magic_widget = container
         scroll.setWidget(inner)
-        dock.setWidget(scroll)
+        # The dock shows: the scrolling content, then the Next button pinned
+        # underneath so it is reachable without scrolling to the end.
+        from qtpy.QtWidgets import QWidget, QVBoxLayout
+        holder = QWidget()
+        vlay = QVBoxLayout(holder)
+        vlay.setContentsMargins(0, 0, 0, 0)
+        vlay.setSpacing(0)
+        vlay.addWidget(scroll, 1)
+        next_btn = getattr(container, '_next_btn', None)
+        if next_btn is not None:
+            footer = QWidget()
+            flay = QVBoxLayout(footer)
+            flay.setContentsMargins(8, 6, 8, 6)
+            flay.addWidget(next_btn.native)
+            vlay.addWidget(footer, 0)
+        # napari's Plugins menu finds the widget of a dock via ._magic_widget
+        holder._magic_widget = container
+        dock.setWidget(holder)
         bar_w = scroll.verticalScrollBar().sizeHint().width()
         scroll.setMinimumWidth(inner.minimumSizeHint().width() + bar_w + 2)
         inner.show()
+        # Several SLIC widgets open at once used to be stacked one above the
+        # other in the right column, leaving each a sliver of height (100-200
+        # px) with the bottom out of reach. Put them in tabs instead, so each
+        # one gets the full height and scrolls within it.
+        from qtpy.QtWidgets import QDockWidget
+        main = dock.parent()
+        # napari often opens at a size that leaves the dock too short to use:
+        # maximise its window once, the first time a SLIC widget is docked
+        # (only once, so a user who shrinks it afterwards keeps their size).
+        try:
+            win = main.window() if main is not None else None
+            if win is not None and id(win) not in _MAXIMISED_WINDOWS:
+                _MAXIMISED_WINDOWS.add(id(win))
+                if not win.isFullScreen():
+                    _maximise_window(win)
+        except Exception:
+            pass
+        if main is not None and hasattr(main, 'tabifyDockWidget'):
+            area = main.dockWidgetArea(dock)
+            others = [d for d in main.findChildren(QDockWidget)
+                      if d is not dock and not d.isHidden()
+                      and main.dockWidgetArea(d) == area
+                      and getattr(d.widget(), '_magic_widget', None) is not None]
+            if others:
+                main.tabifyDockWidget(others[-1], dock)
+                dock.show()
+                dock.raise_()
     except Exception as e:
         _console(f'[SLIC] scroll wrap skipped: {e}')
 
@@ -1447,6 +1554,7 @@ def _add_next_button(container, viewer, pre_next=None):
         _go_next_widget(container, viewer)
     btn.changed.connect(_on_click)
     container.append(btn)
+    container._next_btn = btn
     return btn
 
 
@@ -1786,6 +1894,15 @@ def _add_shortcut_bar(container):
     bar = QWidget()
     lay = QHBoxLayout(bar)
     lay.setContentsMargins(0, 0, 0, 4)
+    # Where this widget sits in the seven-step workflow.
+    names = [c for c, _ in _WIDGET_ORDER]
+    cls_name = type(container).__name__
+    if cls_name in names:
+        from qtpy.QtWidgets import QLabel
+        step = QLabel(f'Step {names.index(cls_name) + 1} of {len(names)} · '
+                      f'<b>{dict(_WIDGET_ORDER)[cls_name]}</b>')
+        step.setStyleSheet(f'QLabel {{ color: #B0BEC5; font-size: {_SLIC_FONT_PT}pt; }}')
+        lay.addWidget(step)
     lay.addStretch(1)
     # The step-by-step text used to sit in a box in the widget; it now lives
     # behind a button (hover to read, click for a window).
@@ -1802,7 +1919,7 @@ def _add_shortcut_bar(container):
             lay.addWidget(info)
         except Exception:
             pass
-    btn = QPushButton('⌨  Keyboard shortcuts')
+    btn = QPushButton('⌨  Shortcuts')
     btn.setStyleSheet(_SHORTCUT_BTN_QSS)
     btn.setToolTip('List every key and mouse shortcut of this step; the ones '
                    'that do not work in the current mode are greyed out. The '
@@ -1815,7 +1932,7 @@ def _add_shortcut_bar(container):
         return
     container._shortcut_bar_added = True
     container._shortcut_btn = btn
-    _print_shortcuts(container, reason='the "Keyboard shortcuts" button at the top of the widget shows this again')
+    _print_shortcuts(container, reason='the "Shortcuts" button at the top of the widget shows this again')
 
 
 # =========================================================================
@@ -4405,24 +4522,15 @@ class SeededKMeans(Container):
         self.ref_folders = []
 
         _append_section_divider(self,'— ⚙ Filters & clustering parameters —')
-        # Intensity Threshold
-        row = Container(layout='horizontal')
-        row.append(Label(value='Intensity Threshold'))
-        self.threshold = FloatSpinBox(min=0, max=1e6, step=1e3, value=2000)
-        row.append(self.threshold)
-        self.append(row)
-
-        # Number of Clusters
-        row = Container(layout='horizontal')
-        row.append(Label(value='Number of Clusters'))
-        self.n_clusters = SpinBox(min=1, max=50, value=5)
-        row.append(self.n_clusters)
-        self.append(row)
-
+        # Each control carries its own label so it lines up in the form's
+        # label column (the old Label + control rows centred themselves in
+        # the value column).
+        self.threshold = FloatSpinBox(label='Intensity Threshold', min=0, max=1e6,
+                                      step=1e3, value=2000)
+        self.n_clusters = SpinBox(label='Number of Clusters', min=1, max=50, value=5)
         # Clustering method — methods other than "KMeans (seeds)" ignore manual seeds.
-        row = Container(layout='horizontal')
-        row.append(Label(value='Method'))
         self.method = ComboBox(
+            label='Method',
             choices=[
                 'KMeans (seeds)',        # current behaviour: manual seeds as init
                 'KMeans++',              # auto smart init, ignores seeds
@@ -4432,73 +4540,49 @@ class SeededKMeans(Container):
             ],
             value='KMeans (seeds)',
         )
-        row.append(self.method)
-        self.append(row)
-
-        row = Container(layout='horizontal')
-        row.append(Label(value='Localization to cluster'))
-        self.loc_choice = ComboBox(choices=['AUTO', 'ALL', 'N', 'M', 'P'], value='AUTO')
-        row.append(self.loc_choice)
-        self.append(row)
+        self.loc_choice = ComboBox(label='Localization to cluster',
+                                   choices=['AUTO', 'ALL', 'N', 'M', 'P'], value='AUTO')
+        for _w in (self.threshold, self.n_clusters, self.method, self.loc_choice):
+            self.append(_w)
 
         # --- Per-FOV mode: each FOV in FLIM-S gets its own K-Means run ---
         # Default OFF = legacy pooled behaviour (one fit across all FOVs).
         # When ON, clicking Run K-Means popups a FOV checklist (default all
-        # selected) and the method runs separately per chosen FOV. Useful
-        # when FOVs have systematically different distributions and pooled
-        # clustering muddles class boundaries.
+        # selected) and the method runs separately per chosen FOV.
         from magicgui.widgets import CheckBox as _CheckBox  # local import
-        row = Container(layout='horizontal')
         self.kmeans_per_fov = _CheckBox(
             text='Per-FOV K-Means (popup picks which FOVs)', value=False,
         )
-        row.append(self.kmeans_per_fov)
-        self.append(row)
-
         # --- Whiten by the within-cluster spread of this acquisition (before the outlier pass) ---
         # The diagonal 5D weights cannot describe a cluster that is long, thin and tilted, so the
         # two closest barcodes can swap when a saved seed set is reused on a new acquisition.
         # Whitening by the pooled covariance of the clusters found in the first pass (no labels
         # involved) fixes that; see _self_whiten for the reasoning and the guard.
-        row = Container(layout='horizontal')
         self.selfwhiten_enable = _CheckBox(text='Whiten by within-cluster spread', value=True)
-        row.append(self.selfwhiten_enable)
-        self.append(row)
-
         # --- Outlier detection (marks bad cells as cluster 0 before K-Means) ---
-        row = Container(layout='horizontal')
         self.outlier_enable = _CheckBox(text='Auto-detect outliers -> class 0', value=True)
-        row.append(self.outlier_enable)
-        self.append(row)
-
-        row = Container(layout='horizontal')
-        row.append(Label(value='Outlier contamination'))
-        self.outlier_contam = FloatSpinBox(min=0.0, max=0.3, step=0.01, value=0.1)
-        row.append(self.outlier_contam)
+        for _w in (self.kmeans_per_fov, self.selfwhiten_enable, self.outlier_enable):
+            self.append(_w)
+        self.outlier_contam = FloatSpinBox(label='Outlier contamination',
+                                           min=0.0, max=0.3, step=0.01, value=0.1)
+        self.append(self.outlier_contam)
         self.rerun_outlier_btn = PushButton(text='Re-flag outliers')
         self.rerun_outlier_btn.clicked.connect(self.rerun_outliers)
-        row.append(self.rerun_outlier_btn)
-        self.append(row)
+        self.append(self.rerun_outlier_btn)
 
         _append_section_divider(self,'— ⚖ 5D weights for scaling —')
-        # Weights for dimensions
+        # Weights for dimensions, one row each.
         self.weights = {}
         for d in ['G', 'S', 'Int1', 'Int2', 'Int3']:
-            row = Container(layout='horizontal')
-            row.append(Label(value=f'Weight {d}'))
-            if d in ['G', 'S']:
-                value = 4.0
-            else:
-                value = 1.0
-            w = FloatSpinBox(min=0.0, max=10.0, step=0.1, value=value)
+            value = 4.0 if d in ['G', 'S'] else 1.0
+            w = FloatSpinBox(label=f'Weight {d}', min=0.0, max=10.0, step=0.1, value=value)
             _tt(w, 'Stretches this one axis before distances are taken. Each '
                    'weight acts on its own axis only, which cannot describe a '
                    'cluster that is long, thin and tilted. That is what "Whiten '
                    'by within-cluster spread" above does instead; while it is '
                    'ticked these weights carry almost nothing.')
-            row.append(w)
-            self.append(row)
             self.weights[d] = w
+            self.append(w)
 
         _append_section_divider(self,'— 💾 Seeds & distribution —')
         # --- Seeds row: Save + FileEdit (defaults to a discovered seeds file) + Load ---
@@ -4532,14 +4616,12 @@ class SeededKMeans(Container):
         # Distribution-overlay expansion. 1.0 = raw convex hull (tight); larger
         # values inflate the hull around each cluster centroid so the region
         # is easier to see as a light background on the scatter plot.
-        dist_scale_row = Container(layout='horizontal')
-        dist_scale_row.append(Label(value='Distribution expand ×'))
         self.dist_inflate = FloatSpinBox(min=1.0, max=3.0, step=0.05, value=2.0)
         self.dist_inflate.changed.connect(self._redraw_distribution_if_loaded)
-        dist_scale_row.append(self.dist_inflate)
         self.dist_apply_btn = PushButton(text='Apply')
         self.dist_apply_btn.clicked.connect(self._redraw_distribution_if_loaded)
-        dist_scale_row.append(self.dist_apply_btn)
+        dist_scale_row = _hrow(self.dist_inflate, self.dist_apply_btn)
+        dist_scale_row.label = 'Distribution expand ×'
         self.append(dist_scale_row)
 
         # Auto-fill both file paths on startup + when the sample folder changes.
@@ -4675,16 +4757,17 @@ class SeededKMeans(Container):
             label='Harmony max iter', min=5, max=100, step=5, value=30,
         )
         self.harmony_run_btn = PushButton(
-            text='🎯 Calibrate & Auto-classify (Harmony)',
+            text='🎯 Calibrate && Auto-classify (Harmony)',  # && = a literal & in Qt
         )
         self.harmony_run_btn.clicked.connect(self._on_harmony_run)
         _style_process_button(self.harmony_run_btn)
 
         self.append(self.harmony_enable)
         self.append(self.harmony_ref_csv)
-        self.append(_hrow(self.harmony_label_col, self.harmony_per_class))
-        self.append(_hrow(self.harmony_theta, self.harmony_nclust))
-        self.append(_hrow(self.harmony_knn_k, self.harmony_max_iter))
+        for _w in (self.harmony_label_col, self.harmony_per_class,
+                   self.harmony_theta, self.harmony_nclust,
+                   self.harmony_knn_k, self.harmony_max_iter):
+            self.append(_w)
         self.append(self.harmony_run_btn)
         _tt(self.harmony_enable,
             'When ticked, the ▶ Run K-Means button is bypassed: clicking '
@@ -6473,7 +6556,7 @@ class SeededKMeans(Container):
             f"Clustering done for Localization='{loc}'. Correct by hand in the "
             "plot window: press 1-9 / a-z (0 = outlier) to choose a class, then "
             "Ctrl+click a cell or Shift+click and draw a lasso. Full list: "
-            "\"Keyboard shortcuts\" (top of the widget)."
+            "\"Shortcuts\" (top of the widget)."
         )
         _print_shortcuts(self, only_active=True, reason='after Run K-Means')
 
@@ -7480,7 +7563,14 @@ class Trackrevise(Container):
         super().__init__()
         self.viewer = viewer
         self.plot_widget = PlotWidget()
-        self.viewer.window.add_dock_widget(self.plot_widget, area='bottom', name='Signal')
+        self._signal_dock = self.viewer.window.add_dock_widget(
+            self.plot_widget, area='bottom', name='Signal')
+        try:
+            # shown on the first Shift+click (plot); until then it only took
+            # height away from the widgets
+            self._signal_dock.hide()
+        except Exception:
+            pass
         self.masks_history = []
 
 
@@ -9242,7 +9332,7 @@ class Trackrevise(Container):
                 'Revise Mode on (click on the Masks layer): Shift+click plots '
                 'a cell, Ctrl+click deletes it from this frame on, '
                 'Ctrl+Alt+click deletes it in this frame only, U undoes. '
-                'Full list: "Keyboard shortcuts" at the top.')
+                'Full list: "Shortcuts" at the top.')
             _print_shortcuts(self, only_active=True, reason='Revise mode on')
 
         else:
@@ -9354,6 +9444,10 @@ class Trackrevise(Container):
                 return
 
             # Call your plotting function with the signals and their corresponding labels.
+            try:
+                self._signal_dock.show()
+            except Exception:
+                pass
             self.plot_widget.plot_signal(*signals_to_plot, titles=labels_to_plot)
 
             # Mark the mask as selected and notify the user.
@@ -10202,9 +10296,7 @@ class BPTracker(Container):
         self.append(self.tracker_stack_b)
         self.append(self.tracker_stack_g)
         self.append(self.tracker_stack_y)
-        self.append(self.tracker_use_b)
-        self.append(self.tracker_use_g)
-        self.append(self.tracker_use_y)
+        self.append(_hrow(self.tracker_use_b, self.tracker_use_g, self.tracker_use_y))
         self.append(self.window_size)
         self.append(self.build_stack_btn)
 
@@ -10220,8 +10312,7 @@ class BPTracker(Container):
         self.append(self.log_alpha)
         self.append(self.colormap)
         self.append(self.smooth_btn)
-        self.append(self.preview_btn)
-        self.append(self.visualize_btn)
+        self.append(_hrow(self.preview_btn, self.visualize_btn))
 
         _append_section_divider(self, '— ▶ Track —')
         self.append(self.backend)
@@ -10233,11 +10324,9 @@ class BPTracker(Container):
         self.append(self.max_batch_size)
         self.append(self.uint16_mode)
         self.append(self.track_btn)
-        self.append(self.stop_btn)
-        self.append(self.save_btn)
+        self.append(_hrow(self.stop_btn, self.save_btn))
 
         _add_next_button(self, viewer)
-        _tighten_container(self)
         _add_logo_header(
             self,
             title='B&P Tracker',
@@ -10245,6 +10334,7 @@ class BPTracker(Container):
             logo_path=_TRACK_ANYTHING_LOGO_PATH,
             logo_size=30,
         )
+        _tighten_container(self)  # after the header, so the top bar sits above it
         # viewer.window.add_dock_widget(self, area='right', name='Multi-Model Tracker')
 
     def _on_stop(self):
@@ -12478,12 +12568,12 @@ class BarcodeSeg(Container):
         # Only meaningful when the input is multichannel — cpsam v4
         # mostly ignores this and segments all channels anyway.
         self.n_channels_choice = ComboBox(
-            label='N cellpose channels',
+            label='N channels',
             choices=list(_CELLPOSE_CHANNEL_PRESETS),
             value=_CELLPOSE_CHANNEL_AUTO_LABEL,
         )
         self.p_channels_choice = ComboBox(
-            label='P cellpose channels',
+            label='P channels',
             choices=list(_CELLPOSE_CHANNEL_PRESETS),
             value=_CELLPOSE_CHANNEL_AUTO_LABEL,
         )
@@ -12577,6 +12667,13 @@ class BarcodeSeg(Container):
                 '  font-family: Calibri;'
                 '}'
             )
+            # Long paths must not set the width of the whole dock: let the
+            # box follow the dock and wrap (also after each backslash).
+            from qtpy.QtWidgets import QSizePolicy as _SP
+            self.env_status_label.native.setSizePolicy(_SP.Policy.Ignored, _SP.Policy.Preferred)
+            self.env_status_label.native.setMinimumWidth(0)
+            self.env_status_label.value = str(self.env_status_label.value).replace(
+                '\\', '\\​')
         except Exception:
             pass
 
@@ -12796,7 +12893,7 @@ class BarcodeSeg(Container):
                 '<b>Editing</b>: select <code>mask_n_fill</code> / '
                 '<code>mask_p_fill</code> in the layer list, then right-click '
                 'to draw, Ctrl+click to delete, <b>Shift+S</b> to save. Every '
-                'key: <b>⌨ Keyboard shortcuts</b> at the top.<br>'
+                'key: <b>⌨ Shortcuts</b> at the top.<br>'
                 '<b>Auto-save</b>: Auto Segment / Re-seg write '
                 '<code>*_seg_n.npy</code> / <code>*_seg_p.npy</code>; click '
                 '<b>Save masks</b> after manual edits.'
@@ -12827,12 +12924,10 @@ class BarcodeSeg(Container):
         _append_section_divider(self, '— 🧠 Models & parameters —')
         # do_n / do_p on one row to halve the height of the head selectors.
         self.append(_hrow(self.do_n, self.do_p))
-        self.append(self.n_model)
-        self.append(_hrow(self.n_diameter, self.n_channels_choice))
-        self.append(self.n_input_kind)
-        self.append(self.p_model)
-        self.append(_hrow(self.p_diameter, self.p_channels_choice))
-        self.append(self.p_input_kind)
+        for _w in (self.n_model, self.n_diameter, self.n_channels_choice,
+                   self.n_input_kind, self.p_model, self.p_diameter,
+                   self.p_channels_choice, self.p_input_kind):
+            self.append(_w)
         # Three small toggles / refresh button live on one row instead of
         # eating three full-height rows.
         self.append(_hrow(self.use_gpu, self.show_diameter_ref,
@@ -12894,10 +12989,10 @@ class BarcodeSeg(Container):
         # the full list without needing the manual button.
         try:
             from qtpy.QtCore import QTimer as _QT
-            _QT.singleShot(0,   self._refresh_model_choices)
-            _QT.singleShot(400, self._refresh_model_choices)
-            _QT.singleShot(0,   self._refresh_image_choices)
-            _QT.singleShot(400, self._refresh_image_choices)
+            _QT.singleShot(0,   _if_alive(self._refresh_model_choices))
+            _QT.singleShot(400, _if_alive(self._refresh_model_choices))
+            _QT.singleShot(0,   _if_alive(self._refresh_image_choices))
+            _QT.singleShot(400, _if_alive(self._refresh_image_choices))
         except Exception as _e:
             print(f'[BarcodeSeg] deferred refresh setup failed: {_e}')
         try:
@@ -15018,7 +15113,7 @@ class BiosensorSeg(Container):
                 'overlay you see.<br>'
                 '<b>3 · Segment & edit</b>: the mask is saved to '
                 '<code>&lt;seg_image&gt;_seg.npy</code>; edit it, then '
-                '<b>Save mask</b>. Editing keys: <b>⌨ Keyboard shortcuts</b> '
+                '<b>Save mask</b>. Editing keys: <b>⌨ Shortcuts</b> '
                 'at the top.'
             ),
         )
@@ -15185,8 +15280,8 @@ class BiosensorSeg(Container):
         # realisation can clobber the QComboBox items.
         try:
             from qtpy.QtCore import QTimer as _QT
-            _QT.singleShot(0,   self._refresh_seg_model_choices)
-            _QT.singleShot(400, self._refresh_seg_model_choices)
+            _QT.singleShot(0,   _if_alive(self._refresh_seg_model_choices))
+            _QT.singleShot(400, _if_alive(self._refresh_seg_model_choices))
         except Exception:
             pass
         self._bind_viewer_callbacks()

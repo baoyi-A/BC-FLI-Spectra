@@ -81,7 +81,7 @@ is a barcode, its biosensor, the three confocal channels, and that population's
 own response to the stimulus. A full step-by-step
 [instruction video](https://zenodo.org/records/17045806) is on Zenodo.*
 
-Every widget has a **⌨ Keyboard shortcuts** button listing the keys of that
+Every widget has a **⌨ Shortcuts** button listing the keys of that
 step, including Alt+1…9 to show or hide layers ([full table](Napari_plugin/README.md#-keyboard-shortcuts)),
 and an **ⓘ How to use** button with the step-by-step notes.
 

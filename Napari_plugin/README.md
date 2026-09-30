@@ -48,11 +48,11 @@ viewer layers on transition, keeping the session clean.
 
 ## ✨ What's new
 
-**1.2.0** runs biosensor-only samples (no barcode) end to end, corrects the
+**1.2** runs biosensor-only samples (no barcode) end to end, corrects the
 F/F0 baseline in NaCha (values change, see the Changelog), explains errors in
-plain words, enlarges the interface text, and adds a **⌨ Keyboard shortcuts**
-button (with Alt+1…9 layer keys) and an **ⓘ How to use** button to every
-widget.
+plain words, and gives every widget the same clearer layout with larger text,
+a **⌨ Shortcuts** button (with Alt+1…9 layer keys) and an **ⓘ How to use**
+button.
 
 The 1.x series adds two Cellpose segmentation widgets with in‑viewer
 editing and online fine‑tuning, runs every Cellpose call in an isolated
@@ -276,7 +276,7 @@ the message then says what is missing and where to set it.
 
 ## ⌨ Keyboard shortcuts
 
-Every widget has a **⌨ Keyboard shortcuts** button at its top; it lists
+Every widget has a **⌨ Shortcuts** button at its top; it lists
 the keys of that step, greys out the ones that do not work in the current
 mode, and numbers the layers that are open right now. The same table is
 printed in the terminal napari runs in when the widget opens, and again when
@@ -369,6 +369,26 @@ Napari_plugin/
 Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
+
+**1.2.1 — 2026-09-30**
+
+- Every widget laid out the same way: a top bar with "Step k of 7" and the
+  **ⓘ How to use** / **⌨ Shortcuts** buttons, controls aligned in one label
+  column (Seeded K-Means' parameters used to centre themselves in the right
+  half), rows of buttons and check boxes across the full width, crowded
+  two-in-a-row controls split so no value is cut off. Docks are 540–760 px
+  wide (Barcode Seg was 1056).
+- Everything stays reachable on a small or un-maximised window: napari's
+  window is maximised the first time a SLIC widget opens (napari otherwise
+  reopens at whatever size the last person left it); several SLIC widgets
+  open at once share the right column as tabs, each with the full height,
+  instead of being stacked into slivers of 100–200 px; each dock scrolls,
+  with the **Next ▶** button pinned below the scrolling part; NaCha's
+  Signal panel appears on the first Shift+click instead of taking ~300 px
+  from the start.
+- A widget closed within half a second of opening no longer raises
+  "wrapped C/C++ object has been deleted" from its delayed model-list
+  refresh. The Harmony button shows its "&".
 
 **1.2.0 — 2026-09-30**
 

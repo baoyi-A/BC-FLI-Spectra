@@ -1,4 +1,4 @@
-# bc-flim-spectra 1.2.0 -- pip layer of the 'cellpose2' environment (cellpose), frozen 2026-09-30 on Windows-10-10.0.26340-SP0, Python 3.8.18.
+# bc-flim-spectra 1.2.1 -- pip layer of the 'cellpose2' environment (cellpose), frozen 2026-09-30 on Windows-10-10.0.26340-SP0, Python 3.8.18.
 # The copies the interpreter actually imports, on top of the conda layer in
 # envs/conda-cellpose2-win64.txt. Apply the conda file first, then exactly:
 #   pip install --no-deps -r envs/lock-cellpose2-win64.txt
