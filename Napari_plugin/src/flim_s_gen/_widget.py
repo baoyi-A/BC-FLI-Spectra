@@ -1108,13 +1108,25 @@ def _go_next_widget(container, viewer):
         _do_transition()
 
 
+# One text size for every SLIC widget. napari's own default is about 9 pt,
+# which users found too small on the lab screens.
+_SLIC_FONT_PT = 11
+_SLIC_BASE_QSS = (
+    'QLabel, QCheckBox, QRadioButton, QPushButton, QComboBox, QLineEdit, '
+    'QAbstractSpinBox, QGroupBox, QProgressBar, QToolButton, QSlider '
+    f'{{ font-size: {_SLIC_FONT_PT}pt; }} '
+    'QPushButton { min-height: 26px; } '
+    'QLineEdit, QComboBox, QAbstractSpinBox { min-height: 24px; } '
+)
+
 _NEXT_BTN_STYLE = (
     "QPushButton {"
     "  background-color: #1E88E5;"
     "  color: white;"
     "  font-weight: bold;"
-    "  padding: 6px 12px;"
-    "  border-radius: 4px;"
+    f"  font-size: {_SLIC_FONT_PT + 1}pt;"
+    "  padding: 8px 14px;"
+    "  border-radius: 5px;"
     "  font-family: Calibri;"
     "} "
     "QPushButton:hover { background-color: #1565C0; } "
@@ -1126,8 +1138,9 @@ _PROCESS_BTN_STYLE = (
     "  background-color: #43A047;"
     "  color: white;"
     "  font-weight: bold;"
-    "  padding: 6px 12px;"
-    "  border-radius: 4px;"
+    f"  font-size: {_SLIC_FONT_PT + 1}pt;"
+    "  padding: 7px 14px;"
+    "  border-radius: 5px;"
     "  font-family: Calibri;"
     "} "
     "QPushButton:hover { background-color: #2E7D32; } "
@@ -1148,10 +1161,23 @@ _CELLPOSE_LOGO_PATH = _PLUGIN_RESOURCES / 'cellpose_logo.png'
 _TRACK_ANYTHING_LOGO_PATH = _PLUGIN_RESOURCES / 'track_anything_logo.png'
 
 
-def _tighten_container(container, spacing: int = 1, margins=(3, 3, 3, 3)):
-    """Reduce the default row spacing / margins on a magicgui Container so
-    dense widgets fit without squeezing the napari canvas. Widget font
-    sizes are left at the napari default — only inter-row gaps shrink."""
+def _apply_slic_style(container):
+    """Give a widget the shared SLIC text size (``_SLIC_BASE_QSS``).
+
+    Set on the widget's root so every child inherits it; children that set
+    their own colours keep them, only the size comes from here."""
+    w = getattr(container, 'native', container)
+    try:
+        w.setStyleSheet(_SLIC_BASE_QSS + (w.styleSheet() or ''))
+    except Exception:
+        pass
+
+
+def _tighten_container(container, spacing: int = 5, margins=(8, 6, 8, 6)):
+    """Final layout pass for a workflow widget: shared text size plus even
+    row spacing and margins. Every widget calls it at the end of
+    ``__init__``, so this is the one place the overall look is set."""
+    _apply_slic_style(container)
     try:
         lay = container.native.layout()
         if lay is not None:
@@ -1159,13 +1185,51 @@ def _tighten_container(container, spacing: int = 1, margins=(3, 3, 3, 3)):
             lay.setContentsMargins(*margins)
     except Exception:
         pass
+    _add_shortcut_bar(container)
+    # napari puts no scroll bar on a dock, and with the larger text several
+    # widgets are taller than a 1080p screen: wrap once it is docked.
+    try:
+        from qtpy.QtCore import QTimer as _QT
+        _QT.singleShot(0, lambda: _make_dock_scrollable(container, tries=20))
+    except Exception:
+        pass
+
+
+def _make_dock_scrollable(container, tries=0):
+    """Put the docked widget inside a vertical scroll area so a widget taller
+    than the screen scrolls instead of being cut off. Runs after napari has
+    docked it; does nothing for an undocked widget."""
+    try:
+        from qtpy.QtWidgets import QScrollArea, QFrame
+        from qtpy.QtCore import Qt
+        dock = _find_dock_parent(container.native)
+        if dock is None:
+            if tries > 0:
+                from qtpy.QtCore import QTimer as _QT
+                _QT.singleShot(150, lambda: _make_dock_scrollable(container, tries - 1))
+            return
+        inner = dock.widget()
+        if inner is None or isinstance(inner, QScrollArea):
+            return
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # napari's Plugins menu finds the widget of a dock via ._magic_widget
+        scroll._magic_widget = container
+        scroll.setWidget(inner)
+        dock.setWidget(scroll)
+        bar_w = scroll.verticalScrollBar().sizeHint().width()
+        scroll.setMinimumWidth(inner.minimumSizeHint().width() + bar_w + 2)
+        inner.show()
+    except Exception as e:
+        _console(f'[SLIC] scroll wrap skipped: {e}')
 
 
 def _hrow(*ws):
-    """Return a horizontal Container with the given widgets, near-zero
-    margins. Pair related buttons / checkboxes onto a single row so the
-    workflow widget doesn't grow vertically forever — fonts stay at the
-    default size, only the spacing tightens."""
+    """Return a horizontal Container with the given widgets and no margins.
+    Pairs related buttons / checkboxes onto one row so the widget does not
+    grow vertically forever."""
     c = Container(layout='horizontal', widgets=list(ws))
     try:
         c.margins = (0, 0, 0, 0)
@@ -1174,31 +1238,47 @@ def _hrow(*ws):
     try:
         lay = c.native.layout()
         if lay is not None:
-            lay.setSpacing(2)
+            lay.setSpacing(8)
             lay.setContentsMargins(0, 0, 0, 0)
     except Exception:
         pass
     return c
 
 
+_SECTION_DIVIDER_QSS = (
+    'QLabel {'
+    '  color: #CE93D8;'
+    '  font-weight: bold;'
+    f'  font-size: {_SLIC_FONT_PT + 1}pt;'
+    '  font-family: Calibri;'
+    '  padding: 10px 4px 3px 4px;'
+    '  border-bottom: 2px solid #7B1FA2;'
+    '}'
+)
+
+
 def _append_section_divider(container, text: str):
-    """Append a small styled header Label to group the rows that follow.
+    """Append a styled header Label to group the rows that follow.
     Shared by all workflow widgets for visual consistency."""
     from magicgui.widgets import Label as _Label
     lbl = _Label(value=text)
     try:
-        lbl.native.setStyleSheet(
-            'QLabel {'
-            '  color: #CE93D8;'
-            '  font-weight: bold;'
-            '  font-family: Calibri;'
-            '  padding: 3px 4px 1px 4px;'
-            '  border-bottom: 1px solid #7B1FA2;'
-            '}'
-        )
+        lbl.native.setStyleSheet(_SECTION_DIVIDER_QSS)
     except Exception:
         pass
     container.append(lbl)
+    try:
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import QSizePolicy
+        ref = getattr(lbl, '_labeled_widget_ref', None)
+        wrapper = ref() if ref is not None else None
+        if wrapper is not None:
+            wrapper._label_widget.visible = False
+        lbl.native.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lbl.native.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    except Exception:
+        pass
+    return lbl
 
 
 def _add_logo_header(container, title, subtitle, logo_path, logo_size=40):
@@ -1224,8 +1304,8 @@ def _add_logo_header(container, title, subtitle, logo_path, logo_size=40):
         lay.addWidget(logo_lbl)
 
     text_lbl = QLabel(
-        f'<div style="font-weight:bold;">{title}</div>'
-        f'<div style="color:#888888; font-size:10px;">{subtitle}</div>'
+        f'<div style="font-weight:bold; font-size:{_SLIC_FONT_PT + 3}pt;">{title}</div>'
+        f'<div style="color:#9E9E9E; font-size:{_SLIC_FONT_PT - 1}pt;">{subtitle}</div>'
     )
     text_lbl.setTextFormat(Qt.TextFormat.RichText)
     lay.addWidget(text_lbl)
@@ -1270,8 +1350,8 @@ def _add_cellpose_header(container, title='Cellpose Segmentation', logo_size=40)
         lay.addWidget(logo_lbl)
 
     text_lbl = QLabel(
-        f'<div style="font-weight:bold;">{title}</div>'
-        f'<div style="color:#888888; font-size:10px;">Powered by Cellpose</div>'
+        f'<div style="font-weight:bold; font-size:{_SLIC_FONT_PT + 3}pt;">{title}</div>'
+        f'<div style="color:#9E9E9E; font-size:{_SLIC_FONT_PT - 1}pt;">Powered by Cellpose</div>'
     )
     text_lbl.setTextFormat(Qt.TextFormat.RichText)
     lay.addWidget(text_lbl)
@@ -1314,8 +1394,8 @@ _NEXT_STEP_CHECKLIST = {
     ),
     'BiosensorSeg': (
         "Before clicking Next, make sure seg_image.tif + seg_image_seg.npy "
-        "are saved, and the mask looks right when overlaid on the "
-        "barcode classification layer."
+        "are saved, and the mask looks right (overlaid on the barcode "
+        "classification layer, if the sample has one)."
     ),
     'BPTracker': (
         "Before clicking Next, save per-frame tracking masks if you ran "
@@ -1367,6 +1447,316 @@ def _add_next_button(container, viewer, pre_next=None):
     btn.changed.connect(_on_click)
     container.append(btn)
     return btn
+
+
+# =========================================================================
+# Keyboard shortcuts — the one list. The ⌨ Shortcuts button at the top of a
+# widget shows its entry, and the same table is printed to the terminal when
+# the widget opens or enters an editing mode. Update this whenever a
+# bind_key / mouse callback changes.
+# Each section: (title, how-to-activate, active_fn or None, [(keys, action)])
+# active_fn(widget) -> bool says whether the section works right now.
+# =========================================================================
+_NAPARI_LABEL_KEYS = [
+    ('1 / 2 / 3 / 4 / 5', 'erase / paint / fill / pick label / pan-zoom (napari)'),
+    ('[  /  ]', 'brush size smaller / larger (napari)'),
+    ('M', 'next unused label id (napari)'),
+    ('Ctrl + Z', 'napari undo of a paint stroke'),
+    ('Space (hold)', 'pan / zoom while painting (napari)'),
+]
+
+_SHORTCUTS = {
+    'BarcodeSeg': [
+        ('Edit masks',
+         'Select mask_n_fill or mask_p_fill in the layer list first.',
+         None,
+         [('Right-click', 'start a polygon, right-click again to commit '
+                          '(it also closes itself near the start point)'),
+          ('Enter', 'commit the polygon as a new cell'),
+          ('Esc', 'cancel the polygon'),
+          ('Ctrl + click', 'delete the cell under the cursor'),
+          ('Z  /  X', 'show / hide the N / P mask (and select it)'),
+          ('S', 'cycle the contrast of the sum image')]),
+        ('Whole widget', '', None,
+         [('Shift + S', 'save masks'),
+          ('Shift + Z', 'undo the last post-processing')]),
+        ('napari Labels tools', 'Built into napari, on the selected mask layer.',
+         None, _NAPARI_LABEL_KEYS),
+    ],
+    'BiosensorSeg': [
+        ('Edit the biosensor mask',
+         'Select mask_biosensor in the layer list first.',
+         None,
+         [('Right-click', 'start a polygon, right-click again to commit '
+                          '(it also closes itself near the start point)'),
+          ('Enter', 'commit the polygon as a new cell'),
+          ('Esc', 'cancel the polygon'),
+          ('Ctrl + click', 'delete the cell under the cursor'),
+          ('Z', 'show / hide mask_biosensor (and select it)'),
+          ('X', 'show / hide the barcode overlay (only if one is loaded)'),
+          ('S', 'cycle the contrast of seg_image')]),
+        ('napari Labels tools', 'Built into napari, on mask_biosensor.',
+         None, _NAPARI_LABEL_KEYS),
+    ],
+    'SeededKMeans': [
+        ('Place seeds',
+         'After Read and Plot. Click in the plot window.',
+         lambda w: getattr(w, 'fig', None) is not None,
+         [('Click', 'place a seed on the nearest cell, one per class'),
+          ('Drag a star', 'move that seed')]),
+        ('Correct classes by hand',
+         'After Run K-Means. Click the plot window first so it has the keyboard.',
+         lambda w: getattr(w, '_manual_edit_ready', False),
+         [('1 - 9', 'choose class 1 - 9 to assign'),
+          ('a - z', 'choose class 10 - 35 (a = 10, b = 11, ...)'),
+          ('0', 'choose class 0 = outlier'),
+          ('Ctrl + click', 'give the nearest cell the chosen class'),
+          ('Shift + click, then draw', 'lasso: give every enclosed cell the chosen class')]),
+    ],
+    'Trackrevise': [
+        ('Revise + Visualize mode',
+         'Tick "Revise+Visualize Mode", then click on the Masks layer.',
+         lambda w: bool(getattr(getattr(w, 'revise_mode_checkbox', None), 'value', False)),
+         [('Shift + click', "plot this cell's signal in the Signal panel"),
+          ('Ctrl + click', 'delete this cell from the current frame to the end'),
+          ('Ctrl + Alt + click', 'delete this cell in the current frame only'),
+          ('U', 'undo the last delete (keeps 3)')]),
+    ],
+}
+
+
+def _console(text):
+    """print() that cannot crash a widget: napari is often started from a
+    Windows console using the GBK / cp936 code page, which cannot encode
+    some characters used in the UI text."""
+    import sys as _sys
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(_sys.stdout, 'encoding', None) or 'ascii'
+        try:
+            print(text.encode(enc, errors='replace').decode(enc, errors='replace'),
+                  flush=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _shortcut_sections(widget, only_active=False):
+    cls_name = type(widget).__name__
+    out = []
+    for title, how, active_fn, rows in _SHORTCUTS.get(cls_name, []):
+        try:
+            active = True if active_fn is None else bool(active_fn(widget))
+        except Exception:
+            active = False
+        if only_active and not active:
+            continue
+        out.append((title, how, active, rows))
+    return out
+
+
+def _print_shortcuts(widget, only_active=False, reason=''):
+    """Print the widget's shortcut table to the terminal napari runs in."""
+    sections = _shortcut_sections(widget, only_active=only_active)
+    if not sections:
+        return
+    display = dict(_WIDGET_ORDER).get(type(widget).__name__, type(widget).__name__)
+    width = max(len(k) for _, _, _, rows in sections for k, _ in rows)
+    lines = [f'[SLIC] Keyboard shortcuts - {display}'
+             + (f' ({reason})' if reason else '')]
+    for title, how, active, rows in sections:
+        state = '' if active else '   [not active yet]'
+        lines.append(f'  {title}{state}')
+        if how:
+            lines.append(f'    ({how})')
+        for keys, action in rows:
+            lines.append(f'    {keys.ljust(width)}   {action}')
+    _console('\n'.join(lines))
+
+
+def _shortcuts_html(widget):
+    rows_html = []
+    for title, how, active, rows in _shortcut_sections(widget):
+        colour = '#E0E0E0' if active else '#8A8A8A'
+        badge = ('' if active else
+                 ' <span style="color:#FFB74D;">— not active yet</span>')
+        rows_html.append(
+            f'<tr><td colspan="2" style="padding-top:10px; color:#CE93D8; '
+            f'font-weight:bold;">{title}{badge}</td></tr>')
+        if how:
+            rows_html.append(
+                f'<tr><td colspan="2" style="color:#9E9E9E; '
+                f'font-style:italic;">{how}</td></tr>')
+        for keys, action in rows:
+            rows_html.append(
+                f'<tr><td style="padding:2px 14px 2px 6px; color:{colour}; '
+                f'font-family:Consolas; font-weight:bold; white-space:nowrap;">'
+                f'{keys}</td><td style="color:{colour};">{action}</td></tr>')
+    return ('<table cellspacing="0" style="font-size:%dpt;">%s</table>'
+            % (_SLIC_FONT_PT, ''.join(rows_html)))
+
+
+def _show_shortcuts_dialog(widget):
+    """Non-modal window listing the widget's shortcuts; greys out the ones
+    that are not active in the current mode."""
+    from qtpy.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+    from qtpy.QtCore import Qt
+    display = dict(_WIDGET_ORDER).get(type(widget).__name__, type(widget).__name__)
+    old = getattr(widget, '_shortcuts_dialog', None)
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass
+    dlg = QDialog(getattr(widget, 'native', None))
+    dlg.setWindowTitle(f'Keyboard shortcuts — {display}')
+    lay = QVBoxLayout(dlg)
+    lbl = QLabel(_shortcuts_html(widget))
+    lbl.setTextFormat(Qt.TextFormat.RichText)
+    lbl.setWordWrap(True)
+    lay.addWidget(lbl)
+    close = QPushButton('Close')
+    close.clicked.connect(dlg.close)
+    lay.addWidget(close)
+    # own dark background so the colours read the same with or without
+    # napari's theme reaching the dialog
+    dlg.setStyleSheet(_SLIC_BASE_QSS + 'QDialog { background-color: #262930; } '
+                      'QLabel { color: #E0E0E0; } '
+                      'QPushButton { background-color: #414851; color: white; '
+                      'padding: 5px 14px; border-radius: 4px; }')
+    dlg.resize(620, dlg.sizeHint().height())
+    widget._shortcuts_dialog = dlg
+    dlg.show()
+    _print_shortcuts(widget)
+
+
+_SHORTCUT_BTN_QSS = (
+    'QPushButton {'
+    '  background-color: #37474F;'
+    '  color: #FFE082;'
+    '  font-weight: bold;'
+    f'  font-size: {_SLIC_FONT_PT}pt;'
+    '  padding: 4px 12px;'
+    '  border: 1px solid #FFB300;'
+    '  border-radius: 5px;'
+    '} '
+    'QPushButton:hover { background-color: #455A64; }'
+)
+
+
+def _add_shortcut_bar(container):
+    """Put a '⌨ Shortcuts' button at the very top of a widget that has any,
+    and print the table to the terminal once when the widget opens."""
+    if getattr(container, '_shortcut_bar_added', False):
+        return
+    if not _SHORTCUTS.get(type(container).__name__):
+        return
+    from qtpy.QtWidgets import QWidget, QHBoxLayout, QPushButton
+    bar = QWidget()
+    lay = QHBoxLayout(bar)
+    lay.setContentsMargins(0, 0, 0, 4)
+    lay.addStretch(1)
+    btn = QPushButton('⌨  Keyboard shortcuts')
+    btn.setStyleSheet(_SHORTCUT_BTN_QSS)
+    btn.setToolTip('List every key and mouse shortcut of this step; the ones '
+                   'that do not work in the current mode are greyed out. The '
+                   'same list is printed in the terminal.')
+    btn.clicked.connect(lambda *_: _show_shortcuts_dialog(container))
+    lay.addWidget(btn)
+    try:
+        container.native.layout().insertWidget(0, bar)
+    except Exception:
+        return
+    container._shortcut_bar_added = True
+    container._shortcut_btn = btn
+    _print_shortcuts(container, reason='the "Keyboard shortcuts" button at the top of the widget shows this again')
+
+
+# =========================================================================
+# Biosensor-only samples (no barcode). Some users only do the biosensor half:
+# no barcode classification image, no Bs2Code.xlsx. Anything barcode-related
+# that the biosensor result does not need is skipped with a warning that says
+# so; only things that would make the biosensor result wrong stop the run.
+# =========================================================================
+
+def _path_or_none(value):
+    """A FileEdit value as a Path, or None when the field is empty.
+
+    An empty magicgui FileEdit reads as ``Path('.')``, which *exists* (it is
+    the working directory), so ``Path(value).exists()`` alone is True for an
+    empty field and the code then tries to open a folder as an image."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s in ('', '.'):
+        return None
+    return Path(s)
+
+
+def _set_file_edit(fe, path):
+    """Set a FileEdit to ``path``, or truly empty it when path is None.
+    (``fe.value = ''`` does not empty it: magicgui turns '' into the
+    absolute working directory.)"""
+    if path:
+        fe.value = str(path)
+        return
+    try:
+        fe.line_edit.value = ''
+    except Exception:
+        fe.value = ''
+
+
+def _find_barcode_cls(sample_dir):
+    """The barcode classification image Seeded K-Means writes
+    (``<sample>/intensity/*-cls.tif``), or None if the sample has none."""
+    p = _path_or_none(sample_dir)
+    if p is None:
+        return None
+    int_dir = p / 'intensity'
+    if not int_dir.is_dir():
+        return None
+    hits = [q for q in sorted(int_dir.glob('*-cls.tif'))
+            if 'color' not in q.name.lower() and 'text' not in q.name.lower()]
+    return hits[0] if hits else None
+
+
+def _is_assist_model(name) -> bool:
+    """BS-BC-assist models take the barcode classification as a 2nd input."""
+    return str(name or '').lower().startswith('bs-bc-assist')
+
+
+# Measured 2026-09-30 on J:/Mix16-N-P-260306-DCZ-2-1 FOV-1: the published
+# assist model found 347 cells with the barcode image and 126 with the
+# barcode channel left empty. Without a barcode it silently misses most cells.
+_ASSIST_NEEDS_BARCODE_MSG = (
+    'The model "{model}" uses the barcode classification as a second input. '
+    'Without a barcode it misses most cells (test field: 126 instead of 347), '
+    'so it was not run.'
+)
+_ASSIST_NEEDS_BARCODE_FIX = (
+    'in "Cellpose model" pick cyto2 or your own biosensor model; or, if this '
+    'sample does have a barcode, untick "Biosensor only" and click '
+    '"Load / Confirm Barcode" in Step 2.'
+)
+
+
+def _warn_skipped_barcode(what, extra=''):
+    """Say that a barcode-only step was skipped and that the biosensor
+    result does not depend on it."""
+    msg = (f'No barcode: skipped {what}. Biosensor analysis is not affected.'
+           + (f' {extra}' if extra else ''))
+    show_warning(msg)
+    _console(f'[SLIC] {msg}')
+
+
+def _user_error(problem, fix):
+    """A stop-the-run message in plain words: what is missing, where to set
+    it. The Python traceback, if any, goes to the terminal only."""
+    msg = f'{problem}\nFix: {fix}'
+    notifications.show_error(msg)
+    _console(f'[SLIC] ERROR: {problem} | Fix: {fix}')
 
 
 class PTUReader(Container):
@@ -4199,6 +4589,9 @@ class SeededKMeans(Container):
         btn_row = Container(layout='horizontal')
         self.load_button = PushButton(text='Read and Plot')
         self.load_button.clicked.connect(self.load_and_plot)
+        # the three steps users click every time: all prominent, run in green
+        self.load_button.native.setStyleSheet(
+            _PROCESS_BTN_STYLE.replace('#43A047', '#1E88E5').replace('#2E7D32', '#1565C0'))
         btn_row.append(self.load_button)
         self.run_button = PushButton(text='Run K-Means')
         self.run_button.clicked.connect(self.run_kmeans)
@@ -4206,6 +4599,8 @@ class SeededKMeans(Container):
         btn_row.append(self.run_button)
         self.save_button = PushButton(text='Save Results')
         self.save_button.clicked.connect(self.save_results)
+        self.save_button.native.setStyleSheet(
+            _PROCESS_BTN_STYLE.replace('#43A047', '#1E88E5').replace('#2E7D32', '#1565C0'))
         btn_row.append(self.save_button)
         _tt(self.load_button,
             'Reads FLIM-S.xlsx from the sample folder and plots the 5-D '
@@ -4572,6 +4967,7 @@ class SeededKMeans(Container):
         self._seed_raw = None
         self._seed_raw_dims = None
         self._seed_source = None
+        self._manual_edit_ready = False
         self._notify(f"Plot ready for Localization='{loc}'. Select {self.n_clusters.value} seeds then Run K-Means.")
 
     def on_click(self, event):
@@ -5905,13 +6301,34 @@ class SeededKMeans(Container):
 
         self.fig.canvas.draw_idle()
 
-        cid1 = self.fig.canvas.mpl_connect('button_press_event', self._on_manual_click)
-        cid2 = self.fig.canvas.mpl_connect('key_press_event', self._on_keypress)
+        for _canvas, _cid in getattr(self, '_manual_edit_cids', []):
+            try:
+                _canvas.mpl_disconnect(_cid)
+            except Exception:
+                pass
+        canvas = self.fig.canvas
+        self._manual_edit_cids = [
+            (canvas, canvas.mpl_connect('button_press_event', self._on_manual_click)),
+            (canvas, canvas.mpl_connect('key_press_event', self._on_keypress)),
+        ]
+        # Letters pick classes 10-35 here, so switch off matplotlib's own
+        # single-letter keys on this figure (g grid, f fullscreen, s save,
+        # q close, l/k log axes ...).
+        try:
+            _mgr = canvas.manager
+            if _mgr is not None and getattr(_mgr, 'key_press_handler_id', None) is not None:
+                canvas.mpl_disconnect(_mgr.key_press_handler_id)
+                _mgr.key_press_handler_id = None
+        except Exception:
+            pass
+        self._manual_edit_ready = True
         self._notify(
-            f"Clustering done for Localization='{loc}'. "
-            "Now you can manually reassign points by shift+click for lasso-selector activation on plot, "
-            "using keys 1-9, a-z for classes 1-35 to assign classes."
+            f"Clustering done for Localization='{loc}'. Correct by hand in the "
+            "plot window: press 1-9 / a-z (0 = outlier) to choose a class, then "
+            "Ctrl+click a cell or Shift+click and draw a lasso. Full list: "
+            "\"Keyboard shortcuts\" (top of the widget)."
         )
+        _print_shortcuts(self, only_active=True, reason='after Run K-Means')
 
     def rerun_outliers(self):
         """Re-apply per-class outlier detection on the last K-Means result,
@@ -6856,9 +7273,9 @@ def create_group(title: str, form: QFormLayout, bg_color: str, border_color: str
     group_box.setLayout(form)
     # Tight vertical spacing inside the form to reclaim canvas height.
     try:
-        form.setVerticalSpacing(4)
-        form.setHorizontalSpacing(6)
-        form.setContentsMargins(6, 4, 6, 4)
+        form.setVerticalSpacing(6)
+        form.setHorizontalSpacing(8)
+        form.setContentsMargins(8, 6, 8, 6)
     except Exception:
         pass
     group_box.setStyleSheet(f"""
@@ -6879,8 +7296,8 @@ def create_group(title: str, form: QFormLayout, bg_color: str, border_color: str
     """)
     title_label = QLabel(title)
     title_label.setStyleSheet(
-        "font-size: 15px; font-weight: bold; color: white; "
-        "font-family: Calibri; margin: 0px; padding: 4px 8px;"
+        f"font-size: {_SLIC_FONT_PT + 2}pt; font-weight: bold; color: white; "
+        "font-family: Calibri; margin: 0px; padding: 8px 8px 2px 8px;"
     )
     container_layout = QVBoxLayout()
     container_layout.setContentsMargins(2, 2, 2, 2)
@@ -6889,22 +7306,26 @@ def create_group(title: str, form: QFormLayout, bg_color: str, border_color: str
     container_layout.addWidget(group_box)
     container = QWidget()
     container.setLayout(container_layout)
+    container.title_label = title_label
+    container.group_box = group_box
     return container
 
 # Create Part 0: A settings row (light background, no title) with checkboxes and the top-level button.
 def create_part0(read_button, *checkboxes):
-    """Top row: a primary "Read in all" button plus an arbitrary number
-    of checkbox toggles laid out horizontally.
+    """A row of an optional primary button plus checkbox toggles laid out
+    horizontally (read_button may be None for a checkbox-only row).
     """
     container = QWidget()
     hlayout = QHBoxLayout()
     hlayout.setContentsMargins(2, 2, 2, 2)
-    hlayout.addWidget(read_button.native)
-    hlayout.addSpacing(20)
+    hlayout.setSpacing(12)
+    if read_button is not None:
+        hlayout.addWidget(read_button.native)
+        hlayout.addSpacing(12)
     for cb in checkboxes:
         hlayout.addWidget(cb.native)
+    hlayout.addStretch(1)
     container.setLayout(hlayout)
-    container.setStyleSheet("background-color: #;")
     return container
 
 class Trackrevise(Container):
@@ -6925,12 +7346,17 @@ class Trackrevise(Container):
             "  background-color: #1E88E5;"
             "  color: white;"
             "  font-weight: bold;"
-            "  padding: 4px 10px;"
-            "  border-radius: 4px;"
+            f"  font-size: {_SLIC_FONT_PT + 1}pt;"
+            "  padding: 7px 16px;"
+            "  border-radius: 5px;"
             "  font-family: Calibri;"
             "} "
             "QPushButton:hover { background-color: #1565C0; }"
         )
+        # Ticked automatically when the sample has no barcode classification
+        # image; then barcode loading / alignment are skipped and every cell
+        # is reported in one group.
+        self.bs_only_checkbox = CheckBox(text="Biosensor only (no barcode)")
         self.mask_256_checkbox = CheckBox(text="Masks>255", value=True)
         self.revise_mode_checkbox = CheckBox(text="Revise+Visualize Mode")
         self.revise_mode_checkbox.value = False
@@ -6953,11 +7379,12 @@ class Trackrevise(Container):
         self.gen_render_checkbox = CheckBox(text="Build BGY render")
         self.gen_render_checkbox.value = True
 
-        part0 = create_part0(self.read_in_all_button,
-                             self.gen_render_checkbox,
-                             self.mask_256_checkbox,
-                             self.revise_mode_checkbox,
-                             self.ratio_checkbox)
+        part0 = create_part0(self.read_in_all_button, self.bs_only_checkbox)
+        part0b = create_part0(None,
+                              self.gen_render_checkbox,
+                              self.ratio_checkbox,
+                              self.mask_256_checkbox,
+                              self.revise_mode_checkbox)
 
         # -------------------------------
         # Group 1: Tracking Revision
@@ -7083,8 +7510,9 @@ class Trackrevise(Container):
         # Group 3: Barcodes Alignment
         # -------------------------------
         self.classification_input = FileEdit(label="Barcode Image", mode='r', filter='*.tif')
-        self.classification_input.value = str(
-            _trackrevise_root / 'intensity' / 'TileScan_001_s1-cls.tif')
+        _cls_hit = _find_barcode_cls(_trackrevise_root)
+        _set_file_edit(self.classification_input, _cls_hit)
+        self.bs_only_checkbox.value = _cls_hit is None
         self.classification_resize = create_widget(label="Resize to", widget_type="SpinBox", value=1024,
                                                    options={'min': 512, 'max': 2048})
         self.classification_resize.native.setStyleSheet(
@@ -7123,6 +7551,7 @@ class Trackrevise(Container):
         add_form_row(form3, "Rotate", [self.classification_rotate])
         add_form_row(form3, "Align to Frame", [self.align_mask_frame, self.classification_align_button])
         group3 = create_group("Barcodes-Biosensor Alignment", form3, "#F3E5F5", "#AB47BC")
+        self._group3 = group3
         self.Bs2Code_save_path = None
         # -------------------------------
         # Group 4: Calculate Signals
@@ -7142,8 +7571,9 @@ class Trackrevise(Container):
             "  background-color: #2E7D32;"
             "  color: white;"
             "  font-weight: bold;"
-            "  padding: 4px 10px;"
-            "  border-radius: 4px;"
+            f"  font-size: {_SLIC_FONT_PT + 1}pt;"
+            "  padding: 8px 14px;"
+            "  border-radius: 5px;"
             "  border: 1px solid #1B5E20;"
             "  font-family: Calibri;"
             "} "
@@ -7153,7 +7583,8 @@ class Trackrevise(Container):
         form4 = QFormLayout()
         add_form_row(form4, "Ratio Calculation Range", [self.ratio_calcu_range])
         # add_form_row(form4, "Basal Frame Number", [self.basal_frame_spinbox, self.ratio_calcu_button])
-        add_form_row(form4, "Basal Frame Range", [self.basal_frame_range, self.ratio_calcu_button])
+        add_form_row(form4, "Basal Frame Range", [self.basal_frame_range])
+        form4.addRow(self.ratio_calcu_button.native)
         # add_double_row(form4, "Basal Frame Range", self.basal_frame_range, "", self.ratio_calcu_button, bg_color="#FFEEEE")
         group4 = create_group("Calculate Signals", form4, "#FFEEEE", "#FF8888")
         # -------------------------------
@@ -7166,7 +7597,7 @@ class Trackrevise(Container):
         )
         self.freq_analysis_hint.setWordWrap(True)
         self.freq_analysis_hint.setStyleSheet(
-            'color: #BDBDBD; font-style: italic; font-family: Calibri; font-size: 12px;'
+            f'color: #BDBDBD; font-style: italic; font-family: Calibri; font-size: {_SLIC_FONT_PT - 1}pt;'
         )
         freq_layout = QHBoxLayout()
         freq_layout.addWidget(self.freq_analysis_checkbox.native)
@@ -7200,8 +7631,9 @@ class Trackrevise(Container):
         # -------------------------------
         main_vlayout = QVBoxLayout()
         main_vlayout.setContentsMargins(4, 4, 4, 4)
-        main_vlayout.setSpacing(4)
+        main_vlayout.setSpacing(6)
         main_vlayout.addWidget(part0)
+        main_vlayout.addWidget(part0b)
         main_vlayout.addWidget(group1)
         main_vlayout.addWidget(group2)
         main_vlayout.addWidget(group25)
@@ -7216,11 +7648,11 @@ class Trackrevise(Container):
         self._nacha_progress = QProgressBar()
         self._nacha_progress.setRange(0, 100)
         self._nacha_progress.setValue(0)
-        self._nacha_progress.setMaximumHeight(12)
+        self._nacha_progress.setMaximumHeight(14)
         self._nacha_progress.setTextVisible(False)
         self._nacha_status = QLabel('Ready.')
         self._nacha_status.setStyleSheet(
-            'color: #FFEB3B; font-family: Calibri; font-size: 11px; font-weight: bold;'
+            f'color: #FFEB3B; font-family: Calibri; font-size: {_SLIC_FONT_PT}pt; font-weight: bold;'
         )
         main_vlayout.addWidget(self._nacha_progress)
         main_vlayout.addWidget(self._nacha_status)
@@ -7244,30 +7676,39 @@ class Trackrevise(Container):
         # ---------------------------------------------------------
         # Connect callbacks (implement these methods in your class)
         # ---------------------------------------------------------
-        self.read_in_all_button.clicked.connect(self.read_in_all)
-        self.read_masks_button.clicked.connect(self.read_masks)
-        self.read_tif_button.clicked.connect(lambda: self.read_tif('TIF for Tracking'))
-        self.read_stack_b_button.clicked.connect(lambda: self.read_tif('Stack B'))
-        self.read_stack_g_button.clicked.connect(lambda: self.read_tif('Stack G'))
-        self.read_stack_nir_button.clicked.connect(lambda: self.read_tif('Stack NIR'))
-        self.apply_button.clicked.connect(self.apply_to_following_frames)
-        self.apply_next_button.clicked.connect(self.apply_to_next_frame)
-        self.save_tracking_button.clicked.connect(self.save_tracking)
-        self.shift_button.clicked.connect(self.shift_stack)
-        self.shift_save_button.clicked.connect(self.save_shifted_stack)
-        self.overexpo_vis_button.clicked.connect(self.overexpo_visualize)
-        self.overexpo_discard_button.clicked.connect(self.overexpo_discard)
-        self.revise_mode_checkbox.changed.connect(self.toggle_revise_mode)
-        self.classification_input.changed.connect(self.load_classification)
-        self.classification_resize.changed.connect(self.load_classification)
-        self.classification_align_button.clicked.connect(self.align_classification)
-        self.ratio_calcu_button.clicked.connect(self.calculate_signal_ratio)
-        self.preview_gb_button.clicked.connect(self.preview_g_over_b_masked)
+        g = self._guard
+        self.read_in_all_button.clicked.connect(g(self.read_in_all, 'Read in all'))
+        self.read_masks_button.clicked.connect(g(self.read_masks, 'Read masks'))
+        self.read_tif_button.clicked.connect(g(lambda: self.read_tif('TIF for Tracking'), 'Read TIF'))
+        self.read_stack_b_button.clicked.connect(g(lambda: self.read_tif('Stack B'), 'Read Stack B'))
+        self.read_stack_g_button.clicked.connect(g(lambda: self.read_tif('Stack G'), 'Read Stack G'))
+        self.read_stack_nir_button.clicked.connect(g(lambda: self.read_tif('Stack NIR'), 'Read Stack NIR'))
+        self.apply_button.clicked.connect(g(self.apply_to_following_frames, 'Apply to following frames'))
+        self.apply_next_button.clicked.connect(g(self.apply_to_next_frame, 'Apply to next frame'))
+        self.save_tracking_button.clicked.connect(g(self.save_tracking, 'Save Track'))
+        self.shift_button.clicked.connect(g(self.shift_stack, 'Shift'))
+        self.shift_save_button.clicked.connect(g(self.save_shifted_stack, 'Save Shift'))
+        self.overexpo_vis_button.clicked.connect(g(self.overexpo_visualize, 'Overexposure check'))
+        self.overexpo_discard_button.clicked.connect(g(self.overexpo_discard, 'Discard overexposed'))
+        self.revise_mode_checkbox.changed.connect(g(self.toggle_revise_mode, 'Revise mode'))
+        self.classification_input.changed.connect(g(self.load_classification, 'Load barcode image'))
+        self.classification_resize.changed.connect(g(self.load_classification, 'Load barcode image'))
+        self.classification_align_button.clicked.connect(g(self.align_classification, 'Align'))
+        self.ratio_calcu_button.clicked.connect(g(self.calculate_signal_ratio, 'Calculate'))
+        self.preview_gb_button.clicked.connect(g(self.preview_g_over_b_masked, 'Preview G/B'))
+        self.bs_only_checkbox.changed.connect(self._on_bs_only_changed)
 
         # Tooltips — hover any control for details.
         _tt(self.read_in_all_button,
             'One-click: load tracking masks + B/G/Y channel stacks + '
-            'barcode classification from the selected sample folder.')
+            'barcode classification (if the sample has one) from the '
+            'selected sample folder.')
+        _tt(self.bs_only_checkbox,
+            'Tick for a biosensor-only sample (no barcode). Barcode loading '
+            'and alignment are skipped, and Calculate reports every cell as '
+            'one group ("All cells", Class 1). Per-cell signals, F/F0 and '
+            'G/B are computed exactly as with a barcode. Ticked '
+            'automatically when the sample has no intensity/*-cls.tif.')
         _tt(self.mask_256_checkbox,
             'Masks contain more than 255 cell labels. Keep on unless you '
             'know your labels fit in uint8.')
@@ -7352,6 +7793,75 @@ class Trackrevise(Container):
 
         # NaCha is the last step of the workflow — no Next button; the
         # celebration dialog fires from calculate_signal_ratio when it finishes.
+        self._on_bs_only_changed(self.bs_only_checkbox.value)
+        _tighten_container(self)
+
+    def _guard(self, fn, action):
+        """Wrap a button callback so a failure reads as "what is missing,
+        where to set it" instead of a traceback popup. The traceback still
+        goes to the terminal."""
+        import re as _re
+
+        def run(*_args):
+            try:
+                return fn()
+            except KeyError as e:
+                m = _re.search(r"'(.+?)' is not in list", str(e))
+                if not m:
+                    traceback.print_exc()
+                    _user_error(f'{action} failed: missing entry {e}.',
+                                'the full error is in the terminal.')
+                    return None
+                name = m.group(1)
+                if name == 'Masks':
+                    fix = ('click "▶ Read in all" (or Read next to "Mask '
+                           'Folder") to load the cell masks first.')
+                elif name in ('Stack B', 'Stack G', 'Stack NIR'):
+                    fix = (f'set "{name} Input" under Biosensor Channels and '
+                           'click its Read button (or "▶ Read in all").')
+                elif name.startswith('Masks with Overexposed'):
+                    fix = 'click "visualize" in the Overexposure row first.'
+                elif name == 'Barcodes Masks classified':
+                    fix = ('load a barcode image in "Barcode Image" — or, for '
+                           'a sample without barcode, tick "Biosensor only".')
+                else:
+                    fix = f'load the "{name}" layer first.'
+                _user_error(f'{action}: the layer "{name}" is not loaded.', fix)
+            except Exception as e:
+                traceback.print_exc()
+                _user_error(f'{action} failed: {e}',
+                            'the full error is in the terminal; check the '
+                            'paths in this widget.')
+            finally:
+                try:
+                    if self._nacha_progress.value() not in (0, 100):
+                        self._set_nacha_progress(0, f'{action}: stopped.')
+                except Exception:
+                    pass
+            return None
+        return run
+
+    def _on_bs_only_changed(self, on=None):
+        """Biosensor-only: grey out the barcode group and drop its layer."""
+        on = bool(self.bs_only_checkbox.value if on is None else on)
+        try:
+            self._group3.group_box.setEnabled(not on)
+            self._group3.group_box.setVisible(not on)
+            self._group3.title_label.setStyleSheet(
+                self._group3.title_label.styleSheet().replace(
+                    'color: white', 'color: #9E9E9E') if on else
+                self._group3.title_label.styleSheet().replace(
+                    'color: #9E9E9E', 'color: white'))
+            self._group3.title_label.setText(
+                'Barcodes-Biosensor Alignment (skipped: biosensor only)'
+                if on else 'Barcodes-Biosensor Alignment')
+        except Exception:
+            pass
+        if on and 'Barcodes Masks classified' in self.viewer.layers:
+            try:
+                del self.viewer.layers['Barcodes Masks classified']
+            except Exception:
+                pass
 
     def _set_nacha_progress(self, pct: int, msg: str):
         try:
@@ -7632,29 +8142,42 @@ class Trackrevise(Container):
 
     def calculate_signal_ratio(self):
 
-        # Check that the Bs2Code Excel file exists.
-        if self.Bs2Code_save_path is None:
-            self.Bs2Code_save_path = os.path.join(self.base_folder, 'Bs2Code.xlsx')
+        if 'Masks' not in self.viewer.layers:
+            _user_error('Calculate needs the cell masks, and none are loaded.',
+                        'click "▶ Read in all" first (it loads the masks and '
+                        'the B/G/NIR stacks from the sample folder).')
+            return
+        if getattr(self, 'base_folder', None) is None:
+            self.base_folder = os.path.dirname(str(self.mask_folder.value))
 
-            notifications.show_warning("You have not run the Bs2Code alignment yet. Now check the existence of the excel.")
-        if not os.path.exists(self.Bs2Code_save_path):
-            # Ask user whether to proceed with default
-            choice = self.show_warning_dialog(
-                "No 'Bs2Code.xlsx' found.\n"
-                "Continue with default alignment (all cells → class 1)?"
-            )
-            if choice != "continue":
-                return
-            # Build default alignment: every cell_id maps to class 1
-            idx = np.arange(1, self.num_masks + 1)
-            alignment_info = pd.DataFrame({'Class': 1}, index=idx)
-            alignment_source = 'default: every cell class 1 (no Bs2Code.xlsx)'
+        # Barcode grouping. None = no barcode: every cell becomes class 1,
+        # built further down from the cell ids actually in the masks.
+        alignment_info = None
+        if self.bs_only_checkbox.value:
+            alignment_source = 'biosensor only: every cell class 1 (no barcode)'
+            _console('[SLIC] Biosensor only: all cells reported as one group (Class 1).')
         else:
-            # Normal path: read the provided Excel
-            df = pd.read_excel(self.Bs2Code_save_path)
-            df = df[['Tracking Mask Index', 'Class']].set_index('Tracking Mask Index')
-            alignment_info = df
-            alignment_source = str(self.Bs2Code_save_path)
+            if self.Bs2Code_save_path is None:
+                self.Bs2Code_save_path = os.path.join(self.base_folder, 'Bs2Code.xlsx')
+            if not os.path.exists(self.Bs2Code_save_path):
+                _warn_skipped_barcode(
+                    'the per-barcode grouping (no Bs2Code.xlsx in '
+                    f'{os.path.basename(self.base_folder) or self.base_folder})',
+                    'All cells are reported as one group (Class 1). If this '
+                    'sample has a barcode, run "▶ Align" first.')
+                alignment_source = 'default: every cell class 1 (no Bs2Code.xlsx)'
+            else:
+                df = pd.read_excel(self.Bs2Code_save_path)
+                missing = [c for c in ('Tracking Mask Index', 'Class') if c not in df.columns]
+                if missing:
+                    _user_error(
+                        f'{self.Bs2Code_save_path} has no column(s) {missing}, '
+                        'so cells cannot be matched to barcodes.',
+                        'click "▶ Align" to rebuild Bs2Code.xlsx, or tick '
+                        '"Biosensor only" to ignore the barcode.')
+                    return
+                alignment_info = df[['Tracking Mask Index', 'Class']].set_index('Tracking Mask Index')
+                alignment_source = str(self.Bs2Code_save_path)
 
         out_excel_path = os.path.join(self.base_folder, 'signal_analysis.xlsx')
         # If the Excel file already exists, ask user if they want to overwrite it.
@@ -7720,7 +8243,18 @@ class Trackrevise(Container):
             all_masks = np.broadcast_to(all_masks[0:1], (needed,) + all_masks.shape[1:]).copy()
         cell_num = len(np.unique(all_masks[0])) - 1
         max_cell_id = np.max(all_masks)
+        if max_cell_id == 0:
+            _user_error('The Masks layer contains no cells in the chosen frame range.',
+                        'check "Ratio Calculation Range" and that the mask '
+                        'file under "Mask Folder" is the right one.')
+            return
         notifications.show_info(f'Number of Cells: {cell_num} cells')
+        single_group = alignment_info is None
+        if single_group:
+            # No barcode: one group containing every cell id in the masks.
+            _ids = np.unique(all_masks)
+            _ids = _ids[_ids > 0].astype(int)
+            alignment_info = pd.DataFrame({'Class': 1}, index=_ids)
 
         def extract_intensity(stack, all_masks, cell_num, mode='sum'):
             intensity_data = []
@@ -7743,6 +8277,11 @@ class Trackrevise(Container):
                 notifications.show_warning(
                     f"{zero_hits} zero-intensity events encountered (suppressed per-frame warnings).")
             return intensity_data
+
+        def frames_only(pivot):
+            # The pivots carry 'Class' as their first column; baselines, the
+            # G/B ratio and the FFT must only see the frame columns.
+            return pivot.drop(columns=['Class'], errors='ignore')
 
         # Helper to compute summary statistics per class for a normalized pivot table.
         def compute_summary_stats(norm_df):
@@ -7775,8 +8314,8 @@ class Trackrevise(Container):
                 blue_pivot = self.add_class_info(blue_pivot, alignment_info)
                 blue_pivot.sort_values(by='Class').to_excel(writer, sheet_name='Blue Channel (Original)')
 
-                baseline_blue = blue_pivot.iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
-                normalized_blue = blue_pivot.div(baseline_blue, axis=0)
+                baseline_blue = frames_only(blue_pivot).iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
+                normalized_blue = frames_only(blue_pivot).div(baseline_blue, axis=0)
                 normalized_blue = self.add_class_info(normalized_blue, alignment_info)
                 normalized_blue.sort_values(by='Class').to_excel(writer, sheet_name='Blue Channel (Normalized)')
 
@@ -7791,7 +8330,7 @@ class Trackrevise(Container):
                     freq_results = []
                     phase_results = []
                     # compute per-cell peak frequency, phase, and weighted frequency
-                    for cell_id, row in normalized_blue.iterrows():
+                    for cell_id, row in frames_only(normalized_blue).iterrows():
                         signal = row.values.astype(float)
                         fft_vals = np.fft.rfft(signal)
                         freqs = np.fft.rfftfreq(len(signal), d=1.0 / sampling_rate)
@@ -7875,8 +8414,8 @@ class Trackrevise(Container):
                 green_pivot = self.add_class_info(green_pivot, alignment_info)
                 green_pivot.sort_values(by='Class').to_excel(writer, sheet_name='Green Channel (Original)')
                 # baseline_green = green_pivot.iloc[:, :basal_frame_num].mean(axis=1)
-                baseline_green = green_pivot.iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
-                normalized_green = green_pivot.div(baseline_green, axis=0)
+                baseline_green = frames_only(green_pivot).iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
+                normalized_green = frames_only(green_pivot).div(baseline_green, axis=0)
                 normalized_green = self.add_class_info(normalized_green, alignment_info)
                 normalized_green.sort_values(by='Class').to_excel(writer, sheet_name='Green Channel (Normalized)')
                 pivot_data['G'] = normalized_green
@@ -7894,8 +8433,8 @@ class Trackrevise(Container):
                 nir_pivot = self.add_class_info(nir_pivot, alignment_info)
                 nir_pivot.sort_values(by='Class').to_excel(writer, sheet_name='NIR Channel (Original)')
                 # baseline_nir = nir_pivot.iloc[:, :basal_frame_num].mean(axis=1)
-                baseline_nir = nir_pivot.iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
-                normalized_nir = nir_pivot.div(baseline_nir, axis=0)
+                baseline_nir = frames_only(nir_pivot).iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
+                normalized_nir = frames_only(nir_pivot).div(baseline_nir, axis=0)
                 normalized_nir = self.add_class_info(normalized_nir, alignment_info)
                 normalized_nir.sort_values(by='Class').to_excel(writer, sheet_name='NIR Channel (Normalized)')
                 pivot_data['NIR'] = normalized_nir
@@ -7904,8 +8443,7 @@ class Trackrevise(Container):
 
             # Process G/B Ratio if both Blue and Green channels exist and the ratio checkbox is checked.
             if has_stack_b and has_stack_g and self.ratio_checkbox.value:
-                ratio_pivot = pivot_data['G'] / pivot_data['B']
-                # baseline_ratio = ratio_pivot.iloc[:, :basal_frame_num].mean(axis=1)
+                ratio_pivot = frames_only(pivot_data['G']) / frames_only(pivot_data['B'])
                 baseline_ratio = ratio_pivot.iloc[:, basal_frame_start:basal_frame_end].mean(axis=1)
                 normalized_ratio = ratio_pivot.div(baseline_ratio, axis=0)
                 normalized_ratio = self.add_class_info(normalized_ratio, alignment_info)
@@ -7952,7 +8490,9 @@ class Trackrevise(Container):
         import math
         ncols = 4  # 4 plots per row
         nrows = math.ceil(num_classes / ncols)
-        fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+        if num_classes == 1:
+            ncols = 1  # one group: one full-size panel, not a 4-wide grid
+        fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols + (3 if ncols == 1 else 0), 4 * nrows))
         if nrows == 1:
             axs = np.array(axs).reshape(1, -1)
         axs = axs.flatten()
@@ -7986,7 +8526,8 @@ class Trackrevise(Container):
                 ax.plot(frames, mean_curve, label=ch_name, color=color)
                 ax.fill_between(frames, mean_curve - se_curve, mean_curve + se_curve, color=color, alpha=0.3)
             num_cells = len(class_data)
-            ax.set_title(f'Class {cls} (n={num_cells})')
+            ax.set_title(f'All cells (n={num_cells})' if single_group
+                         else f'Class {cls} (n={num_cells})')
             ax.set_xlabel("Frame")
             ax.set_ylabel("Normalized Intensity")
             ax.legend()
@@ -8032,9 +8573,21 @@ class Trackrevise(Container):
 
     def load_classification(self):
         # load the tif file which is masks from 0-14, 0 for bg, 1-14 for cells in different classes
-        classification_file = self.classification_input.value
+        if self.bs_only_checkbox.value:
+            _console('[SLIC] Biosensor only: barcode image not loaded.')
+            return
+        classification_file = _path_or_none(self.classification_input.value)
         resize = self.classification_resize.value
-        if classification_file and os.path.exists(classification_file):
+        if classification_file is None or not classification_file.is_file():
+            _warn_skipped_barcode(
+                'loading the barcode image'
+                + (f' ({classification_file.name} not found)' if classification_file else
+                   ' ("Barcode Image" is empty)'),
+                'All cells will be reported as one group. Tick "Biosensor '
+                'only" if this sample has no barcode.')
+            return
+        classification_file = str(classification_file)
+        if classification_file:
             self._set_nacha_progress(10, f'Reading {os.path.basename(classification_file)}...')
             masks = tiff.imread(classification_file)
             # Apply rotation to match BiosensorSeg convention. UI value -> np.rot90 k (CCW):
@@ -8049,6 +8602,12 @@ class Trackrevise(Container):
                 masks = np.rot90(masks, k=rot_k)
             self._set_nacha_progress(70, f'Resizing to {resize}×{resize}...')
             masks = cv2.resize(masks, (resize, resize), interpolation=cv2.INTER_NEAREST)
+            # Replace, not add: every Resize step re-runs this.
+            if 'Barcodes Masks classified' in self.viewer.layers:
+                try:
+                    del self.viewer.layers['Barcodes Masks classified']
+                except Exception:
+                    pass
             self.viewer.add_labels(masks, name="Barcodes Masks classified", opacity=0.5)
             self._set_nacha_progress(100, f'Barcode loaded: {int(np.max(masks))} classes.')
             notifications.show_info(
@@ -8058,12 +8617,35 @@ class Trackrevise(Container):
 
     def align_classification(self):
         align_mask_frame = self.align_mask_frame.value
-        # if none of those exist, show warning and return
-        if 'Masks' not in self.viewer.layers or 'Barcodes Masks classified' not in self.viewer.layers:
-            notifications.show_warning("Please load both 'Masks' and 'Barcodes Masks classified' layers before aligning.")
+        if self.bs_only_checkbox.value:
+            _warn_skipped_barcode('the barcode alignment ("Biosensor only" is ticked)')
+            return
+        if 'Masks' not in self.viewer.layers:
+            _user_error('Align needs the cell masks, and none are loaded.',
+                        'click "▶ Read in all" first.')
+            return
+        if 'Barcodes Masks classified' not in self.viewer.layers:
+            _warn_skipped_barcode(
+                'the barcode alignment (no barcode image loaded)',
+                'Load one in "Barcode Image" to align; otherwise just click '
+                'Calculate.')
             return
         tracking_masks = self.viewer.layers['Masks'].data
         cls_masks = self.viewer.layers['Barcodes Masks classified'].data
+        if getattr(self, 'base_folder', None) is None:
+            self.base_folder = os.path.dirname(str(self.mask_folder.value))
+        if tracking_masks.ndim == 3 and not (0 <= align_mask_frame < tracking_masks.shape[0]):
+            _user_error(f'"Align to Frame" is {align_mask_frame}, but the masks '
+                        f'have {tracking_masks.shape[0]} frame(s).',
+                        f'set "Align to Frame" between 0 and {tracking_masks.shape[0] - 1}.')
+            return
+        if tuple(cls_masks.shape[-2:]) != tuple(tracking_masks.shape[-2:]):
+            _user_error(f'Barcode image is {cls_masks.shape[-2]}×{cls_masks.shape[-1]} '
+                        f'but the masks are {tracking_masks.shape[-2]}×'
+                        f'{tracking_masks.shape[-1]} pixels, so they cannot be overlaid.',
+                        f'set "Resize to" to {tracking_masks.shape[-1]} (and check '
+                        '"Rotate"), then Align again.')
+            return
         print('Shape of cls_masks:', cls_masks.shape)
 
         self._set_nacha_progress(5, 'Labeling barcode regions per class...')
@@ -8195,6 +8777,7 @@ class Trackrevise(Container):
 
     def overexpo_visualize(self):
         overexpo_thres = self.overexpo_thres_param.value
+        # (a missing Stack B / G / Masks layer is reported by _guard)
         stack_b = self.viewer.layers['Stack B'].data
         stack_g = self.viewer.layers['Stack G'].data
 
@@ -8306,18 +8889,19 @@ class Trackrevise(Container):
                 if not cand_base or not cand_base.exists():
                     continue
                 matches = (
-                    sorted(cand_base.glob('*_seg_img_seg.npy'))
+                    sorted(cand_base.glob('*_seg_image_seg.npy'))  # Biosensor Seg
+                    or sorted(cand_base.glob('*_seg_img_seg.npy'))
                     or sorted(cand_base.glob('*_seg.npy'))
                 )
                 if matches:
                     fallback = matches[0]
                     break
             if fallback is None:
-                notifications.show_error(
-                    "No tracking masks found, and no fallback *_seg.npy in the "
-                    "sample folder. Either build tracking, or put the biosensor "
-                    "seg.npy next to the sample folder."
-                )
+                _user_error(
+                    f'No cell masks found: "{mask_folder}" has no tracking '
+                    'masks and the sample folder has no *_seg_image_seg.npy.',
+                    'run Biosensor Seg (Segment Cells saves the mask), or set '
+                    '"Mask Folder" to the folder with the tracking masks.')
                 return
             notifications.show_info(
                 f"No tracking folder / files; using single mask {fallback.name} "
@@ -8390,7 +8974,13 @@ class Trackrevise(Container):
 
     def read_tif(self, name: str):
         if name == 'TIF for Tracking':
-            tif_stack = tiff.imread(self.tif_input.value)
+            p = _path_or_none(self.tif_input.value)
+            if p is None or not p.is_file():
+                show_warning(f'Tracking TIF not found ({p}); skipped. It is '
+                             'only needed to revise tracking. Set "TIF stack '
+                             'Input" under Tracking Revision to load it.')
+                return
+            tif_stack = tiff.imread(str(p))
         elif name == 'Stack B':
             try:
                 tif_stack = tiff.imread(self.stack_b_input.value)
@@ -8427,13 +9017,18 @@ class Trackrevise(Container):
         self.viewer.add_image(tif_stack, name=name)
 
     def save_tracking(self):
+        if 'Masks' not in self.viewer.layers:
+            _user_error('Nothing to save: no Masks layer is loaded.',
+                        'click "▶ Read in all" first.')
+            return
         folder = QFileDialog.getExistingDirectory(caption='Select Folder to Save Masks')
         if folder:
-            tracked = self.viewer.layers['Tracked Masks'].data
-            start, end = self.frame_start.value, self.frame_end.value
-            end = min(end, tracked.shape[0] - 1)
+            tracked = np.asarray(self.viewer.layers['Masks'].data)
+            if tracked.ndim == 2:
+                tracked = tracked[np.newaxis, ...]
+            start, end = 0, tracked.shape[0] - 1
 
-            use_uint16 = bool(self.uint16_mode.value) or (tracked.max() > 255)
+            use_uint16 = bool(self.mask_256_checkbox.value) or (tracked.max() > 255)
             save_dtype = np.uint16 if use_uint16 else np.uint8
 
             for i in range(start, end + 1):
@@ -8472,16 +9067,30 @@ class Trackrevise(Container):
 
     def toggle_revise_mode(self):
         undo_key = 'u'
+        if self.revise_mode_checkbox.value and 'Masks' not in self.viewer.layers:
+            self.revise_mode_checkbox.value = False  # re-enters with False
+            _user_error('Revise mode works on the Masks layer, which is not loaded.',
+                        'click "▶ Read in all" first, then tick the box again.')
+            return
+        if 'Masks' not in self.viewer.layers:
+            return
         # make brush size to be 1
         self.viewer.layers['Masks'].brush_size = 1
         self.masks_layer = self.viewer.layers['Masks']
         if self.revise_mode_checkbox.value:
-            self.masks_layer.mouse_drag_callbacks.append(self.on_click)
+            if self.on_click not in self.masks_layer.mouse_drag_callbacks:
+                self.masks_layer.mouse_drag_callbacks.append(self.on_click)
             self.viewer.bind_key(undo_key, self.on_undo, overwrite=True)
-            notifications.show_info('Revise Mode enabled. Press Control + Click to delete masks from this frame on, Ctrl + Alt + Click to delete current mask. Press Shift + Click to plot signal cha   nges in the mask. Press u to undo. Do all the operations in the Masks layer.')
+            notifications.show_info(
+                'Revise Mode on (click on the Masks layer): Shift+click plots '
+                'a cell, Ctrl+click deletes it from this frame on, '
+                'Ctrl+Alt+click deletes it in this frame only, U undoes. '
+                'Full list: "Keyboard shortcuts" at the top.')
+            _print_shortcuts(self, only_active=True, reason='Revise mode on')
 
         else:
-            self.masks_layer.mouse_drag_callbacks.remove(self.on_click)
+            if self.on_click in self.masks_layer.mouse_drag_callbacks:
+                self.masks_layer.mouse_drag_callbacks.remove(self.on_click)
             # self.viewer.unbind_key(undo_key, None)
 
     def on_click(self, layer, event):
@@ -10312,7 +10921,7 @@ def _cuda_status_html() -> str:
         return ''
     line = '<b>Compute:</b> ' + ' · '.join(bits)
     if any('CPU-only' in b for b in bits):
-        line += ('<br><span style="font-size:10px">A CPU-only torch segments a '
+        line += ('<br><span style="font-size:9pt">A CPU-only torch segments a '
                  '2k×2k field roughly 10× slower (tens of minutes instead of '
                  'under a minute). PyPI\'s default torch wheel has no CUDA — '
                  'install a CUDA build from https://pytorch.org/get-started/locally/ '
@@ -10364,7 +10973,7 @@ def _describe_cellpose_envs() -> str:
         f'<span style="color:{root_color}">{root_mark} '
         f'{_BARCODE_MODEL_ROOT}</span> '
         f'(source: {_MODEL_ROOT_SOURCE}; {hint})<br>'
-        f'<span style="font-size:10px">'
+        f'<span style="font-size:9pt">'
         f'v2 → {v2_path}<br>'
         f'v4 → {v4_path}<br>'
         f'override: env vars BCFLIM_CELLPOSE_V2_PYTHON / '
@@ -11783,8 +12392,10 @@ class BarcodeSeg(Container):
         self.undo_postproc_btn.changed.connect(self._on_undo_postproc)
         self._postproc_backup: dict = {}
         try:
-            self.viewer.bind_key('Shift-Z', lambda v: self._on_undo_postproc())
-            self.viewer.bind_key('Shift-S', lambda v: self._on_save())
+            self.viewer.bind_key('Shift-Z', lambda v: self._on_undo_postproc(),
+                                 overwrite=True)
+            self.viewer.bind_key('Shift-S', lambda v: self._on_save(),
+                                 overwrite=True)
         except Exception:
             pass
 
@@ -11804,7 +12415,7 @@ class BarcodeSeg(Container):
                 '  border: 1px solid #B0BEC5;'
                 '  border-radius: 4px;'
                 '  padding: 4px 6px;'
-                '  font-size: 11px;'
+                f'  font-size: {_SLIC_FONT_PT - 1}pt;'
                 '  color: #263238;'
                 '  font-family: Calibri;'
                 '}'
@@ -12025,22 +12636,13 @@ class BarcodeSeg(Container):
 
         self.tips_label = Label(
             value=(
-                '<b>Edit shortcuts</b> — click <code>mask_n_fill</code> / '
-                '<code>mask_p_fill</code> in the layer list first, then:<br>'
-                '• <b>Right-click</b> draw polygon · <b>Enter</b> commit · '
-                '<b>Esc</b> cancel<br>'
-                '• <b>2</b> paint brush · <b>3</b> fill · <b>4</b> pick label · '
-                '<b>5</b> pan/zoom · <b>1</b> erase '
-                '<i>(napari Labels mode)</i><br>'
-                '• <b>[</b> / <b>]</b> brush size −/+ · '
-                '<b>M</b> new (next free) label · <b>=</b> / <b>−</b> +/− label id · '
-                '<b>Ctrl+Z</b> undo · <b>Space</b> (hold) pan/zoom<br>'
-                '• <b>Z / X</b> toggle N / P visibility · '
-                '<b>Ctrl+click</b> delete label · <b>S</b> cycle contrast<br>'
-                '• <b>Shift+S</b> save masks · <b>Shift+Z</b> undo post-proc<br>'
-                '• <b>Auto-save</b>: Auto Segment / Re-seg write '
-                '<code>*_seg_n.npy</code> / <code>*_seg_p.npy</code> on disk. '
-                'Click <b>Save masks</b> (or <b>Shift+S</b>) after manual edits.'
+                '<b>Editing</b>: select <code>mask_n_fill</code> / '
+                '<code>mask_p_fill</code> in the layer list, then right-click '
+                'to draw, Ctrl+click to delete, <b>Shift+S</b> to save. Every '
+                'key: <b>⌨ Keyboard shortcuts</b> at the top.<br>'
+                '<b>Auto-save</b>: Auto Segment / Re-seg write '
+                '<code>*_seg_n.npy</code> / <code>*_seg_p.npy</code>; click '
+                '<b>Save masks</b> after manual edits.'
             ),
         )
         try:
@@ -12104,7 +12706,7 @@ class BarcodeSeg(Container):
         # Post-proc knobs + Re-apply / Undo on a small section.
         # 2x2 grid for the four numeric knobs (close-holes / erode pair as
         # "boundary fine-tuning", dilate / min-area pair as "size
-        # adjustment"). Re-apply + Undo share a row (Undo on Shift+S).
+        # adjustment"). Re-apply + Undo share a row (Undo on Shift+Z).
         _append_section_divider(self, '— 🧹 Post-process —')
         self.append(_hrow(self.close_holes_px, self.erode_px))
         self.append(_hrow(self.dilate_px, self.min_area_px))
@@ -14129,7 +14731,8 @@ def _prep_biosensor_seg_input(img2d: np.ndarray, barcode_cls_path: "Path | None"
     convention). Leica tilescan exports often need k=3 (equiv. 270° CCW / 90° CW)
     to align with the confocal orientation; single-FOV acquisitions usually need k=0.
     """
-    if use_assist and barcode_cls_path and Path(barcode_cls_path).exists():
+    barcode_cls_path = _path_or_none(barcode_cls_path)
+    if use_assist and barcode_cls_path is not None and barcode_cls_path.is_file():
         aux = np.asarray(tifffile.imread(str(barcode_cls_path)), dtype=np.float32)
         if aux.ndim > 2:
             aux = np.squeeze(aux)
@@ -14145,7 +14748,11 @@ def _prep_biosensor_seg_input(img2d: np.ndarray, barcode_cls_path: "Path | None"
 
 
 class BiosensorSeg(Container):
-    """Two-step biosensor cell segmentation with barcode-assist Cellpose model.
+    """Two-step biosensor cell segmentation, optionally barcode-assisted.
+
+    "Biosensor only (no barcode)" is ticked automatically when the sample
+    folder has no barcode classification image: Step 2 is then skipped and
+    only models that do not need a barcode are used.
 
     Step 1 (seg image): average the first N frames of the selected biosensor
            channels (B/G/Y) into one strong-signal 2D image. This single image
@@ -14175,6 +14782,9 @@ class BiosensorSeg(Container):
         )
         self.sample_folder.changed.connect(
             lambda v: _remember_sample_dir(self.viewer, v))
+        # Ticked automatically when the sample has no barcode classification
+        # image (see _auto_fill_paths); the user can override it.
+        self.bs_only = CheckBox(text='Biosensor only (no barcode)', value=False)
         self.stack_b_path = FileEdit(label='Stack B', mode='r', filter='*.tif')
         self.stack_g_path = FileEdit(label='Stack G', mode='r', filter='*.tif')
         self.stack_y_path = FileEdit(label='Stack Y', mode='r', filter='*.tif')
@@ -14216,7 +14826,7 @@ class BiosensorSeg(Container):
             value='90° CW',
         )
         self.barcode_resize = SpinBox(
-            label='Barcode resize (px, 0=match seg image)',
+            label='Barcode resize (px)',
             min=0, max=8192, value=1024,
         )
         self.confirm_barcode_btn = PushButton(text='Load / Confirm Barcode')
@@ -14232,9 +14842,9 @@ class BiosensorSeg(Container):
 
         # --- Fine-tune ---
         self.ft_epochs = SpinBox(label='Fine-tune epochs', min=1, max=2000, value=100)
-        self.ft_btn = PushButton(text='Fine-tune (current image + mask)')
+        self.ft_btn = PushButton(text='Fine-tune (this image)')
         self.ft_btn.changed.connect(self._on_finetune)
-        self.ft_multi_btn = PushButton(text='Fine-tune — multi-folder...')
+        self.ft_multi_btn = PushButton(text='Fine-tune (multi-folder)...')
         self.ft_multi_btn.changed.connect(self._on_finetune_multi)
 
         # --- Progress + tips ---
@@ -14242,20 +14852,17 @@ class BiosensorSeg(Container):
         self.status_label = Label(value='Ready. Start with Step 1 -> Generate Seg Image.')
         self.tips_label = Label(
             value=(
-                '<b>Step 1 — Seg image</b>: pick channels + frame range → '
-                '<b>Generate Seg Image</b>. Inspect the new layer; tweak params '
-                'and click again to overwrite. This single image is the mask '
-                'for the whole stack (no per-frame tracking required).<br>'
-                '<b>Step 2 — Barcode</b>: set <i>Rotation</i> (90° CW for Leica '
-                'tilescan, 0° for single-FOV) and <i>Resize</i> (default 1024, '
-                '0 = match seg image shape), then <b>Load / Confirm Barcode</b>. '
-                'Toggle the new <code>barcode_cls</code> layer on/off to confirm '
-                'registration. Segment uses exactly what you see.<br>'
-                '<b>Step 3 — Segment & edit</b>: right-click polygon, Enter '
-                'commit, Esc cancel, <b>Z</b> toggle mask_biosensor, <b>X</b> '
-                'toggle barcode_cls, Ctrl+click delete, S cycle contrast. '
-                'Auto-save to '
-                '<code>&lt;sample&gt;/&lt;seg_image_stem&gt;_seg.npy</code>.'
+                '<b>1 · Seg image</b>: pick channels + frame range → '
+                '<b>Generate Seg Image</b>. This one image is the mask for the '
+                'whole stack.<br>'
+                '<b>2 · Barcode</b> <i>(skipped when “Biosensor only” is '
+                'ticked)</i>: set Rotation (90° CW Leica tilescan, 0° single '
+                'FOV) → <b>Load / Confirm Barcode</b>; Segment uses exactly the '
+                'overlay you see.<br>'
+                '<b>3 · Segment & edit</b>: the mask is saved to '
+                '<code>&lt;seg_image&gt;_seg.npy</code>; edit it, then '
+                '<b>Save mask</b>. Editing keys: <b>⌨ Keyboard shortcuts</b> '
+                'at the top.'
             ),
         )
         try:
@@ -14279,6 +14886,12 @@ class BiosensorSeg(Container):
             'Sample folder. Biosensor Seg reads the confocal stacks, the '
             'barcode classification image, and writes seg_image.tif + '
             'seg_image_seg.npy here.')
+        _tt(self.bs_only,
+            'Tick when this sample has no barcode (biosensor-only '
+            'experiment). Step 2 is skipped and the model list is limited '
+            'to models that do not need a barcode (BS-BC-assist models do '
+            'and miss most cells without one). Ticked automatically when '
+            'the sample folder has no intensity/*-cls.tif.')
         _tt(self.stack_b_path, 'Blue-channel confocal stack (.tif). Time-lapse.')
         _tt(self.stack_g_path, 'Green-channel confocal stack (.tif). Time-lapse.')
         _tt(self.stack_y_path,
@@ -14304,10 +14917,12 @@ class BiosensorSeg(Container):
             'Legacy intensity model selected: averages the chosen frames '
             'per channel and across enabled channels (old behaviour).')
         _tt(self.seg_model,
-            'Cellpose model. Default BS-BC-assist-cls-bgy-260426 is a '
-            'Cellpose v2 model trained on the BGY render grayscale + '
-            'barcode-cls aux (2-channel input). Older BS-BC-assist-cls-* '
-            '(no -bgy- in the name) → legacy frame-mean intensity flow. '
+            'Cellpose model. BS-BC-assist-* models are Cellpose v2 models '
+            'that take the barcode classification as a second input: they '
+            'need Step 2 and miss most cells without it. For a sample with '
+            'no barcode use cyto2 or a biosensor model you fine-tuned. '
+            'Names with -bgy- use the BGY-render seg image; others the '
+            'legacy frame-mean intensity image. '
             '\n\nCellpose v4 (CellposeSAM) also supports 2-channel input '
             'via the nchan argument; if you later train a *-cpsam-bs-* '
             'model the widget will route it to the v4 env automatically.')
@@ -14356,19 +14971,19 @@ class BiosensorSeg(Container):
 
         _append_section_divider(self, '— 📁 Sample folder —')
         self.append(self.sample_folder)
+        self.append(self.bs_only)
 
         _append_section_divider(self, '— 🧪 Step 1: Seg image —')
         self.append(self.stack_b_path)
         self.append(self.stack_g_path)
         self.append(self.stack_y_path)
-        self.append(self.use_b)
-        self.append(self.use_g)
-        self.append(self.use_y)
+        self.append(_hrow(self.use_b, self.use_g, self.use_y))
         self.append(self.frame_start)
         self.append(self.frame_end)
         self.append(self.gen_btn)
 
-        _append_section_divider(self, '— 🔖 Step 2: Barcode assist —')
+        self._step2_divider = _append_section_divider(
+            self, '— 🔖 Step 2: Barcode assist —')
         self.append(self.barcode_cls_path)
         self.append(self.barcode_rot_choice)
         self.append(self.barcode_resize)
@@ -14397,14 +15012,16 @@ class BiosensorSeg(Container):
         # size the whole dock super wide. Individual FileEdits can still show
         # the tail of a long path; hovering reveals the full path as a tooltip.
         try:
-            self.native.setMaximumWidth(720)
+            self.native.setMaximumWidth(820)
             for _fe in (self.sample_folder, self.stack_b_path, self.stack_g_path,
                          self.stack_y_path, self.barcode_cls_path):
-                _fe.native.setMaximumWidth(600)
+                _fe.native.setMaximumWidth(680)
+            self.status_label.native.setWordWrap(True)
         except Exception:
             pass
         self.sample_folder.changed.connect(self._auto_fill_paths)
         self.sample_folder.changed.connect(self._refresh_seg_model_choices)
+        self.bs_only.changed.connect(self._on_bs_only_changed)
         self._auto_fill_paths()
         self._refresh_seg_model_choices()
         # Same deferred-refresh trick as BarcodeSeg — napari's dock
@@ -14456,6 +15073,47 @@ class BiosensorSeg(Container):
         self.seg_model.choices = tuple(out)
         if cur in self.seg_model.choices:
             self.seg_model.value = cur
+        if self.bs_only.value:
+            self._pick_barcode_free_model()
+
+    def _pick_barcode_free_model(self):
+        """If an assist model is selected, switch to the first model that
+        does not need a barcode. Returns the new name, or None if unchanged."""
+        cur = str(self.seg_model.value or '')
+        if not _is_assist_model(cur):
+            return None
+        for n in self.seg_model.choices:
+            if not _is_assist_model(n) and _is_valid_model_choice(n):
+                self.seg_model.value = n
+                return n
+        return None
+
+    def _on_bs_only_changed(self, on=None):
+        """Grey out Step 2 and keep assist models out of the way while the
+        sample is marked biosensor-only."""
+        on = bool(self.bs_only.value if on is None else on)
+        for w in (self.barcode_cls_path, self.barcode_rot_choice,
+                  self.barcode_resize, self.confirm_barcode_btn):
+            try:
+                w.enabled = not on
+            except Exception:
+                pass
+        try:
+            self._step2_divider.value = (
+                '— 🔖 Step 2: Barcode assist (skipped: biosensor only) —'
+                if on else '— 🔖 Step 2: Barcode assist —')
+        except Exception:
+            pass
+        if on:
+            if 'barcode_cls' in self.viewer.layers:
+                try:
+                    del self.viewer.layers['barcode_cls']
+                except Exception:
+                    pass
+            switched = self._pick_barcode_free_model()
+            note = (f' Model switched to {switched} '
+                    f'(BS-BC-assist models need a barcode).' if switched else '')
+            self._set_progress(0, 'Biosensor only: Step 2 (barcode) skipped.' + note)
 
     # ---------- Path discovery ----------
 
@@ -14480,7 +15138,7 @@ class BiosensorSeg(Container):
             img_in = np.stack([main01, aux01], axis=-1).astype(np.float32, copy=False)
             return img_in, [1, 2]
         # Fallback: old behaviour (read + rotate + resize from path)
-        aux_path = Path(str(self.barcode_cls_path.value)) if self.barcode_cls_path.value else None
+        aux_path = None if self.bs_only.value else _path_or_none(self.barcode_cls_path.value)
         return _prep_biosensor_seg_input(
             img2d, aux_path, use_assist, rotate_k=self._rotation_k(),
         )
@@ -14491,9 +15149,14 @@ class BiosensorSeg(Container):
         Segment reuses this aligned layer directly — so the user can visually
         confirm registration against the seg image BEFORE running Cellpose.
         """
-        p = Path(str(self.barcode_cls_path.value)) if self.barcode_cls_path.value else None
+        p = _path_or_none(self.barcode_cls_path.value)
         if p is None or not p.is_file():
-            show_warning(f'Barcode cls.tif path invalid: {p}')
+            _user_error(
+                'No barcode classification image to load'
+                + (f' ({p} does not exist).' if p is not None else '.'),
+                'set "Barcode cls.tif (assist)" to the <sample>/intensity/'
+                '*-cls.tif that Seeded K-Means saved. If this sample has no '
+                'barcode, tick "Biosensor only" instead and skip Step 2.')
             return
 
         try:
@@ -14554,15 +15217,20 @@ class BiosensorSeg(Container):
                     widget.value = str(hits[0])
                 except Exception:
                     pass
-        int_dir = base_p / 'intensity'
-        if int_dir.is_dir():
-            cls_hits = [p for p in sorted(int_dir.glob('*-cls.tif'))
-                        if 'color' not in p.name.lower() and 'text' not in p.name.lower()]
-            if cls_hits:
-                try:
-                    self.barcode_cls_path.value = str(cls_hits[0])
-                except Exception:
-                    pass
+        # A barcode path left over from the previous sample folder would be
+        # silently used for this one, so always reset it to what this folder
+        # has, or to empty.
+        cls_hit = _find_barcode_cls(base_p)
+        try:
+            _set_file_edit(self.barcode_cls_path, cls_hit)
+        except Exception:
+            pass
+        # (bs_only.changed runs _on_bs_only_changed when the value flips)
+        self.bs_only.value = cls_hit is None
+        if cls_hit is None:
+            show_info(f'No barcode classification image in {base_p.name}/intensity: '
+                      '"Biosensor only" ticked, Step 2 skipped. Untick it if '
+                      'you do have a barcode image elsewhere.')
 
     # ---------- Progress helpers ----------
 
@@ -14791,7 +15459,13 @@ class BiosensorSeg(Container):
 
         model_name = str(self.seg_model.value)
         diameter = float(self.diameter.value)
-        use_assist = model_name.lower().startswith('bs-bc-assist')
+        use_assist = _is_assist_model(model_name)
+        if use_assist and (self.bs_only.value
+                           or ('barcode_cls' not in self.viewer.layers
+                               and _path_or_none(self.barcode_cls_path.value) is None)):
+            _user_error(_ASSIST_NEEDS_BARCODE_MSG.format(model=model_name),
+                        _ASSIST_NEEDS_BARCODE_FIX)
+            return
 
         # Compute the eventual save path now so we can check if it
         # already exists and offer "Load existing" instead of overwriting.
@@ -14867,9 +15541,11 @@ class BiosensorSeg(Container):
             self._set_progress(15, f'Preparing input for {model_name}...')
             img_in, channels = self._build_seg_input(img2d, use_assist)
             if use_assist and channels == [0, 0]:
-                show_warning('BS-BC-assist model selected but no barcode layer loaded. '
-                             'Click "Load / Confirm Barcode" first, or running '
-                             'single-channel fallback.')
+                # The barcode path is set but the file is gone / unreadable.
+                self._set_progress(0, 'Not run: barcode image missing.')
+                _user_error(_ASSIST_NEEDS_BARCODE_MSG.format(model=model_name),
+                            _ASSIST_NEEDS_BARCODE_FIX)
+                return
 
             self._set_progress(
                 40,
@@ -14906,8 +15582,10 @@ class BiosensorSeg(Container):
             show_info(f'Biosensor segmentation: {int(masks.max())} cells.')
         except Exception as e:
             self._set_progress(0, f'ERROR: {e}')
-            show_warning(f'Segmentation failed: {e}')
             traceback.print_exc()
+            _user_error(f'Segmentation failed: {e}',
+                        'check the model name and the "Compute:" line in the '
+                        'header; the full error is in the terminal.')
         finally:
             self.seg_btn.enabled = True
             self.reseg_btn.enabled = True
@@ -14921,7 +15599,12 @@ class BiosensorSeg(Container):
         if seg_ref_path is None:
             seg_ref_path = Path(str(self.sample_folder.value)) / 'seg_image.tif'
         dest = seg_ref_path.parent / (seg_ref_path.stem + '_seg.npy')
-        np.save(str(dest), arr)
+        try:
+            np.save(str(dest), arr)
+        except Exception as e:
+            _user_error(f'Could not save {dest}: {e}',
+                        'check that the sample folder exists and is writable.')
+            return
         self._last_mask_save_path = dest
         show_info(f'Saved {dest.name}')
 
@@ -14945,10 +15628,13 @@ class BiosensorSeg(Container):
             return
 
         base_name = str(self.seg_model.value)
-        use_assist = base_name.lower().startswith('bs-bc-assist')
-        if use_assist and 'barcode_cls' not in self.viewer.layers:
-            show_warning('BS-BC-assist model needs a confirmed barcode_cls layer. '
-                         'Click "Load / Confirm Barcode" first.')
+        use_assist = _is_assist_model(base_name)
+        if use_assist and (self.bs_only.value or 'barcode_cls' not in self.viewer.layers):
+            _user_error(
+                f'"{base_name}" takes the barcode as a second input, so it can '
+                'only be fine-tuned with a confirmed barcode overlay.',
+                'without a barcode, fine-tune cyto2 or your own biosensor '
+                'model instead; with one, click "Load / Confirm Barcode" first.')
             return
 
         img_in, channels = self._build_seg_input(img2d, use_assist)
@@ -14999,7 +15685,7 @@ class BiosensorSeg(Container):
         session. The dialog loads all valid pairs and trains them jointly.
         """
         base_name = str(self.seg_model.value)
-        if base_name.lower().startswith('bs-bc-assist'):
+        if _is_assist_model(base_name):
             show_warning(
                 'BS-BC-assist models take a second channel built from the '
                 'barcode classification of THIS field of view, which the '

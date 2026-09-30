@@ -243,6 +243,57 @@ something to hand-author for a model trained elsewhere.
    Shift‑click any cell in Revise Mode to inspect its individual
    signal curve before trusting the class averages.
 
+### 🟡 Biosensor only (no barcode)
+
+A biosensor experiment without barcodes skips steps 2–4 and runs
+**5 → (6) → 7**. Both Biosensor Seg and NaCha tick **Biosensor only (no
+barcode)** by themselves when the sample folder has no
+`intensity/*-cls.tif`; tick or untick it by hand to override.
+
+- **Biosensor Seg**: Step 2 (barcode assist) is skipped, and the model is
+  switched to one that needs no barcode (`cyto2`, or a biosensor model you
+  fine-tuned). The `BS-BC-assist-*` models take the barcode classification
+  as a second input and are refused without one: on the test field they
+  found 126 instead of 347 cells.
+- **NaCha**: barcode loading and **Align** are skipped with a warning that
+  says so; **Calculate** reports every cell in one group (`Class` = 1,
+  plotted as "All cells"). Per-cell intensities, F/F0, G/B and the
+  frequency analysis are computed exactly as with a barcode. The `_meta`
+  sheet records `biosensor only`.
+
+Anything barcode-related that the biosensor result does not need is
+skipped with a warning; a run only stops when a result would be wrong, and
+the message then says what is missing and where to set it.
+
+---
+
+## ⌨ Keyboard shortcuts
+
+Each widget that has shortcuts shows a **⌨ Keyboard shortcuts** button at
+its top; it lists them and greys out the ones that do not work in the
+current mode. The same table is printed in the terminal napari runs in when
+the widget opens, and again when an editing mode is switched on.
+
+| Widget | Keys | What they do |
+|---|---|---|
+| Barcode Seg | Right-click · Enter · Esc | draw a polygon cell · commit · cancel (select `mask_n_fill` / `mask_p_fill` first) |
+| | Ctrl+click | delete the cell under the cursor |
+| | Z / X | show / hide the N / P mask |
+| | S | cycle contrast of the sum image |
+| | Shift+S · Shift+Z | save masks · undo the last post-processing |
+| Biosensor Seg | Right-click · Enter · Esc · Ctrl+click | as above, on `mask_biosensor` |
+| | Z / X | show / hide `mask_biosensor` / the barcode overlay |
+| | S | cycle contrast of `seg_image` |
+| Seeded K-Means (plot window) | Click · drag a star | place / move a seed (after Read and Plot) |
+| | 1–9, a–z, 0 | choose class 1–9, 10–35, or 0 = outlier (after Run K-Means) |
+| | Ctrl+click · Shift+click and draw | give the nearest cell / every lassoed cell the chosen class |
+| NaCha (Revise+Visualize Mode, on `Masks`) | Shift+click | plot that cell's signal |
+| | Ctrl+click · Ctrl+Alt+click | delete the cell from this frame on · in this frame only |
+| | U | undo the last delete |
+
+napari's own Labels keys work on any mask layer: 1–5 erase / paint / fill /
+pick / pan, `[` `]` brush size, M next free label, Ctrl+Z undo.
+
 ---
 
 ## 📁 Repository layout
@@ -297,6 +348,40 @@ Napari_plugin/
 Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
+
+**Unreleased**
+
+- Biosensor-only samples (no barcode) now run through. Biosensor Seg and
+  NaCha tick "Biosensor only (no barcode)" when the sample has no
+  `intensity/*-cls.tif`. An empty barcode field used to read as the working
+  directory, so Segment tried to open a folder as an image and failed; a
+  barcode path left from the previous sample folder was silently reused.
+  `BS-BC-assist-*` models are refused without a barcode instead of running
+  with an empty second channel (126 instead of 347 cells on the test
+  field). NaCha's "all cells → class 1" fallback gave class 1 to ids
+  `1..number of mask frames` — usually only cell 1 — and every other cell
+  became class 0; it now covers every cell in the masks, without the modal
+  dialog.
+- **F/F0 changes (MINOR).** The baseline F0 was taken over the pivot
+  including its `Class` column, so it averaged the class number with one
+  frame fewer than the Basal Frame Range: every F/F0 came out too high by
+  about n/(n−1) for an n-frame baseline (≈5 % at the default 0–21, 25 % at
+  0–5). The shape of each curve is unchanged. The G/B ratio and the
+  frequency analysis carried the same column; all three now use frame
+  columns only.
+- Errors say what is missing and where to set it, instead of a traceback;
+  barcode steps that the biosensor result does not need are skipped with a
+  warning that says so. NaCha's Save Track works (it read attributes the
+  widget does not have).
+- Larger text and even spacing in all seven widgets, section headers
+  across the full width, the main action buttons coloured, and a scroll
+  bar on docks taller than the screen.
+- A **⌨ Keyboard shortcuts** button and a terminal print-out list every
+  shortcut per widget and mode. Barcode Seg's Shift+S / Shift+Z now bind
+  again when the widget is reopened; Seeded K-Means no longer stacks a new
+  set of key handlers on every run, and matplotlib's own single-letter keys
+  (g grid, f fullscreen, s save, q close ...) no longer fire on the letters
+  that pick classes 10–35.
 
 **1.1.4 — 2026-09-14**
 

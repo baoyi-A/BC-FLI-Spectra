@@ -201,6 +201,12 @@ Fine-tuning works as in step 2. Multi-folder fine-tuning is refused for
 `BS-BC-assist` models, because their second channel is built from *this* FOV's
 barcode classification and other folders cannot supply it.
 
+**Biosensor only (no barcode).** Ticked automatically when the sample has no
+`intensity/*-cls.tif`. Step 2 is skipped and an assist model is swapped for
+one that needs no barcode; an assist model is refused without a barcode,
+because with an empty second channel it misses most cells (126 vs 347 on the
+Mix16 test field).
+
 ---
 
 ## 6. B&P Tracker — time-lapse only
@@ -213,7 +219,11 @@ Propagates the single-frame mask through the confocal time series
 
 ## 7. NaCha — per-class readout
 
-Final alignment plus per-class signal computation. Shift+click any cell in
+Final alignment plus per-class signal computation. With "Biosensor only
+(no barcode)" ticked (automatic when the sample has no barcode image), barcode
+loading and Align are skipped and every cell is reported as Class 1 ("All
+cells"); per-cell signals and F/F0 are unchanged. F0 is the mean over the
+Basal Frame Range of frame columns only. Shift+click any cell in
 Revise Mode to inspect its individual curve before trusting a class average —
 one bad cell in a small class moves the mean visibly.
 
