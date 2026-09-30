@@ -48,11 +48,9 @@ viewer layers on transition, keeping the session clean.
 
 ## ✨ What's new
 
-**1.2** runs biosensor-only samples (no barcode) end to end, corrects the
-F/F0 baseline in NaCha (values change, see the Changelog), explains errors in
-plain words, and gives every widget the same clearer layout with larger text,
-a **⌨ Shortcuts** button (with Alt+1…9 layer keys) and an **ⓘ How to use**
-button.
+**1.2** runs biosensor-only samples (no barcode) end to end and gives every
+widget the same clearer layout, with larger text, a **⌨ Shortcuts** button
+(including Alt+1…9 layer keys) and an **ⓘ How to use** button.
 
 The 1.x series adds two Cellpose segmentation widgets with in‑viewer
 editing and online fine‑tuning, runs every Cellpose call in an isolated
@@ -372,60 +370,30 @@ result, PATCH otherwise.
 
 **1.2.1 — 2026-09-30**
 
-- Every widget laid out the same way: a top bar with "Step k of 7" and the
-  **ⓘ How to use** / **⌨ Shortcuts** buttons, controls aligned in one label
-  column (Seeded K-Means' parameters used to centre themselves in the right
-  half), rows of buttons and check boxes across the full width, crowded
-  two-in-a-row controls split so no value is cut off. Docks are 540–760 px
-  wide (Barcode Seg was 1056).
-- Everything stays reachable on a small or un-maximised window: napari's
-  window is maximised the first time a SLIC widget opens (napari otherwise
-  reopens at whatever size the last person left it); several SLIC widgets
-  open at once share the right column as tabs, each with the full height,
-  instead of being stacked into slivers of 100–200 px; each dock scrolls,
-  with the **Next ▶** button pinned below the scrolling part; NaCha's
-  Signal panel appears on the first Shift+click instead of taking ~300 px
-  from the start.
-- A widget closed within half a second of opening no longer raises
-  "wrapped C/C++ object has been deleted" from its delayed model-list
-  refresh. The Harmony button shows its "&".
+- The same layout in all seven widgets: a top bar with "Step k of 7",
+  **ⓘ How to use** and **⌨ Shortcuts**; controls in one aligned column;
+  docks 540–760 px wide.
+- Everything stays reachable on smaller screens: napari's window is
+  maximised when the first SLIC widget opens, several SLIC widgets share
+  the right column as tabs, docks scroll with **Next ▶** pinned below, and
+  NaCha's Signal panel opens on the first Shift+click.
 
 **1.2.0 — 2026-09-30**
 
-- Biosensor-only samples (no barcode) now run through. Biosensor Seg and
+- Biosensor-only samples (no barcode) run end to end. Biosensor Seg and
   NaCha tick "Biosensor only (no barcode)" when the sample has no
-  `intensity/*-cls.tif`. An empty barcode field used to read as the working
-  directory, so Segment tried to open a folder as an image and failed; a
-  barcode path left from the previous sample folder was silently reused.
-  `BS-BC-assist-*` models are refused without a barcode instead of running
-  with an empty second channel (126 instead of 347 cells on the test
-  field). NaCha's "all cells → class 1" fallback gave class 1 to ids
-  `1..number of mask frames` — usually only cell 1 — and every other cell
-  became class 0; it now covers every cell in the masks, without the modal
-  dialog.
-- **F/F0 changes (MINOR).** The baseline F0 was taken over the pivot
-  including its `Class` column, so it averaged the class number with one
-  frame fewer than the Basal Frame Range: every F/F0 came out too high by
-  about n/(n−1) for an n-frame baseline (≈5 % at the default 0–21, 25 % at
-  0–5). The shape of each curve is unchanged. The G/B ratio and the
-  frequency analysis carried the same column; all three now use frame
-  columns only.
-- Errors say what is missing and where to set it, instead of a traceback;
-  barcode steps that the biosensor result does not need are skipped with a
-  warning that says so. NaCha's Save Track works (it read attributes the
-  widget does not have).
-- Larger text (12 pt Segoe UI instead of the 9 pt SimSun Windows falls back
-  to) and even spacing in all seven widgets, section headers
-  across the full width, the main action buttons coloured, and a scroll
-  bar on docks taller than the screen.
-- A **⌨ Keyboard shortcuts** button and a terminal print-out list every
-  shortcut per widget and mode, and Alt+1…9 / Alt+0 / Alt+S / Alt+←→ show,
-  hide, solo and select layers in every widget. The how-to boxes moved
-  behind an **ⓘ How to use** button. Barcode Seg's Shift+S / Shift+Z now bind
-  again when the widget is reopened; Seeded K-Means no longer stacks a new
-  set of key handlers on every run, and matplotlib's own single-letter keys
-  (g grid, f fullscreen, s save, q close ...) no longer fire on the letters
-  that pick classes 10–35.
+  `intensity/*-cls.tif`, skip the barcode steps with a note, and NaCha
+  reports all cells as one group. `BS-BC-assist-*` models, which take the
+  barcode as a second input, ask for a barcode-free model instead.
+- NaCha takes F0 over exactly the frames of the Basal Frame Range. G/B
+  ratios (R/R₀) are unaffected; a single-channel F/F0 whose baseline starts
+  at frame 0 differs from earlier versions by a constant factor of about
+  (n−1)/n for an n-frame baseline.
+- Messages say what is missing and where to set it.
+- Larger text, aligned layout, full-width section headers and scrollable
+  docks in all seven widgets.
+- A **⌨ Shortcuts** list per widget (also printed in the terminal), layer
+  keys (Alt+1…9 / Alt+0 / Alt+S / Alt+←→), and an **ⓘ How to use** button.
 
 **1.1.4 — 2026-09-14**
 
