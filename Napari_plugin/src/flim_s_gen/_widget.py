@@ -2038,15 +2038,17 @@ class PTUReader(Container):
         # (we have seen ~13 ns). Auto contrast can write any of those.
         self.tau_min = FloatSpinBox(
             label='Tau min (ns)',
-            min=0.0, max=20.0, step=0.1, value=3.1
+            min=0.0, max=20.0, step=0.1, value=1.5
         )
         self.tau_max = FloatSpinBox(
             label='Tau max (ns)',
-            min=0.0, max=20.0, step=0.1, value=5.1
+            min=0.0, max=20.0, step=0.1, value=3.5
         )
+        # Overwritten per file from the PTU header (MeasDesc_Resolution);
+        # this value is only used when a header does not carry it.
         self.tau_res = FloatSpinBox(
             label='Tau resolution (ns/bin)',
-            min=0.001, max=1.0, step=0.001, value=0.098
+            min=0.00001, max=1.0, step=0.00001, value=0.09697
         )
         # 强度 autocontrast 百分位，比如 99 表示按 99th percentile 做上界
         self.intensity_clip = FloatSpinBox(
@@ -2381,11 +2383,15 @@ class PTUReader(Container):
         out = rgb * bright[..., None]
         return np.clip(out * 255, 0, 255).astype(np.uint8)
 
-    def _push_fastflim_layer(self, name, tau, inten):
-        """Compute RGB, cache (tau, inten), and add / update the napari layer."""
+    def _push_fastflim_layer(self, name, tau, inten, tau_model=None):
+        """Compute RGB, cache (tau, inten), and add / update the napari layer.
+        ``tau_model`` is the Cellpose-input map, kept for re-saving the seg
+        input; the layer itself always shows FastFLIM."""
         self._fastflim_cache[name] = {
             'tau': tau.astype(np.float32, copy=False),
             'inten': inten.astype(np.float32, copy=False),
+            'tau_model': (None if tau_model is None
+                          else np.asarray(tau_model, np.float32)),
         }
         rgb = self._render_fastflim_rgb(tau, inten)
         try:
@@ -2590,9 +2596,10 @@ class PTUReader(Container):
                 rgb = self._render_fastflim_rgb(pair['tau'], pair['inten'])
                 _PILImage.fromarray(rgb).save(
                     str(out_dir / f'{bare}_fastflim_rgb.png'))
-                seg_lum = _render_barcode_seg_grayscale(pair['tau'], pair['inten'])
-                tifffile.imwrite(
-                    str(out_dir / f'{bare}_seg_input.tif'), seg_lum)
+                if pair.get('tau_model') is not None:
+                    seg_lum = _render_barcode_seg_grayscale(pair['tau_model'], pair['inten'])
+                    tifffile.imwrite(
+                        str(out_dir / f'{bare}_seg_input.tif'), seg_lum)
                 saved.append(bare)
             except Exception as e:
                 errors.append(f'{layer_name}: {e}')
@@ -2672,20 +2679,48 @@ class PTUReader(Container):
                     self.progress.value = (i + 1) * 100
                     continue
                 try:
-                    tau = np.asarray(tifffile.imread(str(tau_p)),
-                                      dtype=np.float32)
+                    tau, ff_info = _read_fastflim_tau(tau_p)
                     inten = np.asarray(tifffile.imread(str(int_p)),
                                         dtype=np.float32)
-                    if tau.ndim > 2:
-                        tau = np.squeeze(tau)
                     if inten.ndim > 2:
                         inten = np.squeeze(inten)
                 except Exception as e:
                     print(f'[re-render] read failed for {p.stem}: {e}')
                     self.progress.value = (i + 1) * 100
                     continue
+                model_tau = None
+                mp = out_dir / f'{p.stem}_model_input_tau.tif'
+                if ff_info is None:
+                    # Map from an older version: timed from the start of the
+                    # TCSPC window. Keep it as the Cellpose input map and
+                    # recompute FastFLIM from the saved decay stack.
+                    model_tau = tau
+                    stack_p = out_dir / 'flim_stack' / f'{p.stem}_sum.tif'
+                    if stack_p.is_file():
+                        try:
+                            self.status_label.value = (
+                                f'[{i+1}/{n_total}] Updating {p.stem} to the '
+                                f'current FastFLIM definition...')
+                            st = tifffile.imread(str(stack_p))
+                            tau, ff_info = _fastflim_tau_map(
+                                st, float(self.tau_res.value), bins_axis=0)
+                            del st
+                            if not mp.is_file():
+                                os.replace(str(tau_p), str(mp))
+                            _write_fastflim_tau(tau_p, tau, ff_info)
+                        except Exception as e:
+                            print(f'[re-render] FastFLIM update failed for {p.stem}: {e}')
+                    else:
+                        show_warning(
+                            f'{p.stem}: FastFLIM map from an older version '
+                            '(timed from the start of the TCSPC window, about '
+                            '1.5 ns higher) and no flim_stack to update it '
+                            'from; shown as is. Re-decode the PTU to update.')
+                elif mp.is_file():
+                    model_tau = np.squeeze(tifffile.imread(str(mp))).astype(np.float32)
                 first_fov = not self._fastflim_cache
-                self._push_fastflim_layer(f'{p.stem}_FastFLIM', tau, inten)
+                self._push_fastflim_layer(f'{p.stem}_FastFLIM', tau, inten,
+                                          tau_model=model_tau)
                 if first_fov and self._auto_cycle_idx_all < 0:
                     self._auto_cycle_idx = 3
                     self._auto_cycle_idx_all = 3
@@ -2695,9 +2730,9 @@ class PTUReader(Container):
                 # trained on, so BarcodeSeg can skip the slow flim_stack
                 # re-read.
                 seg_path = out_dir / f'{p.stem}_seg_input.tif'
-                if not seg_path.is_file():
+                if not seg_path.is_file() and model_tau is not None:
                     try:
-                        seg_lum = _render_barcode_seg_grayscale(tau, inten)
+                        seg_lum = _render_barcode_seg_grayscale(model_tau, inten)
                         tifffile.imwrite(str(seg_path), seg_lum)
                     except Exception as e:
                         print(f'[re-render] seg_input save failed for '
@@ -2722,13 +2757,6 @@ class PTUReader(Container):
         finally:
             self.process_btn.enabled = True
 
-    def _compute_tau_only(self, stack_sum, total_int, tau_res):
-        eps = 1e-6
-        B = stack_sum.shape[2]
-        t = (np.arange(B, dtype=np.float32) * tau_res).reshape(1, 1, B)
-        denom = np.maximum(total_int.astype(np.float32), eps)
-        tau_map = (stack_sum.astype(np.float32) * t).sum(axis=2) / denom
-        return tau_map
     def _on_input_dir_changed(self):
         """When the PTU folder changes, update output to its parent."""
         new_input = self.input_dir.value
@@ -2866,6 +2894,15 @@ class PTUReader(Container):
             try:
                 yield ('status', base + 2, f'[{file_idx+1}/{n_total}] Loading {p.name} (may take ~30-60s)...')
                 raw = _load_ptu(p, frame)
+                # Bin width from the file itself; the spin box is the fallback.
+                file_tau_res = tau_res
+                try:
+                    with PtuFile(str(p)) as _ptu:
+                        _r = _ptu.tags.get('MeasDesc_Resolution')
+                    if _r:
+                        file_tau_res = float(_r) * 1e9
+                except Exception:
+                    pass
                 # asarray (NOT np.array) — decode_image already returns a
                 # fresh array; np.array() would force a needless full copy
                 # (~3.4 GB for a 2048x2048x3x134 cube), the difference
@@ -2956,16 +2993,20 @@ class PTUReader(Container):
                     # FastFLIM
                     yield ('status', base + 85, f'[{file_idx+1}/{n_total}] Computing FastFLIM tau map...')
                     try:
-                        tau_map = self._compute_tau_only(
-                            stack_sum=stack_sum, total_int=total_int, tau_res=tau_res,
-                        )
-                        # Keep the raw tau .tif for debugging / downstream
-                        # quantification; the user-visible representation is
-                        # the intensity-weighted RGB below.
-                        tifffile.imwrite(out_dir / f"{p.stem}_fastflim_tau.tif", tau_map)
+                        tau_map, ff_info = _fastflim_tau_map(
+                            stack_sum, file_tau_res, bins_axis=2)
+                        _write_fastflim_tau(out_dir / f"{p.stem}_fastflim_tau.tif",
+                                            tau_map, ff_info)
+                        # The Cellpose input keeps the map the models were
+                        # trained on (see _model_input_tau_map).
+                        model_tau = _model_input_tau_map(
+                            stack_sum, file_tau_res, bins_axis=2)
+                        tifffile.imwrite(out_dir / f"{p.stem}_model_input_tau.tif",
+                                         model_tau)
                         yield ('fastflim', f"{p.stem}_FastFLIM",
                                tau_map.astype(np.float32),
-                               total_int.astype(np.float32))
+                               total_int.astype(np.float32),
+                               model_tau)
                     except Exception as e_fast:
                         yield ('warn', f'FastFLIM failed for {p.name}: {e_fast}')
 
@@ -3046,15 +3087,16 @@ class PTUReader(Container):
         elif kind == 'fastflim':
             # FastFLIM RGB payload: cache on the widget, render, add layer,
             # save PNG next to the raw tau .tif.
-            _, name, tau_map, total_int = payload
+            _, name, tau_map, total_int, model_tau = payload
             try:
                 # First FOV this session — advance auto-contrast to the
                 # (80, 40) preset (idx 4) so the user does not see the
-                # hardcoded 3.1 / 5.1 ns on data whose real range is
+                # hardcoded 1.5 / 3.5 ns on data whose real range is
                 # elsewhere, and the blue background tail is suppressed.
                 # Subsequent FOVs inherit the current controls.
                 first_fov = not self._fastflim_cache
-                self._push_fastflim_layer(name, tau_map, total_int)
+                self._push_fastflim_layer(name, tau_map, total_int,
+                                          tau_model=model_tau)
                 if first_fov and self._auto_cycle_idx < 0:
                     self._auto_cycle_idx = 3  # next click → idx 4 = (80, 40)
                     self._on_auto_contrast()
@@ -3073,7 +3115,7 @@ class PTUReader(Container):
                     # Also persist the BARCODE-SEG seg input — rendered
                     # with the FIXED training params so BarcodeSeg can
                     # skip the slow flim_stack re-read at inference time.
-                    seg_lum = _render_barcode_seg_grayscale(tau_map, total_int)
+                    seg_lum = _render_barcode_seg_grayscale(model_tau, total_int)
                     tifffile.imwrite(
                         str(out_dir / f"{bare}_seg_input.tif"), seg_lum)
                 except Exception as e_save:
@@ -3762,11 +3804,13 @@ class Calculate_FLIM_S(Container):
         self._end_offset.min = 0
         self._end_offset.max = 50
 
+        # Leica 78 MHz bin width (PTU header MeasDesc_Resolution); filled in
+        # from the sample's FastFLIM map when PTU Reader recorded it.
         self._tau_resolution = create_widget(
             label="Tau Resolution(ns)",
             widget_type=FloatSpinBox,
-            value=0.097,
-            options={'min': 0, 'max': 1, 'step': 0.001}
+            value=0.09697,
+            options={'min': 0, 'max': 1, 'step': 0.00001}
         )
 
         self._pulse_frequency = create_widget(
@@ -3895,7 +3939,21 @@ class Calculate_FLIM_S(Container):
         _add_next_button(self, viewer)
         _tighten_container(self)
         self._base_dir.changed.connect(self._populate_initial_layers)
+        self._base_dir.changed.connect(self._tau_res_from_sample)
         self._populate_initial_layers()
+        self._tau_res_from_sample()
+
+    def _tau_res_from_sample(self, *_args):
+        """Use the bin width PTU Reader read from the PTU header, if the
+        sample's FastFLIM map records it."""
+        try:
+            base = Path(str(self._base_dir.value))
+            for tp in sorted(base.glob('*_fastflim_tau.tif'))[:1]:
+                _tau, info = _read_fastflim_tau(tp)
+                if info and info.get('tau_res_ns'):
+                    self._tau_resolution.value = float(info['tau_res_ns'])
+        except Exception as e:
+            print(f'[FLIM-S] tau resolution from sample: {e}')
 
     def _auto_load_flim_stack(self, ch_idx: int):
         """Try to load `<base>/flim_stack/*_ch{ch_idx}.tif` into napari, return the new layer or None."""
@@ -12115,6 +12173,110 @@ def _render_barcode_seg_input_rgb(tau, inten):
     return np.clip(out * 255, 0, 255).astype(np.uint8)
 
 
+# FastFLIM, one definition for the whole plugin (2026-10-01): the photon-
+# weighted mean arrival time over the decay tail [peak + PEAK_OFFSET,
+# n_bins - END_OFFSET), timed from the start of that window. For a single
+# exponential this is the lifetime minus a small truncation term; it is the
+# same number Calculate FLIM-S writes per cell (pixel map summed over a cell
+# == the cell's FastFLIM). Earlier versions timed the PTU Reader map from the
+# start of the TCSPC window, which added the pre-peak delay (~1.5 ns on the
+# Leica set-up); that map lives on only as the Cellpose input below.
+_FASTFLIM_PEAK_OFFSET = 4
+_FASTFLIM_END_OFFSET = 18
+_FASTFLIM_TAG = 'bc-flim-spectra fastflim tail-window v1'
+
+
+def _fastflim_tau_map(stack, tau_res, bins_axis=0,
+                      peak_offset=_FASTFLIM_PEAK_OFFSET,
+                      end_offset=_FASTFLIM_END_OFFSET):
+    """FastFLIM map (ns) of a decay stack. ``bins_axis`` is 0 for T x H x W,
+    2 (or -1) for H x W x T. The peak is that of the field's summed decay.
+    Returns ``(tau, info)``; ``info`` records the window for the file tag."""
+    st = np.asarray(stack)
+    if bins_axis in (2, -1):
+        st = np.moveaxis(st, -1, 0)
+    T = st.shape[0]
+    glob = st.reshape(T, -1).sum(axis=1, dtype=np.float64)
+    pk = int(np.argmax(glob))
+    s0 = min(max(0, pk + int(peak_offset)), T - 1)
+    s1 = max(s0 + 1, T - int(end_offset))
+    t = ((np.arange(s0, s1) - s0) * float(tau_res)).astype(np.float32)
+    H = st.shape[1]
+    tau = np.zeros(st.shape[1:], np.float32)
+    for r in range(0, H, 128):                 # row chunks: flat memory
+        seg = st[s0:s1, r:r + 128].astype(np.float32)
+        num = np.tensordot(t, seg, axes=(0, 0))
+        den = seg.sum(axis=0)
+        tau[r:r + 128] = np.where(den > 0, num / np.maximum(den, 1e-6), 0)
+    info = dict(definition=_FASTFLIM_TAG, tau_res_ns=float(tau_res),
+                peak_bin=pk, window_bins=[int(s0), int(s1)],
+                peak_offset=int(peak_offset), end_offset=int(end_offset),
+                plugin_version=_plugin_version())
+    return tau, info
+
+
+def _model_input_tau_map(stack, tau_res, bins_axis=0):
+    """The map the barcode Cellpose models were trained on: mean arrival time
+    over the whole TCSPC window, timed from its first bin. NOT FastFLIM (it
+    carries the pre-peak delay); used only to build the Cellpose input so the
+    published models keep seeing their training input."""
+    st = np.asarray(stack)
+    if bins_axis in (2, -1):
+        st = np.moveaxis(st, -1, 0)
+    T = st.shape[0]
+    t = (np.arange(T, dtype=np.float32) * float(tau_res))
+    H = st.shape[1]
+    out = np.zeros(st.shape[1:], np.float32)
+    for r in range(0, H, 128):
+        seg = st[:, r:r + 128].astype(np.float32)
+        num = np.tensordot(t, seg, axes=(0, 0))
+        den = seg.sum(axis=0)
+        out[r:r + 128] = num / np.maximum(den, 1e-6)
+    return out
+
+
+def _write_fastflim_tau(path, tau, info):
+    """Save a FastFLIM map with its definition in the TIFF description, so a
+    map from an older version (no tag) is never mistaken for this one."""
+    tifffile.imwrite(str(path), np.asarray(tau, np.float32),
+                     description=json.dumps(info))
+
+
+def _read_fastflim_tau(path):
+    """``(tau, info)``; ``info`` is None for an untagged map written before
+    2026-10-01 (timed from the start of the TCSPC window)."""
+    with tifffile.TiffFile(str(path)) as tf:
+        tau = np.squeeze(tf.asarray()).astype(np.float32)
+        desc = tf.pages[0].description or ''
+    info = None
+    if _FASTFLIM_TAG in desc:
+        try:
+            info = json.loads(desc)
+        except Exception:
+            info = {'definition': _FASTFLIM_TAG}
+    return tau, info
+
+
+def _model_input_tau_for(sample_dir, bare):
+    """Cellpose-input tau map for a FOV without its flim_stack: the saved
+    model-input map, else an untagged (old-definition) FastFLIM map, else
+    None."""
+    sample_dir = Path(sample_dir)
+    p = sample_dir / f'{bare}_model_input_tau.tif'
+    if p.is_file():
+        return np.squeeze(tifffile.imread(str(p))).astype(np.float32), p.name
+    p = sample_dir / f'{bare}_fastflim_tau.tif'
+    if p.is_file():
+        tau, info = _read_fastflim_tau(p)
+        if info is None:
+            return tau, p.name
+        print(f'[barcode-seg] {p.name} holds the tail-window FastFLIM, not '
+              'the map the models were trained on; using it as the Cellpose '
+              'input anyway (results can differ slightly).')
+        return tau, p.name + ' (FastFLIM)'
+    return None, ''
+
+
 def _render_barcode_seg_grayscale(tau, inten):
     """Render the FastFLIM seg input directly to BT.601 luminance.
 
@@ -12185,11 +12347,8 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
                 else:
                     stack_hw_b = np.transpose(stack, (1, 2, 0))
                 if stack_hw_b.shape[:2] == sum_img.shape[:2]:
-                    eps = 1e-6
-                    b = stack_hw_b.shape[2]
-                    t = (np.arange(b, dtype=np.float32) * _BARCODE_SEG_TAU_RES).reshape(1, 1, b)
-                    denom = np.maximum(sum_img, eps)
-                    tau = (stack_hw_b * t).sum(axis=2) / denom
+                    tau = _model_input_tau_map(stack_hw_b, _BARCODE_SEG_TAU_RES,
+                                               bins_axis=2)
                     source = 'flim_stack'
         except Exception as e:
             print(f'[barcode-seg] tau compute from flim_stack failed: {e}')
@@ -12199,15 +12358,10 @@ def _make_barcode_seg_grayscale(sample_dir, sum_tif_path):
         # next to <stem>_sum.tif as <stem>_fastflim_tau.tif (where stem
         # is the BARE FOV stem without the _sum suffix — already
         # computed at the top of this function).
-        tau_path = sample_dir / f'{bare}_fastflim_tau.tif'
-        if tau_path.is_file():
-            try:
-                tau = np.asarray(tifffile.imread(str(tau_path)), dtype=np.float32)
-                if tau.ndim > 2:
-                    tau = np.squeeze(tau)
-                source = 'fastflim_tau.tif'
-            except Exception as e:
-                print(f'[barcode-seg] tau read failed: {e}')
+        try:
+            tau, source = _model_input_tau_for(sample_dir, bare)
+        except Exception as e:
+            print(f'[barcode-seg] tau read failed: {e}')
 
     if tau is None or tau.shape != sum_img.shape:
         return None, ''
@@ -14229,12 +14383,11 @@ class BarcodeSeg(Container):
             except Exception as e:
                 print(f'[BarcodeSeg] failed to read fastflim_rgb.png: {e}')
         # 2) fall back to a fresh training-params render from tau + sum
-        tau_path = sample_dir / f'{bare}_fastflim_tau.tif'
-        if tau_path.is_file() and sum_tif_path.is_file():
+        if sum_tif_path.is_file():
             try:
-                tau = np.asarray(tifffile.imread(str(tau_path)), dtype=np.float32)
-                if tau.ndim > 2:
-                    tau = np.squeeze(tau)
+                tau, _src = _model_input_tau_for(sample_dir, bare)
+                if tau is None:
+                    return None
                 inten = np.asarray(tifffile.imread(str(sum_tif_path)), dtype=np.float32)
                 if inten.ndim > 2:
                     inten = np.squeeze(inten)

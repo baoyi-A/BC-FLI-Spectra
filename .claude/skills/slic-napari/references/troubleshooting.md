@@ -203,8 +203,9 @@ gate: it only finds cells unlike their own cluster.
 
 Check **Pulse frequency** and **Tau resolution** before anything else. The
 phasor is evaluated in a window set by the repetition rate, so a wrong value
-scales every lifetime. Leica SP8 / STELLARIS: 78.1 MHz, 0.097 ns per bin with a
-256-bin decay. The PTU metadata has the true values.
+scales every lifetime. Leica SP8 / STELLARIS at 78 MHz: 0.09697 ns per bin.
+PTU Reader reads the bin width from each PTU header and Calculate FLIM-S picks
+it up from the sample's FastFLIM map.
 
 ---
 

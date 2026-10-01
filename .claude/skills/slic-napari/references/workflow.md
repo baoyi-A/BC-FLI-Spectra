@@ -10,15 +10,17 @@ changed.
 ## 1. PTU Reader — decode `.ptu` into images
 
 **In:** a folder of `.ptu` files. **Out:** `intensity/*_ch1..4.tif`,
-`intensity/*_sum.tif`, `flim_stack/*.tif`, `*_fastflim_tau.tif`, and a cached
-`*_fastflim_rgb.png` colour render.
+`intensity/*_sum.tif`, `flim_stack/*.tif`, `*_fastflim_tau.tif` (the FastFLIM
+map, defined as under step 3), `*_model_input_tau.tif` and `*_seg_input.tif`
+(the Cellpose input, see step 2), and a cached `*_fastflim_rgb.png` colour
+render.
 
 | Control | What it does |
 |---|---|
 | Input folder | Folder of `.ptu` files to decode. Output folder auto-updates to its parent. |
 | Output folder | Where the decoded TIFs and the FastFLIM snapshot are written. This becomes the **sample folder** for every later step. |
 | Frame | −1 sums every frame in the PTU (typical). A positive N picks a single 0-based frame. |
-| Tau resolution | Nanoseconds per time bin in the decay. Leica default 0.098 ns. |
+| Tau resolution | Nanoseconds per time bin. Read from each PTU header (Leica 78 MHz: 0.09697 ns); the box is used only when a header lacks it. |
 | Tau min / Tau max | Blue and red ends of the lifetime colormap, in ns. Auto-set from the data's 12th / 88th percentile on the first run. Display only. |
 | Intensity clip | Upper percentile for brightness normalisation. Lower = darker. |
 | Brightness gamma / floor | Shadow lift and a minimum brightness so colours do not crush to black. Re-render live. |
@@ -46,6 +48,11 @@ contract. Change them for viewing, not before segmenting.
 The Cellpose input is not the raw intensity: the widget builds the FastFLIM
 render (Leica blue→green→red, 30/85 percentile auto-range, CLAHE on, gamma
 0.55) and segments that, because that is what the models were trained on.
+
+The tau map inside that render is the one the published models were trained
+on: mean arrival time over the whole TCSPC window, timed from its first bin
+(`*_model_input_tau.tif`). It is kept only as the model input; it is not
+FastFLIM and is not shown as a value.
 
 | Control | What it does |
 |---|---|
@@ -111,7 +118,7 @@ one row per cell, plus a G–S scatter.
 | Stack 1–4 | Per-channel decay stacks, axis order **T×H×W** (time first). All optional — auto-filled from `flim_stack/`. At least one is required; missing channels are written as NaN. |
 | Segmentation N / M / P / Any | Which masks to quantify. `Any` is a fallback used only when N, M and P are all empty. |
 | **Pulse frequency (MHz)** | Laser repetition rate. Leica default 78.1. Sets the time window the phasor is evaluated in, so a wrong value makes every lifetime wrong. |
-| **Tau resolution (ns)** | Time-bin width. Leica with a 256-bin decay: 0.097 ns. Check the PTU metadata if unsure. |
+| **Tau resolution (ns)** | Time-bin width. Filled in from the sample's FastFLIM map (PTU Reader records the PTU header value; Leica 78 MHz: 0.09697 ns). |
 | Mask intensity threshold | Minimum **total** photons summed over a cell. Below it the cell is skipped as too dim for a stable fit. Raise if τ outliers persist, lower if real dim cells are dropped. |
 | Pixel intensity threshold | Per-**pixel** floor when aggregating photons into the cell decay, so dim background does not dilute the fit. Different from the mask threshold. |
 | Peak offset (bins) | Start of the fit window, after the decay peak — skips the IRF-convolved rising edge. Typical 3–6. |
@@ -134,9 +141,10 @@ single-configuration file.
 Mean intensity, Mask label, FastFLIM, Int 570-590, Int 590-610, Int 610-638,
 Int 638-720, Int 1/(1-4) … Int 4/(1-4), FOV`.
 
-`Lifetime` is a fitted mono-exponential τ. `FastFLIM` is the photon-weighted
-mean arrival time. They answer different questions; do not average them
-together or swap the names.
+`Lifetime` is a fitted mono-exponential τ. FastFLIM is the photon-weighted mean arrival time over the decay tail (from 4 bins after the peak to 18 bins before the end), timed from the start of that window; for a single exponential
+it is τ minus a small truncation term. The PTU Reader map uses the same
+definition, so a cell's FastFLIM equals its pixels' FastFLIM pooled. Do not
+average `Lifetime` and `FastFLIM` together or swap the names.
 
 ---
 

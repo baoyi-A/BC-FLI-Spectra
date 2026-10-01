@@ -74,7 +74,8 @@ There usually is no ground truth, so lean on internal consistency:
 - **Lifetime should fall monotonically as G rises.** That is the geometry of
   the phasor; a class that breaks it is suspect.
 - **`Lifetime` and `FastFLIM` should track but not coincide.** They are a
-  fitted mono-exponential and a photon-weighted mean.
+  fitted mono-exponential and a photon-weighted mean of the decay tail;
+  FastFLIM sits slightly below the fit (≈0.2 ns on the Mix16 test field).
 - **The four intensity ratios sum to 1** for every cell.
 - **Whitening reporting "0 cells changed class"** means the first pass was
   already stable — good news, not a no-op.

@@ -232,7 +232,7 @@ something to hand-author for a model trained elsewhere.
 
     ![PTU Reader](../docs/screenshots/1_ptu_reader.webp)
 
-    <sub>The FastFLIM render of a decoded field (colour = lifetime, brightness = photons).</sub>
+    <sub>The FastFLIM render of a decoded field (colour = FastFLIM, brightness = photons).</sub>
 
     </details>
 2. 🔬 **Barcode Seg (Cellpose)** — run N and P segmentation on the
@@ -439,6 +439,21 @@ Napari_plugin/
 Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
+
+**1.3.0 — 2026-10-01**
+
+- One FastFLIM throughout: PTU Reader's map now uses the definition
+  Calculate FLIM-S uses per cell (photon-weighted mean arrival time over the
+  decay tail, from 4 bins after the peak to 18 before the end), so a cell's
+  FastFLIM equals its pixels pooled. The map is timed from the decay tail
+  rather than from the start of the TCSPC window, so its values sit lower
+  by the pre-peak delay (about 1.5 ns on the Leica set-up). Maps saved by
+  earlier versions are recognised and updated from the sample's
+  `flim_stack` when re-rendered.
+- The Cellpose input is unchanged: the barcode models keep receiving the map
+  they were trained on, now saved as `*_model_input_tau.tif`.
+- PTU Reader reads the bin width from each PTU header (Leica 78 MHz:
+  0.09697 ns), and Calculate FLIM-S picks it up from the sample.
 
 **1.2.2 — 2026-10-01**
 

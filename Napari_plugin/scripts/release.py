@@ -336,6 +336,16 @@ def _validate_pins(py, pins, cuda):
     without installing. Returns (pins that resolve, [lines that do not])."""
     import tempfile
     unresolvable, pins = [], list(pins)
+    original = list(pins)
+    # Pins from a VCS URL (``name @ git+https://...@<commit>``) are exact by
+    # construction; dry-running them means cloning the repository, which
+    # fails whenever GitHub is slow to reach from the release machine, so
+    # they are recorded as they are and not dry-run.
+    vcs = [l for l in pins if ' @ git+' in l]
+    if vcs:
+        print('  (%d VCS pin(s) recorded as is, not dry-run: %s)'
+              % (len(vcs), ', '.join(l.split(' @ ')[0] for l in vcs)))
+    pins = [l for l in pins if l not in vcs]
     for _ in range(12):
         fd, req = tempfile.mkstemp(suffix='.txt'); os.close(fd)
         with open(req, 'w', encoding='utf-8') as f:
@@ -346,7 +356,8 @@ def _validate_pins(py, pins, cuda):
                             '-q', '-r', req], capture_output=True, text=True)
         os.remove(req)
         if r.returncode == 0:
-            return pins, unresolvable
+            keep = set(pins) | set(vcs)
+            return [l for l in original if l in keep], unresolvable
         m = re.search(r'No matching distribution found for ([^\s]+)', r.stderr + r.stdout)
         if not m:
             raise RuntimeError('pip dry-run failed: %s' % (r.stderr or r.stdout).strip()[-400:])

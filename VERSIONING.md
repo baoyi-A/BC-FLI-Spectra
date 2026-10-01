@@ -97,7 +97,9 @@ from 1.1.2.
    is the one that imports, when a key package's imported version differs
    from the record, or when the recorded versions violate the dependency
    ranges in `pyproject.toml` — a record that `pip install -e` would then
-   undo is not a record.
+   undo is not a record. Pins from a VCS URL (`name @ git+…@<commit>`) are
+   exact by construction and are recorded as they are, not dry-run (that
+   would need the repository cloned during the release).
 4. Commit the release: `git commit -am "Release X.Y.Z"` (pyproject, the
    changelog, `envs/`).
 5. `python Napari_plugin/scripts/release.py check` — must pass. It refuses

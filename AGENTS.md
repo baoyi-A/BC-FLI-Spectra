@@ -141,7 +141,8 @@ Reader and consumed by everything downstream:
 │   └── <fov>_sum_seg_n.npy          nucleus mask   ← masks live HERE, next to the image
 │   └── <fov>_sum_seg_p.npy          cytoplasm mask
 ├── <fov>_fastflim_rgb.png           colour render (cached by PTU Reader)
-├── <fov>_fastflim_tau.tif           lifetime map
+├── <fov>_fastflim_tau.tif           FastFLIM map (tail-window mean arrival time)
+├── <fov>_model_input_tau.tif        tau map the Cellpose models were trained on (input only)
 ├── FLIM-S.xlsx                      one row per cell (the 5-D features)
 └── clustered.xlsx                   FLIM-S.xlsx + barcode class per cell
 ```
@@ -207,7 +208,8 @@ python -m py_compile Napari_plugin/src/flim_s_gen/_widget.py
   on another. A fine-tune writes `config.json` beside the weights recording
   which form it used.
 - **Two lifetime quantities.** `Lifetime` is a fitted mono-exponential τ;
-  `FastFLIM` is the photon-weighted mean arrival time. They are not
+  `FastFLIM` is the photon-weighted mean arrival time over the decay tail,
+  the same definition in PTU Reader and Calculate FLIM-S. They are not
   interchangeable — keep the names straight.
 - **Seeded K-Means seeds are a starting point**, not fixed centres: the
   clustering re-fits them on the cells currently loaded, which is what lets a
