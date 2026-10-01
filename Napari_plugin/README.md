@@ -227,26 +227,82 @@ something to hand-author for a model trained elsewhere.
 
 1. 📥 **PTU Reader** — load a `.ptu` and decode it into an intensity stack
    and FLIM stack under `<sample>/intensity/` and `<sample>/flim/`.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![PTU Reader](../docs/screenshots/1_ptu_reader.webp)
+
+    <sub>The FastFLIM render of a decoded field (colour = lifetime, brightness = photons).</sub>
+
+    </details>
 2. 🔬 **Barcode Seg (Cellpose)** — run N and P segmentation on the
    intensity‑sum image. Edit masks in napari. Optionally fine‑tune the
    N / P model from the edits (single‑image or multi‑folder).
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![Barcode Seg](../docs/screenshots/2_barcode_seg.webp)
+
+    <sub>Nuclear (N) and cytoplasmic (P) masks drawn over the FastFLIM render.</sub>
+
+    </details>
 3. 🌀 **Calculate FLIM‑S** — compute lifetime / phasor features from
    1–4 decay channels and the N / M / P masks you select; write
    `FLIM‑S.xlsx` with per‑cell features. A run merges into an existing
    workbook per FOV (tick *Fresh FLIM‑S.xlsx* to start clean); the
    batch button uses the same channel / mask selection.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![Calculate FLIM-S](../docs/screenshots/3_calculate_flims.webp)
+
+    </details>
 4. 🧩 **Seeded K-Means** — place seeds on each barcode class (optionally
    load a prior distribution overlay), pick a method, flag outliers, and
    export per‑cell class labels.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![Seeded K-Means](../docs/screenshots/4_seeded_kmeans.webp)
+
+    <sub>Left: ten barcode classes of the nuclear localisation in the 5-D feature space, seeded from a reference. Right: the widget.</sub>
+
+    </details>
 5. 🟡 **Biosensor Seg (Cellpose)** — generate / pick the seg image, load
    and align the barcode classification layer as auxiliary channel,
    run the dual‑input Cellpose model, edit masks against the barcode
    reference. Optionally fine‑tune.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![Biosensor Seg](../docs/screenshots/5_biosensor_seg.webp)
+
+    <sub>Biosensor cell masks over the B/G/Y render of the confocal time-lapse.</sub>
+
+    </details>
 6. 🎬 **B&P Tracker** *(optional for time‑lapse)* — track cells through
    the confocal stack.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![B&P Tracker](../docs/screenshots/6_bp_tracker.webp)
+
+    </details>
 7. 📈 **NaCha** — final alignment and per‑class signal computation.
    Shift‑click any cell in Revise Mode to inspect its individual
    signal curve before trusting the class averages.
+
+    <details><summary>🖼 Screenshot</summary>
+
+    ![NaCha](../docs/screenshots/7_nacha.webp)
+
+    <sub>Cells coloured by barcode class; the strip below is one Shift+clicked cell (a cAMP sensor responding to the stimulus).</sub>
+
+    ![NaCha per-class result](../docs/screenshots/7_nacha_per_class.webp)
+
+    <sub>Per-class mean ± SE written by Calculate.</sub>
+
+    </details>
 
 ### 🟡 Biosensor only (no barcode)
 
@@ -254,6 +310,15 @@ A biosensor experiment without barcodes skips steps 2–4 and runs
 **5 → (6) → 7**. Both Biosensor Seg and NaCha tick **Biosensor only (no
 barcode)** by themselves when the sample folder has no
 `intensity/*-cls.tif`; tick or untick it by hand to override.
+
+<details><summary>🖼 Screenshot</summary>
+
+![Biosensor Seg without a barcode](../docs/screenshots/9_biosensor_only.webp)
+
+<sub>Biosensor Seg on a sample without a barcode: Step 2 is skipped and a
+barcode-free model segments the cells.</sub>
+
+</details>
 
 - **Biosensor Seg**: Step 2 (barcode assist) is skipped, and the model is
   switched to one that needs no barcode (`cyto2`, or a biosensor model you
@@ -282,12 +347,19 @@ an editing mode is switched on. The step-by-step notes of a widget sit
 behind the **ⓘ How to use** button next to it (hover to read, click for a
 window).
 
+<details><summary>🖼 Screenshot</summary>
+
+![Keyboard shortcuts window](../docs/screenshots/8_shortcuts.webp)
+
+</details>
+
 **Layers, in every widget** — however many layers are open:
 
 | Keys | What they do |
 |---|---|
 | Alt+1 … Alt+9 | show / hide layer 1–9, counted from the top of the layer list |
 | Alt+0 | show every layer |
+| V | show / hide the selected layer (napari's own key) |
 | Alt+S | show only the selected layer; press again to restore |
 | Alt+← / Alt+→ | select the layer above / below |
 
@@ -297,7 +369,7 @@ window).
 |---|---|---|
 | Barcode Seg | Right-click · Enter · Esc | draw a polygon cell · commit · cancel (select `mask_n_fill` / `mask_p_fill` first) |
 | | Ctrl+click | delete the cell under the cursor |
-| | Z / X | show / hide the N / P mask |
+| | Z / X | show / hide the N / P mask (with a mask layer selected; on an image layer napari uses Z / X itself) |
 | | S | cycle contrast of the sum image |
 | | Shift+S · Shift+Z | save masks · undo the last post-processing |
 | Biosensor Seg | Right-click · Enter · Esc · Ctrl+click | as above, on `mask_biosensor` |
@@ -367,6 +439,12 @@ Napari_plugin/
 Numbered as described in [`VERSIONING.md`](../VERSIONING.md): MAJOR when a
 file on disk changes meaning, MINOR when the same input can give a different
 result, PATCH otherwise.
+
+**1.2.2 — 2026-10-01**
+
+- Screenshots of every step in this README and on the front page.
+- The shortcut list notes that Z / X act while a mask layer is selected
+  (napari uses them on image layers) and lists napari's own V key.
 
 **1.2.1 — 2026-09-30**
 

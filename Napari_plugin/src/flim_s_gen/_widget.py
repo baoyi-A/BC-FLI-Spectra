@@ -1584,7 +1584,8 @@ _SHORTCUTS = {
           ('Enter', 'commit the polygon as a new cell'),
           ('Esc', 'cancel the polygon'),
           ('Ctrl + click', 'delete the cell under the cursor'),
-          ('Z  /  X', 'show / hide the N / P mask (and select it)'),
+          ('Z  /  X', 'show / hide the N / P mask (and select it); with an '
+                      'image layer selected napari uses Z / X itself'),
           ('S', 'cycle the contrast of the sum image')]),
         ('Whole widget', '', None,
          [('Shift + S', 'save masks'),
@@ -1603,6 +1604,8 @@ _SHORTCUTS = {
           ('Ctrl + click', 'delete the cell under the cursor'),
           ('Z', 'show / hide mask_biosensor (and select it)'),
           ('X', 'show / hide the barcode overlay (only if one is loaded)'),
+          ('', 'Z / X act while a mask layer is selected; on an image layer '
+               'napari uses them itself'),
           ('S', 'cycle the contrast of seg_image')]),
         ('napari Labels tools', 'Built into napari, on mask_biosensor.',
          None, _NAPARI_LABEL_KEYS),
@@ -1655,6 +1658,7 @@ def _console(text):
 _LAYER_KEYS_STATIC = [
     ('Alt + 1 ... 9', 'show / hide layer 1-9, counted from the top of the layer list'),
     ('Alt + 0', 'show every layer'),
+    ('V', 'show / hide the selected layer (napari)'),
     ('Alt + S', 'show only the selected layer; press again to restore'),
     ('Alt + Left / Right', 'select the layer above / below'),
 ]

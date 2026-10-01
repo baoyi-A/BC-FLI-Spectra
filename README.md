@@ -54,6 +54,13 @@ the 1.0.x archive predates it.
 The SLIC napari plugin runs the full workflow, from `.ptu` ingestion through
 segmentation, classification and tracking to alignment and visualization.
 
+![SLIC in napari: the NaCha step](docs/screenshots/7_nacha.webp)
+
+*The last step, NaCha, on a sixteen-barcode dish: cells coloured by barcode
+class, one cell's biosensor channels and G/B ratio below, and the widget on
+the right. Screenshots of every step are in the
+[plugin README](Napari_plugin/README.md#-quick-workflow).*
+
 **Seven widgets**, listed under `Plugins → bc-flim-spectra`. Each has a blue
 **Next ▶** button that opens the following one, so the workflow chains without
 returning to the menu.
